@@ -1,0 +1,301 @@
+diff -urN musl-1.2.4/arch/x86_64/syscall_arch.h musl-custom/arch/x86_64/syscall_arch.h
+--- musl-1.2.4/arch/x86_64/syscall_arch.h	2023-05-01 23:39:41.000000000 -0400
++++ musl-custom/arch/x86_64/syscall_arch.h	2024-02-23 18:02:31.863614788 -0500
+@@ -1,8 +1,13 @@
+ #define __SYSCALL_LL_E(x) (x)
+ #define __SYSCALL_LL_O(x) (x)
+ 
++#include <lucid.h>
++
+ static __inline long __syscall0(long n)
+ {
++	if (g_lucid_syscall)
++		return g_lucid_syscall(g_lucid_ctx, n, 0, 0, 0, 0, 0, 0);
++	
+ 	unsigned long ret;
+ 	__asm__ __volatile__ ("syscall" : "=a"(ret) : "a"(n) : "rcx", "r11", "memory");
+ 	return ret;
+@@ -10,6 +15,9 @@
+ 
+ static __inline long __syscall1(long n, long a1)
+ {
++	if (g_lucid_syscall)
++		return g_lucid_syscall(g_lucid_ctx, n, a1, 0, 0, 0, 0, 0);
++
+ 	unsigned long ret;
+ 	__asm__ __volatile__ ("syscall" : "=a"(ret) : "a"(n), "D"(a1) : "rcx", "r11", "memory");
+ 	return ret;
+@@ -17,6 +25,9 @@
+ 
+ static __inline long __syscall2(long n, long a1, long a2)
+ {
++	if (g_lucid_syscall)
++		return g_lucid_syscall(g_lucid_ctx, n, a1, a2, 0, 0, 0, 0);
++	
+ 	unsigned long ret;
+ 	__asm__ __volatile__ ("syscall" : "=a"(ret) : "a"(n), "D"(a1), "S"(a2)
+ 						  : "rcx", "r11", "memory");
+@@ -25,6 +36,9 @@
+ 
+ static __inline long __syscall3(long n, long a1, long a2, long a3)
+ {
++	if (g_lucid_syscall)
++		return g_lucid_syscall(g_lucid_ctx, n, a1, a2, a3, 0, 0, 0);
++	
+ 	unsigned long ret;
+ 	__asm__ __volatile__ ("syscall" : "=a"(ret) : "a"(n), "D"(a1), "S"(a2),
+ 						  "d"(a3) : "rcx", "r11", "memory");
+@@ -33,6 +47,9 @@
+ 
+ static __inline long __syscall4(long n, long a1, long a2, long a3, long a4)
+ {
++	if (g_lucid_syscall)
++		return g_lucid_syscall(g_lucid_ctx, n, a1, a2, a3, a4, 0, 0);
++	
+ 	unsigned long ret;
+ 	register long r10 __asm__("r10") = a4;
+ 	__asm__ __volatile__ ("syscall" : "=a"(ret) : "a"(n), "D"(a1), "S"(a2),
+@@ -42,6 +59,9 @@
+ 
+ static __inline long __syscall5(long n, long a1, long a2, long a3, long a4, long a5)
+ {
++	if (g_lucid_syscall)
++		return g_lucid_syscall(g_lucid_ctx, n, a1, a2, a3, a4, a5, 0);
++	
+ 	unsigned long ret;
+ 	register long r10 __asm__("r10") = a4;
+ 	register long r8 __asm__("r8") = a5;
+@@ -52,6 +72,9 @@
+ 
+ static __inline long __syscall6(long n, long a1, long a2, long a3, long a4, long a5, long a6)
+ {
++	if (g_lucid_syscall)
++		return g_lucid_syscall(g_lucid_ctx, n, a1, a2, a3, a4, a5, a6);
++	
+ 	unsigned long ret;
+ 	register long r10 __asm__("r10") = a4;
+ 	register long r8 __asm__("r8") = a5;
+diff -urN musl-1.2.4/include/lucid.h musl-custom/include/lucid.h
+--- musl-1.2.4/include/lucid.h	1969-12-31 19:00:00.000000000 -0500
++++ musl-custom/include/lucid.h	2024-02-23 18:03:12.911473268 -0500
+@@ -0,0 +1,99 @@
++#ifndef LUCID_H
++#define LUCID_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++// Data structures in this file will need to remain consistent with the ones
++// defined in context.rs
++//
++// The Calling Convention we use is this
++// r15 - The address of the lucid_ctx_t (g_lucid_ctx)
++// r14 - &lucid_ctx_t->register_bank
++// r13 - lucid_ctx_t->context_switch
++
++// Reasons for exiting a VM
++typedef enum { 
++    NOEXIT = 0,
++    SYSCALL = 1,
++    START_BOCHS = 2,
++} VmExit;
++
++// Execution mode (in Bochs or in Lucid)
++typedef enum {
++    BOCHS = 0,
++    LUCID = 1,
++} ExecMode;
++
++// Just a placeholder on the Bochs side, only used on the Lucid side
++typedef enum {
++    NOFAULT = 0,
++} Fault;
++
++// A fake TLS structure that Bochs will access instead of the real TLS
++typedef struct lucid_tls {
++    uint8_t padding1[52];
++    int lucid_errno;        
++    uint8_t padding2[144];
++} lucid_tls_t;
++
++
++// Just memory we save GPRs to when we context switch, I made this because I
++// don't think the perf of pushing to the stack vs memory accesses is going to 
++// really matter when we're fuzzing kernels and web browswers so who cares and
++// I really want this to be less mistake-prone and more easy to reason about
++typedef struct register_bank {
++    unsigned long rax;
++    unsigned long rbx;
++    unsigned long rcx;
++    unsigned long rdx;
++    unsigned long rsi;
++    unsigned long rdi;
++    unsigned long rbp;
++    unsigned long rsp;
++    unsigned long r8;
++    unsigned long r9;
++    unsigned long r10;
++    unsigned long r11;
++    unsigned long r12;
++    unsigned long r13;
++    unsigned long r14;
++    unsigned long r15;
++} register_bank_t;
++
++// An execution context definition that we use to switch contexts between the
++// fuzzer and Bochs. This should contain all of the information we need to track
++// all of the mutable state between snapshots that we need such as file data.
++// This has to be consistent with LucidContext in context.rs
++typedef struct lucid_ctx {
++    // This must always be the first member of this struct
++    size_t context_switch;
++    ExecMode mode;
++    register_bank_t lucid_regs;
++    register_bank_t bochs_regs;
++    Fault fault;
++    VmExit exit_reason;
++    size_t lucid_syscall;
++    int save_inst;
++    size_t save_size;
++    size_t lucid_save_area;
++    size_t bochs_save_area;
++    size_t xcr0;
++    size_t bochs_entry;
++    size_t bochs_rsp;
++    lucid_tls_t tls;
++    size_t magic;
++} lucid_ctx_t;
++
++// Pointer to the global execution context, if running inside Lucid, this will
++// point to the a struct lucid_ctx_t inside the Fuzzer 
++extern lucid_ctx_t *g_lucid_ctx;
++
++// Define a function pointer type for lucid_syscall
++typedef long (*lucid_syscall_p)(lucid_ctx_t *ctx, long n, long a1, long a2,
++    long a3, long a4, long a5, long a6);
++
++// Create an instance of the function pointer
++extern lucid_syscall_p g_lucid_syscall;
++
++#endif // LUCID_H
+diff -urN musl-1.2.4/ldso/dlstart.c musl-custom/ldso/dlstart.c
+--- musl-1.2.4/ldso/dlstart.c	2023-05-01 23:39:41.000000000 -0400
++++ musl-custom/ldso/dlstart.c	2024-02-23 16:35:06.042923890 -0500
+@@ -2,6 +2,8 @@
+ #include "dynlink.h"
+ #include "libc.h"
+ 
++#include <lucid.h>
++
+ #ifndef START
+ #define START "_dlstart"
+ #endif
+@@ -20,6 +22,40 @@
+ 
+ hidden void _dlstart_c(size_t *sp, size_t *dynv)
+ {
++	// R15 is not clobbered in the earliest code in arch/x86_64/crt_arch.h
++	// so we can just do this here, when Lucid starts Bochs, it will pass the
++	// address of the LucidContext struct in R15, so try to extract that here
++	size_t r15;
++	__asm__ __volatile__(
++		"mov %%r15, %0" : "=r"(r15)
++	);
++
++	// We are running under Lucid
++	if (r15 != 0) {
++		// Initialize the context
++		g_lucid_ctx = (lucid_ctx_t *)r15;
++
++		// Initialize function pointer to lucid_syscall
++		g_lucid_syscall = (lucid_syscall_p)g_lucid_ctx->lucid_syscall;
++
++		// Check these offsets, we depend on these
++		if ((offsetof(lucid_ctx_t, context_switch) != 0x0) 	||
++			(offsetof(lucid_ctx_t, mode) != 0x8)			||
++			(offsetof(lucid_ctx_t, lucid_regs) != 0x10)		||
++			(offsetof(lucid_ctx_t, bochs_regs) != 0x90))
++		{
++			__asm__ __volatile("int3");
++		}
++	}
++
++	// We didn't get a g_lucid_ctx, so we can just run normally
++	else {
++		// NULL these out
++		g_lucid_ctx = NULL;
++		g_lucid_syscall = NULL;
++
++	}
++
+ 	size_t i, aux[AUX_CNT], dyn[DYN_CNT];
+ 	size_t *rel, rel_size, base;
+ 
+@@ -33,6 +69,7 @@
+ 	for (i=0; auxv[i]; i+=2) if (auxv[i]<AUX_CNT)
+ 		aux[auxv[i]] = auxv[i+1];
+ 
++
+ #if DL_FDPIC
+ 	struct fdpic_loadseg *segs, fakeseg;
+ 	size_t j;
+@@ -66,7 +103,7 @@
+ 	for (i=0; i<DYN_CNT; i++) dyn[i] = 0;
+ 	for (i=0; dynv[i]; i+=2) if (dynv[i]<DYN_CNT)
+ 		dyn[dynv[i]] = dynv[i+1];
+-
++	
+ #if DL_FDPIC
+ 	for (i=0; i<DYN_CNT; i++) {
+ 		if (i==DT_RELASZ || i==DT_RELSZ) continue;
+diff -urN musl-1.2.4/src/env/__init_tls.c musl-custom/src/env/__init_tls.c
+--- musl-1.2.4/src/env/__init_tls.c	2023-05-01 23:39:41.000000000 -0400
++++ musl-custom/src/env/__init_tls.c	2024-02-23 16:42:42.031399681 -0500
+@@ -11,11 +11,16 @@
+ 
+ volatile int __thread_list_lock;
+ 
++#ifndef ARCH_SET_FS
++#define ARCH_SET_FS 0x1002
++#endif /* ARCH_SET_FS */
++
+ int __init_tp(void *p)
+ {
+ 	pthread_t td = p;
+ 	td->self = td;
+-	int r = __set_thread_area(TP_ADJ(p));
++	int r = syscall(SYS_arch_prctl, ARCH_SET_FS, TP_ADJ(p));
++	//int r = __set_thread_area(TP_ADJ(p));
+ 	if (r < 0) return -1;
+ 	if (!r) libc.can_do_threads = 1;
+ 	td->detach_state = DT_JOINABLE;
+@@ -134,6 +139,7 @@
+ #ifndef SYS_mmap2
+ #define SYS_mmap2 SYS_mmap
+ #endif
++		__asm__ __volatile__ ("int3");
+ 		mem = (void *)__syscall(
+ 			SYS_mmap2,
+ 			0, libc.tls_size, PROT_READ|PROT_WRITE,
+@@ -142,7 +148,9 @@
+ 		 * so don't bloat the init code checking for error codes and
+ 		 * explicitly calling a_crash(). */
+ 	} else {
+-		mem = builtin_tls;
++		// Check to see if we're running under Lucid or not
++		if (!g_lucid_ctx) { mem = builtin_tls; }
++		else { mem = &g_lucid_ctx->tls; }
+ 	}
+ 
+ 	/* Failure to initialize thread pointer is always fatal. */
+diff -urN musl-1.2.4/src/lucid/lucid.c musl-custom/src/lucid/lucid.c
+--- musl-1.2.4/src/lucid/lucid.c	1969-12-31 19:00:00.000000000 -0500
++++ musl-custom/src/lucid/lucid.c	2024-02-23 18:03:54.823323980 -0500
+@@ -0,0 +1,7 @@
++#include <lucid.h>
++
++// Define the global execution context pointer
++lucid_ctx_t *g_lucid_ctx = NULL;
++
++// Define the function pointer
++lucid_syscall_p g_lucid_syscall = NULL;
