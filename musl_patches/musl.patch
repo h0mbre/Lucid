@@ -77,8 +77,8 @@ diff -urN musl-1.2.4/arch/x86_64/syscall_arch.h musl-custom/arch/x86_64/syscall_
  	register long r8 __asm__("r8") = a5;
 diff -urN musl-1.2.4/include/lucid.h musl-custom/include/lucid.h
 --- musl-1.2.4/include/lucid.h	1969-12-31 19:00:00.000000000 -0500
-+++ musl-custom/include/lucid.h	2024-02-23 18:03:12.911473268 -0500
-@@ -0,0 +1,99 @@
++++ musl-custom/include/lucid.h	2024-02-25 20:54:04.822091750 -0500
+@@ -0,0 +1,94 @@
 +#ifndef LUCID_H
 +#define LUCID_H
 +
@@ -90,14 +90,11 @@ diff -urN musl-1.2.4/include/lucid.h musl-custom/include/lucid.h
 +//
 +// The Calling Convention we use is this
 +// r15 - The address of the lucid_ctx_t (g_lucid_ctx)
-+// r14 - &lucid_ctx_t->register_bank
-+// r13 - lucid_ctx_t->context_switch
 +
 +// Reasons for exiting a VM
 +typedef enum { 
 +    NOEXIT = 0,
-+    SYSCALL = 1,
-+    START_BOCHS = 2,
++    START_BOCHS = 1,
 +} VmExit;
 +
 +// Execution mode (in Bochs or in Lucid)
@@ -119,10 +116,8 @@ diff -urN musl-1.2.4/include/lucid.h musl-custom/include/lucid.h
 +} lucid_tls_t;
 +
 +
-+// Just memory we save GPRs to when we context switch, I made this because I
-+// don't think the perf of pushing to the stack vs memory accesses is going to 
-+// really matter when we're fuzzing kernels and web browswers so who cares and
-+// I really want this to be less mistake-prone and more easy to reason about
++// A data structure to hold all of our GPR data for both Lucid and Bochs when
++// we need to save state, say for a context-switch for example
 +typedef struct register_bank {
 +    unsigned long rax;
 +    unsigned long rbx;
@@ -142,10 +137,10 @@ diff -urN musl-1.2.4/include/lucid.h musl-custom/include/lucid.h
 +    unsigned long r15;
 +} register_bank_t;
 +
-+// An execution context definition that we use to switch contexts between the
-+// fuzzer and Bochs. This should contain all of the information we need to track
-+// all of the mutable state between snapshots that we need such as file data.
-+// This has to be consistent with LucidContext in context.rs
++// This data structure is initialized for each Lucid - Bochs pairing and is 
++// passed around during the execution of both via pointer. This structure should
++// contain all of the information needed to handle context-switching. This
++// data structure must remain consistent with the Rust definition in context.rs
 +typedef struct lucid_ctx {
 +    // This must always be the first member of this struct
 +    size_t context_switch;

@@ -18,10 +18,10 @@ const PAGE_SIZE: usize = 0x1000;
 const CTX_MAGIC: usize = 0x74DFF25D576D6F4D;
 
 // In the context-switching code here, we can't really continue if we encounter
-// errors. If we are attempting to context-switch from Bochs, such as a syscall
-// and we encounter an error, we will use this error type and set it in the 
-// execution context before attempting to restore Lucid execution for
-// fault-handling
+// errors at this point, so we're using this error type of `Fault` to somewhat
+// differentiate errors in the project and reserving this type to mean that 
+// something went awry in the "context-switching" like code. So far, we don't 
+// recover from these
 #[repr(i32)]
 #[derive(Clone, Copy, Debug)]
 pub enum Fault {
@@ -61,14 +61,11 @@ impl fmt::Display for Fault {
 }
 
 // This represents the reason why a VM has exited execution and is now trying
-// to context-switch for event handling, this could for several things such as a
-// syscall, a breakpoint, a snapshot, etc
-#[repr(i32)]
+// to context-switch for event handling
 #[derive(Clone, Copy, Debug)]
 pub enum VmExit {
     NoExit = 0,
-    Syscall = 1,
-    StartBochs = 2,
+    StartBochs = 1,
 }
 
 // We get passed an i32, have to go through this to get a Rust enum
@@ -79,8 +76,7 @@ impl TryFrom<i32> for VmExit {
     // Return value or error
     fn try_from(val: i32) -> Result<Self, Self::Error> {
         match val {
-            1 => Ok(VmExit::Syscall),
-            2 => Ok(VmExit::StartBochs),
+            1 => Ok(VmExit::StartBochs),
             _ => Err(()),
         }
     }
@@ -116,8 +112,8 @@ impl TryFrom<i32> for SaveInst {
 #[repr(i32)]
 #[derive(Copy, Clone)]
 pub enum ExecMode {
-    Bochs = 0, // We exited from Bochs into Lucid
-    Lucid = 1, // We exited from Lucid into Bochs
+    Bochs = 0, // We exited from Bochs
+    Lucid = 1, // We exited from Lucid
 }
 
 // We get passed an i32, have to go through this to get a Rust enum
@@ -179,8 +175,7 @@ pub struct RegisterBank {
 }
 
 // Execution context that is passed between Lucid and Bochs that tracks
-// all of the mutable state information we need to do context-switching,
-// syscall handling, snapshots, etc.
+// all of the mutable state information we need to do context-switching
 #[repr(C)]
 #[derive(Clone)]
 pub struct LucidContext {
@@ -386,7 +381,7 @@ fn calc_save_size() -> usize {
             "pop rbx",
             out("rax") _,       // Clobber
             out("rcx") save,    // Save the max size
-            out("rdx") _,       // Clobbered by CPUID output (w eax)
+            out("rdx") _,       // Clobbered by CPUID output (w EAX)
         );
     }
 

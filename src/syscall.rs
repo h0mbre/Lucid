@@ -38,9 +38,7 @@ fn write_iovec(iovec_p: *const libc::iovec) -> usize {
     len
 }
 
-// This is where we process Bochs making a syscall. All we need is a pointer to
-// the execution context, and we can then access the registers and all the
-// peripheral structures we need
+// This is where we process Bochs making a syscall
 pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
     a1: usize, a2: usize, a3: usize, _a4: usize, _a5: usize, _a6: usize)
     -> i64 {
