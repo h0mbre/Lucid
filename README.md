@@ -45,14 +45,14 @@ Confirm that Musl is now installed at `/usr/local/musl`, then you can:
 
 ## Expected Output
 ```terminal
-[19:03:54] lucid> Bochs image: /home/h0mbre/lucid/test
-[19:03:54] lucid> Loading Bochs...
-[19:03:54] lucid> Bochs mapping: 0x10000 - 0x18000
-[19:03:54] lucid> Bochs mapping size: 0x8000
-[19:03:54] lucid> Bochs stack: 0x7F70B03FD000
-[19:03:54] lucid> Bochs entry: 0x11058
-[19:03:54] lucid> Creating Bochs execution context...
-[19:03:54] lucid> Starting Bochs...
+lucid· Bochs image path: 'test'
+lucid· Loading Bochs...
+lucid· Bochs mapping: 0x10000 - 0x18000
+lucid· Bochs mapping size: 0x8000
+lucid· Bochs stack: 0x7F5C32BFD000
+lucid· Bochs entry: 0x11058
+lucid· Creating Bochs execution context...
+lucid· Starting Bochs...
 Argument count: 1
 Args:
    -./bochs
@@ -61,8 +61,8 @@ Test alive!
 Test alive!
 Test alive!
 Test alive!
-g_lucid_ctx: 0x562c5e545ee0
-FATAL: Bochs exited early
+g_lucid_ctx: 0x55a7878d7ce0
+fatal: Bochs exited early
 ```
 ## Contributors
 People who have had a hand in the project one way or another thus far:
