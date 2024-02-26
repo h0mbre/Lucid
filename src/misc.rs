@@ -3,14 +3,10 @@
 #[macro_export]
 macro_rules! prompt {
     () => ({
-        let timestamp = chrono::Local::now().format("%H:%M:%S");
-        print!("\x1b[1;33m[{}]\x1b[0m", timestamp);
-        print!(" \x1b[1;36mlucid\x1b[0m\x1b[1;35m>\x1b[0m\n");
+        print!("lucid\u{25CF}\n");
     });
     ($($arg:tt)*) => ({
-        let timestamp = chrono::Local::now().format("%H:%M:%S");
-        print!("\x1b[1;33m[{}]\x1b[0m", timestamp);
-        print!(" \x1b[1;36mlucid\x1b[0m\x1b[1;35m>\x1b[0m ");
+        print!("lucid\u{25CF} ");
         println!($($arg)*);
     });
 }
@@ -19,7 +15,7 @@ macro_rules! prompt {
 macro_rules! fatal {
     ($err:expr) => {
         {
-            print!("\x1b[1;31mFATAL:\x1b[0m ");
+            print!("\x1b[1;31mfatal:\x1b[0m ");
             $err.display();
             std::process::exit(-1);
         }
