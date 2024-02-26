@@ -46,7 +46,7 @@ fn get_bochs_image() -> String {
 fn main() {
     // Retrieve the Bochs image with some simple arg parsing for now
     let path = get_bochs_image();
-    prompt!("Bochs image: {}", path);
+    prompt!("Bochs image path: '{}'", path);
 
     // Load Bochs into our process space
     prompt!("Loading Bochs...");

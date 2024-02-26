@@ -51,7 +51,6 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
     match n {
         // ioctl
         0x10 => {
-            //println!("Handling ioctl()...");
             // Make sure the fd is 1, that's all we handle right now?
             if a1 != 1 {
                 fault_handler(contextp, Fault::Syscall);
@@ -91,7 +90,6 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
         },
         // writev
         0x14 => {
-            //println!("Handling writev()...");
             // Get the fd
             let fd = a1 as libc::c_int;
 
@@ -130,7 +128,6 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
         },
         // nanosleep
         0x23 => {
-            //println!("Handling nanosleep()...");
             0
         },
         // arch_prctl
@@ -152,7 +149,6 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
         },
         // set_tid_address
         0xDA => {
-            //println!("Handling set_tid_address()...");
             // Just return Boch's pid, no need to do anything
             BOCHS_PID as i64
         },

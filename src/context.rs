@@ -247,9 +247,7 @@ impl LucidContext {
         let mode = ExecMode::try_from(mode);
 
         // If it's an error, return false
-        if mode.is_err() {
-            return false;
-        }
+        if mode.is_err() { return false; }
 
         // Unwrap since it's not an error
         let mode = mode.unwrap();
@@ -267,9 +265,7 @@ impl LucidContext {
         let mode = ExecMode::try_from(mode);
 
         // If it's an error, return false
-        if mode.is_err() {
-            return false;
-        }
+        if mode.is_err() { return false; }
 
         // Unwrap since it's not an error
         let mode = mode.unwrap();
@@ -631,12 +627,9 @@ fn switch_handler(context: *mut LucidContext) {
     }
 }
 
-// This is our context_switch function, Bochs calls into this pure assembly
-// function so that we can leave the compiler out of things as we try and save
-// state. Once we save state, we are free to jump to normal Rust functions. 
-// After those are done, we can restore state and return back to Bochs as 
-// necessary. This requires us to also declare the function as an external C
-// function to get its address.
+// This is our context_switch function, this stub is meant to save as much state
+// as necessary before we can start calling regular Rust functions, right now it
+// saves the CPU flags and the GPRs before calling int `switch_handler`.
 extern "C" { fn context_switch(); }
 global_asm!(
     ".global context_switch",
