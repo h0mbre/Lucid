@@ -68,4 +68,8 @@ FATAL: Bochs exited early
 People who have had a hand in the project one way or another thus far:
 - [Brandon Falk](https://twitter.com/gamozolabs)
 - [WorksButNotTested](https://twitter.com/ButTested)
+<<<<<<< HEAD
 - [epi](https://twitter.com/epi052)
+=======
+- [epi](https://twitter.com/epi052)
+>>>>>>> origin/main
