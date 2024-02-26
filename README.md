@@ -8,7 +8,7 @@ The current codebase is more current than the latest blogpost.
 
 # Build
 ## Rust
-### Building the Rust portions of the project is very straightfoward, you should just be able to:
+Building the Rust portions of the project is very straightfoward, you should just be able to:
 
 `git clone https://github.com/h0mbre/Lucid`
 
