@@ -64,3 +64,8 @@ Test alive!
 g_lucid_ctx: 0x562c5e545ee0
 FATAL: Bochs exited early
 ```
+## Contributors
+People who have had a hand in the project one way or another thus far:
+- [Brandon Falk](https://twitter.com/gamozolabs)
+- [WorksButNotTested](https://twitter.com/ButTested)
+- [epi](https://twitter.com/epi052)
