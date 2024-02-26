@@ -3,10 +3,10 @@
 #[macro_export]
 macro_rules! prompt {
     () => ({
-        print!("lucid\u{25CF}\n");
+        print!("\x1b[1;35mlucid\u{00B7}\x1b[0m\n");
     });
     ($($arg:tt)*) => ({
-        print!("lucid\u{25CF} ");
+        print!("\x1b[1;35mlucid\u{00B7}\x1b[0m ");
         println!($($arg)*);
     });
 }
