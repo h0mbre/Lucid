@@ -1,5 +1,9 @@
 /// This file contains miscellaneous helper functions 
 
+// Padding to print Bochs messages in line with prompt, should be length of the
+// prompt
+pub const PROMPT_PADDING: &str = "       ";
+
 #[macro_export]
 macro_rules! prompt {
     () => ({

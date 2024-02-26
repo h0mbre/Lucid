@@ -2,6 +2,7 @@
 
 use crate::context::{LucidContext, Fault, fault_handler};
 use crate::{green, clear};
+use crate::misc::PROMPT_PADDING;
 
 // Anytime Bochs tries to return its own pid_t it gets this
 const BOCHS_PID: i32 = 0x1337;
@@ -113,6 +114,7 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
 
             // Iterate through the iovecs and write the contents
             green!();
+            print!("{}", PROMPT_PADDING);
             for i in 0..iovcnt {
                 bytes_written += write_iovec(iovec_p);
 
