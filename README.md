@@ -49,19 +49,19 @@ lucid· Bochs image path: 'test'
 lucid· Loading Bochs...
 lucid· Bochs mapping: 0x10000 - 0x18000
 lucid· Bochs mapping size: 0x8000
-lucid· Bochs stack: 0x7F5C32BFD000
+lucid· Bochs stack: 0x7F906B7FD000
 lucid· Bochs entry: 0x11058
 lucid· Creating Bochs execution context...
 lucid· Starting Bochs...
-Argument count: 1
-Args:
-   -./bochs
-Test alive!
-Test alive!
-Test alive!
-Test alive!
-Test alive!
-g_lucid_ctx: 0x55a7878d7ce0
+       Argument count: 1
+       Args:
+          -./bochs
+       Test alive!
+       Test alive!
+       Test alive!
+       Test alive!
+       Test alive!
+       g_lucid_ctx: 0x55a26ef9fce0
 fatal: Bochs exited early
 ```
 ## Contributors
