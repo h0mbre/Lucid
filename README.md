@@ -69,3 +69,5 @@ People who have had a hand in the project one way or another thus far:
 - [Brandon Falk](https://twitter.com/gamozolabs)
 - [WorksButNotTested](https://twitter.com/ButTested)
 - [epi](https://twitter.com/epi052)
+- [Kharos](https://twitter.com/Kharosx0)
+- [netspooky](https://twitter.com/netspooky)
