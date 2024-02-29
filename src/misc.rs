@@ -7,10 +7,10 @@ pub const PROMPT_PADDING: &str = "       ";
 #[macro_export]
 macro_rules! prompt {
     () => ({
-        print!("\x1b[1;35mlucid\u{00B7}\x1b[0m\n");
+        print!("\x1b[1;35mlucid\u{2726}\x1b[0m\n");
     });
     ($($arg:tt)*) => ({
-        print!("\x1b[1;35mlucid\u{00B7}\x1b[0m ");
+        print!("\x1b[1;35mlucid\u{2726}\x1b[0m ");
         println!($($arg)*);
     });
 }

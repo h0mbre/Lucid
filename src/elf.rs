@@ -351,18 +351,11 @@ fn parse_section_header(elf_header: &ElfHeader, data: &[u8])
         arr32.copy_from_slice(&sheader_data[0x0..0x4]);
         let name = u32::from_le_bytes(arr32);
 
-        // Get the type
+        // Get the type, we really don't care about checking this value,
+        // everyone will have some weird section types from whatever toolchain
+        // got built
         arr32.copy_from_slice(&sheader_data[0x4..0x8]);
         let typ = u32::from_le_bytes(arr32);
-
-        // Validate the type
-        match typ {
-            0..=0x13 => (),
-            0x60000000 => (),
-            _ => return { Err(LucidErr::from(
-                "Bad Section Header Invalid Section Type"))
-            }
-        }
 
         // Get the flags
         arr64.copy_from_slice(&sheader_data[0x8..0x10]);
