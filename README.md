@@ -7,7 +7,6 @@ Lucid is currently in the early stages of development and can load and run a `-s
 The current codebase is more current than the latest blogpost.
 
 # Build
-## Rust
 Now that we have packaged a Bochs binary in the repository, building Lucid and running Bochs is as simple as:
 
 `git clone https://github.com/h0mbre/Lucid`
@@ -61,7 +60,7 @@ Please choose one: [6] Non-existent file fd: 0
 fatal: File I/O on non-existent file
 ```
 
-## Musl-Toolchain
+# Musl-Toolchain
 In order to replicate my steps of building Bochs as `--static-pie` against a custom Musl, you'll need to do the following:
 - `git clone https://github.com/richfelker/musl-cross-make`
 - `cd musl-cross-make`
@@ -74,7 +73,7 @@ In order to replicate my steps of building Bochs as `--static-pie` against a cus
 
 You should now have a complete Lucid-compatible Musl toolchain
 
-## Bochs
+# Bochs
 Now to build Bochs, all you have to do is create this configuration file:
 ```bash
 CC="/path/to/musl-cross-make/output/bin/x86_64-linux-musl-gcc"
@@ -111,7 +110,7 @@ Finally, just `make` and Bochs should be built `static-pie` and be compatible wi
 
 This configuration file is called `bochs_conf.lucid` in the repo
 
-## Contributors
+# Contributors
 People who have had a hand in the project one way or another thus far:
 - [Brandon Falk](https://twitter.com/gamozolabs)
 - [WorksButNotTested](https://twitter.com/ButTested)
