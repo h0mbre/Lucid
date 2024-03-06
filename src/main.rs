@@ -7,6 +7,8 @@ mod loader;
 mod context;
 mod misc;
 mod syscall;
+mod mmu;
+mod files;
 
 use loader::load_bochs;
 use context::{start_bochs, LucidContext, Fault};
@@ -63,6 +65,19 @@ fn main() {
     prompt!("Creating Bochs execution context...");
     let mut lucid_context = Box::new(LucidContext::new(bochs.entry, bochs.rsp)
         .unwrap_or_else(|error| { fatal!(error); }));
+
+    // Update user with context address
+    prompt!("LucidContext: 0x{:X}",
+        &*lucid_context as *const LucidContext as usize);
+
+    // Update user with MMU details
+    prompt!("MMU Break Pool: 0x{:X} - 0x{:X}",
+        lucid_context.mmu.brk_base,
+        lucid_context.mmu.brk_base + lucid_context.mmu.brk_size);
+    
+    prompt!("MMU Mmap Pool: 0x{:X} - 0x{:X}",
+        lucid_context.mmu.mmap_base,
+        lucid_context.mmu.mmap_base + lucid_context.mmu.mmap_size);
 
     // Start executing Bochs
     prompt!("Starting Bochs...");

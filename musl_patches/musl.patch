@@ -1,6 +1,6 @@
-diff -urN musl-1.2.4/arch/x86_64/syscall_arch.h musl-custom/arch/x86_64/syscall_arch.h
+diff -urN musl-1.2.4/arch/x86_64/syscall_arch.h custom_musl/arch/x86_64/syscall_arch.h
 --- musl-1.2.4/arch/x86_64/syscall_arch.h	2023-05-01 23:39:41.000000000 -0400
-+++ musl-custom/arch/x86_64/syscall_arch.h	2024-02-23 18:02:31.863614788 -0500
++++ custom_musl/arch/x86_64/syscall_arch.h	2024-03-05 19:17:44.749399381 -0500
 @@ -1,8 +1,13 @@
  #define __SYSCALL_LL_E(x) (x)
  #define __SYSCALL_LL_O(x) (x)
@@ -75,10 +75,10 @@ diff -urN musl-1.2.4/arch/x86_64/syscall_arch.h musl-custom/arch/x86_64/syscall_
  	unsigned long ret;
  	register long r10 __asm__("r10") = a4;
  	register long r8 __asm__("r8") = a5;
-diff -urN musl-1.2.4/include/lucid.h musl-custom/include/lucid.h
+diff -urN musl-1.2.4/include/lucid.h custom_musl/include/lucid.h
 --- musl-1.2.4/include/lucid.h	1969-12-31 19:00:00.000000000 -0500
-+++ musl-custom/include/lucid.h	2024-02-25 20:54:04.822091750 -0500
-@@ -0,0 +1,94 @@
++++ custom_musl/include/lucid.h	2024-03-05 19:20:37.510720352 -0500
+@@ -0,0 +1,113 @@
 +#ifndef LUCID_H
 +#define LUCID_H
 +
@@ -90,6 +90,27 @@ diff -urN musl-1.2.4/include/lucid.h musl-custom/include/lucid.h
 +//
 +// The Calling Convention we use is this
 +// r15 - The address of the lucid_ctx_t (g_lucid_ctx)
++
++// These symbols are not defined in Musl
++#include <unistd.h>
++#include <fcntl.h>
++#include <sys/mman.h>
++
++#ifndef lseek64
++#define lseek64 lseek
++#endif /* lseek64 */
++
++#ifndef __printf_chk
++#define __printf_chk printf
++#endif /* __printf_chk */
++
++#ifndef __open64_2
++#define __open64_2 open
++#endif /* __open64_2 */
++
++#ifndef mmap64
++#define mmap64 mmap
++#endif /* mmap64 */
 +
 +// Reasons for exiting a VM
 +typedef enum { 
@@ -110,11 +131,8 @@ diff -urN musl-1.2.4/include/lucid.h musl-custom/include/lucid.h
 +
 +// A fake TLS structure that Bochs will access instead of the real TLS
 +typedef struct lucid_tls {
-+    uint8_t padding1[52];
-+    int lucid_errno;        
-+    uint8_t padding2[144];
++    uint8_t padding[336];
 +} lucid_tls_t;
-+
 +
 +// A data structure to hold all of our GPR data for both Lucid and Bochs when
 +// we need to save state, say for a context-switch for example
@@ -159,6 +177,7 @@ diff -urN musl-1.2.4/include/lucid.h musl-custom/include/lucid.h
 +    size_t bochs_rsp;
 +    lucid_tls_t tls;
 +    size_t magic;
++    /* Opaque Members */
 +} lucid_ctx_t;
 +
 +// Pointer to the global execution context, if running inside Lucid, this will
@@ -173,9 +192,9 @@ diff -urN musl-1.2.4/include/lucid.h musl-custom/include/lucid.h
 +extern lucid_syscall_p g_lucid_syscall;
 +
 +#endif // LUCID_H
-diff -urN musl-1.2.4/ldso/dlstart.c musl-custom/ldso/dlstart.c
+diff -urN musl-1.2.4/ldso/dlstart.c custom_musl/ldso/dlstart.c
 --- musl-1.2.4/ldso/dlstart.c	2023-05-01 23:39:41.000000000 -0400
-+++ musl-custom/ldso/dlstart.c	2024-02-23 16:35:06.042923890 -0500
++++ custom_musl/ldso/dlstart.c	2024-03-05 19:17:44.749399381 -0500
 @@ -2,6 +2,8 @@
  #include "dynlink.h"
  #include "libc.h"
@@ -243,9 +262,9 @@ diff -urN musl-1.2.4/ldso/dlstart.c musl-custom/ldso/dlstart.c
  #if DL_FDPIC
  	for (i=0; i<DYN_CNT; i++) {
  		if (i==DT_RELASZ || i==DT_RELSZ) continue;
-diff -urN musl-1.2.4/src/env/__init_tls.c musl-custom/src/env/__init_tls.c
+diff -urN musl-1.2.4/src/env/__init_tls.c custom_musl/src/env/__init_tls.c
 --- musl-1.2.4/src/env/__init_tls.c	2023-05-01 23:39:41.000000000 -0400
-+++ musl-custom/src/env/__init_tls.c	2024-02-23 16:42:42.031399681 -0500
++++ custom_musl/src/env/__init_tls.c	2024-03-05 19:17:44.749399381 -0500
 @@ -11,11 +11,16 @@
  
  volatile int __thread_list_lock;
@@ -283,9 +302,9 @@ diff -urN musl-1.2.4/src/env/__init_tls.c musl-custom/src/env/__init_tls.c
  	}
  
  	/* Failure to initialize thread pointer is always fatal. */
-diff -urN musl-1.2.4/src/lucid/lucid.c musl-custom/src/lucid/lucid.c
+diff -urN musl-1.2.4/src/lucid/lucid.c custom_musl/src/lucid/lucid.c
 --- musl-1.2.4/src/lucid/lucid.c	1969-12-31 19:00:00.000000000 -0500
-+++ musl-custom/src/lucid/lucid.c	2024-02-23 18:03:54.823323980 -0500
++++ custom_musl/src/lucid/lucid.c	2024-03-05 19:17:44.749399381 -0500
 @@ -0,0 +1,7 @@
 +#include <lucid.h>
 +

@@ -184,14 +184,13 @@ fn parse_program_header(elf_header: &ElfHeader, data: &[u8])
     let remaining = data.len() - ELF_HDR_SIZE;
 
     // Safely calculate how large the program header table is supposed to be
-    let table_size = elf_header.phentsize.checked_mul(elf_header.phnum);
-    if table_size.is_none() {
+    let Some(table_size) = elf_header.phentsize.checked_mul(elf_header.phnum)
+        else {
         return Err(LucidErr::from("Bad Program Header Size Overflow"));
-    }
-    let table_size = table_size.unwrap() as usize;
+    };
 
     // Check to see if we have enough data left
-    if table_size > remaining {
+    if table_size as usize > remaining {
         return Err(LucidErr::from("Bad Program Header Insufficient Data"));
     }
 
@@ -325,14 +324,13 @@ fn parse_section_header(elf_header: &ElfHeader, data: &[u8])
     let remaining = data.len() - consumed;
 
     // Safely calculate how large the section header table is supposed to be
-    let table_size = elf_header.shentsize.checked_mul(elf_header.shnum);
-    if table_size.is_none() {
+    let Some(table_size) = elf_header.shentsize.checked_mul(elf_header.shnum)
+        else {
         return Err(LucidErr::from("Bad Section Header Size Overflow"));
-    }
-    let table_size = table_size.unwrap() as usize;
+    };
 
     // Check to see if we have enough data left
-    if table_size > remaining {
+    if table_size as usize > remaining {
         return Err(LucidErr::from("Bad Section Header Insufficient Data"));
     }
 

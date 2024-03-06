@@ -6,16 +6,19 @@
 
 use std::fmt;
 use std::arch::{global_asm, asm};
-use core::arch::x86_64::{_xgetbv, _xsave64, _fxsave64, _xrstor64,_fxrstor64};
+use core::arch::x86_64::{_xgetbv, _xsave64, _fxsave64, _xrstor64, _fxrstor64};
 
 use crate::err::LucidErr;
 use crate::syscall::lucid_syscall;
+use crate::mmu::Mmu;
+use crate::files::FileTable;
+use crate::fault;
 
 // Duh
 const PAGE_SIZE: usize = 0x1000;
 
 // Magic number member of the LucidContext, chosen by ChatGPT 
-const CTX_MAGIC: usize = 0x74DFF25D576D6F4D;
+pub const CTX_MAGIC: usize = 0x74DFF25D576D6F4D;
 
 // In the context-switching code here, we can't really continue if we encounter
 // errors at this point, so we're using this error type of `Fault` to somewhat
@@ -36,7 +39,13 @@ pub enum Fault {
     BadBochsExit,
     BadExecMode,
     Syscall,
+    SyscallMagic,
     EarlyBochsExit,
+    InvalidBrk,
+    InvalidMmap,
+    NullPath,
+    InvalidPathStr,
+    NoFile,
 }
 
 // So we can plumb these up into LucidErrs if we need to
@@ -54,7 +63,14 @@ impl fmt::Display for Fault {
             Fault::BadBochsExit => "Invalid Bochs exit reason",
             Fault::BadExecMode => "Invalid execution mode",
             Fault::Syscall => "Fault during syscall",
+            Fault::SyscallMagic => "Invalid magic value in syscall",
             Fault::EarlyBochsExit => "Bochs exited early",
+            Fault::InvalidBrk => "Invalid `brk` request",
+            Fault::InvalidMmap => "Invalid `mmap` request",
+            Fault::NullPath => "Open path was NULL",
+            Fault::InvalidPathStr => "Open path contained invalid characters",
+            Fault::NoFile => "File I/O on non-existent file",
+
         };
         write!(f, "{}", description)
     }
@@ -133,21 +149,33 @@ impl TryFrom<i32> for ExecMode {
 
 // We have to abstract away and sandbox TLS access from Bochs, so when Bochs 
 // asks for TLS, we give it a pointer to this struct which is an inline member
-// of LucidContext
+// of LucidContext. This is modeled directly after `builtin_tls` in __init_tls.c
+//
+// static struct builtin_tls {
+//	char c;
+//	struct pthread pt;
+//	void *space[16];
+//} builtin_tls[1];
+//
+// pthread_t is 200 bytes; errno is at offset 52 
 #[repr(C)]
 #[derive(Clone)]
 pub struct Tls {
-    padding: [u8; 52], // Padding to offset of errno which is 52-bytes
-    errno: i32,
+    padding0: [u8; 8], // char c
+    padding1: [u8; 52], // Padding to offset of errno which is 52-bytes
+    pub errno: i32,
     padding2: [u8; 144], // Additional padding to get to 200-bytes total
+    padding3: [u8; 128], // 16 void * values
 }
 
 impl Tls {
     fn new() -> Self {
         Tls {
-            padding: [0; 52],
+            padding0: [0; 8],
+            padding1: [0; 52],
             errno: 0,
             padding2: [0; 144],
+            padding3: [0; 128],
         }
     }
 }
@@ -193,8 +221,13 @@ pub struct LucidContext {
     xcr0: usize,                // The xcr0 value when we initialize
     bochs_entry: usize,         // Entry point for Bochs ELF
     bochs_rsp: usize,           // Stack that Bochs uses
-    tls: Tls,                   // Bochs' TLS instance
-    magic: usize,               // Magic value for debugging purposes
+    pub tls: Tls,               // Bochs' TLS instance
+    pub magic: usize,           // Magic value for debugging purposes
+
+    /* Opaque Members start here, not defined on C side */
+    pub mmu: Mmu,               // Bochs' memory manager
+    pub clock_time: usize,      // Nanoseconds
+    pub files: FileTable,       // Bochs' files
 }
 
 // Functions taking a pointer as an arg should have been NULL-checked by caller
@@ -209,13 +242,12 @@ impl LucidContext {
         let exit_reason = unsafe { (*context).exit_reason as i32 };
 
         // Try to cast the i32 to a VmExit enum
-        let exit_reason = VmExit::try_from(exit_reason);
+        let Ok(exit_reason) = VmExit::try_from(exit_reason) else {
+            return Err(());
+        };
 
-        // If it's an error return it
-        if exit_reason.is_err() { return Err(()); }
-
-        // Unwrap safely
-        Ok(exit_reason.unwrap())
+        // Return reason
+        Ok(exit_reason)
     }
 
     pub fn get_save_inst(context: *const LucidContext) ->
@@ -224,13 +256,12 @@ impl LucidContext {
         let save_inst = unsafe { (*context).save_inst as i32 };
         
         // Try to cast the i32 to a SaveInst enum
-        let save_inst = SaveInst::try_from(save_inst);
+        let Ok(save_inst) = SaveInst::try_from(save_inst) else {
+            return Err(());
+        };
 
-        // If it's an error, return an error
-        if save_inst.is_err() { return Err(()) }
-
-        // Unwrap since it's not an error
-        Ok(save_inst.unwrap())
+        // Return save instruction
+        Ok(save_inst)
     }
 
     pub fn is_lucid_mode(context: *const LucidContext) ->
@@ -239,13 +270,9 @@ impl LucidContext {
         let mode = unsafe { (*context).mode as i32 };
         
         // Try to cast the i32 to a ExecMode enum
-        let mode = ExecMode::try_from(mode);
-
-        // If it's an error, return false
-        if mode.is_err() { return false; }
-
-        // Unwrap since it's not an error
-        let mode = mode.unwrap();
+        let Ok(mode) = ExecMode::try_from(mode) else {
+            return false;
+        };
 
         // Return true or false
         matches!(mode, ExecMode::Lucid)
@@ -257,13 +284,9 @@ impl LucidContext {
         let mode = unsafe { (*context).mode as i32 };
         
         // Try to cast the i32 to a ExecMode enum
-        let mode = ExecMode::try_from(mode);
-
-        // If it's an error, return false
-        if mode.is_err() { return false; }
-
-        // Unwrap since it's not an error
-        let mode = mode.unwrap();
+        let Ok(mode) = ExecMode::try_from(mode) else {
+            return false;
+        };
 
         // Return true or false
         matches!(mode, ExecMode::Bochs)
@@ -340,6 +363,12 @@ impl LucidContext {
         // Create a new Tls
         let tls = Tls::new();
 
+        // Create an MMU
+        let mmu = Mmu::new()?;
+
+        // Create a new FileTable
+        let files = FileTable::new()?;
+
         // Build and return the execution context so we can fuzz!
         Ok(LucidContext {
             context_switch: context_switch as usize,
@@ -357,7 +386,10 @@ impl LucidContext {
             bochs_entry: entry,
             bochs_rsp: rsp,
             tls,
-            magic: CTX_MAGIC, 
+            magic: CTX_MAGIC,
+            mmu,
+            clock_time: 0,
+            files,
         })
     }
 }
@@ -531,27 +563,25 @@ fn jump_to_bochs(context: *mut LucidContext) {
 fn switch_handler(context: *mut LucidContext) {
     // We have to make sure this bad boy isn't NULL 
     if context.is_null() {
-        fault_handler(context, Fault::NullContext);
+        fault!(context, Fault::NullContext);
     }
 
     // Ensure that we have our magic value intact, if this is wrong, then we 
     // are in some kind of really bad state and just need to die
     let magic = LucidContext::get_magic(context);
     if magic != CTX_MAGIC {
-        fault_handler(context, Fault::BadMagic);
+        fault!(context, Fault::BadMagic);
     }
 
     // Before we do anything else, save the extended state
-    let save_inst = LucidContext::get_save_inst(context);
-    if save_inst.is_err() {
-        fault_handler(context, Fault::BadSaveInstruction);
-    }
-    let save_inst = save_inst.unwrap();
+    let Ok(save_inst) = LucidContext::get_save_inst(context) else {
+        fault!(context, Fault::BadSaveInstruction);
+    };
 
     // Get the save area
     let save_area = LucidContext::get_save_area(context);
     if save_area == 0 || save_area % 64 != 0 {
-        fault_handler(context, Fault::BadSaveArea);
+        fault!(context, Fault::BadSaveArea);
     }
 
     // Determine save logic
@@ -562,7 +592,7 @@ fn switch_handler(context: *mut LucidContext) {
 
             // Make sure this matches the original xcr0
             if xcr0 !=  unsafe { (*context).xcr0 } as u64 {
-                fault_handler(context, Fault::BadXcr0);
+                fault!(context, Fault::BadXcr0);
             }
 
             // Call xsave to save the extended state to Bochs save area
@@ -576,11 +606,9 @@ fn switch_handler(context: *mut LucidContext) {
     }
 
     // Try to get the VmExit reason 
-    let exit_reason = LucidContext::get_exit_reason(context);
-    if exit_reason.is_err() {
-        fault_handler(context, Fault::BadExitReason);
-    }
-    let exit_reason = exit_reason.unwrap();
+    let Ok(exit_reason) = LucidContext::get_exit_reason(context) else {
+        fault!(context, Fault::BadExitReason);
+    };
     
     // Handle Lucid context switches here
     if LucidContext::is_lucid_mode(context) {
@@ -590,19 +618,19 @@ fn switch_handler(context: *mut LucidContext) {
                 jump_to_bochs(context);
             },
             _ => {
-                fault_handler(context, Fault::BadLucidExit);
+                fault!(context, Fault::BadLucidExit);
             }
         }
     }
 
     // Handle Bochs context switches here
     else if LucidContext::is_bochs_mode(context) {
-        fault_handler(context, Fault::BadBochsExit);
+        fault!(context, Fault::BadBochsExit);
     }
 
     // Should never reach this, right?
     else {
-        fault_handler(context, Fault::BadExecMode);
+        fault!(context, Fault::BadExecMode);
     }
 
     // Restore extended state, determine restore logic
@@ -733,7 +761,13 @@ pub fn fault_handler(contextp: *mut LucidContext, fault: Fault) {
         Fault::BadBochsExit => context.fault = Fault::BadBochsExit,
         Fault::BadExecMode => context.fault = Fault::BadExecMode,
         Fault::Syscall => context.fault = Fault::Syscall,
+        Fault::SyscallMagic => context.fault = Fault::SyscallMagic,
         Fault::EarlyBochsExit => context.fault = Fault::EarlyBochsExit,
+        Fault::InvalidBrk => context.fault = Fault::InvalidBrk,
+        Fault::InvalidMmap => context.fault = Fault::InvalidMmap,
+        Fault::NullPath => context.fault = Fault::NullPath,
+        Fault::InvalidPathStr => context.fault = Fault::InvalidPathStr,
+        Fault::NoFile => context.fault = Fault::NoFile,
     }
 
     // Attempt to restore Lucid execution
