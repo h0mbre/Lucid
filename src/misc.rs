@@ -51,3 +51,27 @@ macro_rules! clear {
         print!("\x1b[0m");
     });
 }
+
+// Retrieve the value corresponding to a given command line argument
+pub fn get_arg_val(arg: &str) -> Option<String> {
+    // Retrieve envvars
+    let args: Vec<String> = std::env::args().collect();
+
+    // Check to see if we have the provided args
+    if !args.contains(&arg.to_string()) { return None; }
+
+    // Search for corresponding value
+    let mut val = None;
+    for (i, a) in args.iter().enumerate() {
+        if a == arg {
+            if i >= args.len() - 1 {
+                return None;
+            }
+            
+            val = Some(args[i + 1].clone());
+            break;
+        }
+    }
+
+    val
+}

@@ -1,6 +1,7 @@
 /// This file contains all of the logic related to file I/O from Bochs
 use std::fs::read;
 
+use crate::misc::get_arg_val;
 use crate::err::LucidErr;
 
 #[derive(Clone)]
@@ -11,36 +12,17 @@ pub struct FileTable {
 impl FileTable {
     // We will attempt to open and read all of our required files ahead of time
     pub fn new() -> Result<Self, LucidErr> {
-        // Retrieve .bochsrc
-        let args: Vec<String> = std::env::args().collect();
-
-        // Check to see if we have a "--bochsrc-path" argument
-        if args.len() < 3 || !args.contains(&"--bochsrc-path".to_string()) {
-            return Err(LucidErr::from("No `--bochsrc-path` argument"));
-        }
-
-        // Search for the value
-        let mut bochsrc = None;
-        for (i, arg) in args.iter().enumerate() {
-            if arg == "--bochsrc-path" {
-                if i >= args.len() - 1 {
-                    return Err(
-                        LucidErr::from("Invalid `--bochsrc-path` value"));
-                }
-            
-                bochsrc = Some(args[i + 1].clone());
-                break;
-            }
-        }
-
-        if bochsrc.is_none() { return Err(
-            LucidErr::from("No `--bochsrc-path` value provided")); }
-        let bochsrc = bochsrc.unwrap();
+        // Retrive command-line arg value
+        let Some(bochsrc) = get_arg_val("--bochsrc-path") else {
+            return Err(
+                LucidErr::from("No '--bochsrc-path' argument")
+            );
+        };
 
         // Try to read the file
         let Ok(data) = read(&bochsrc) else { 
             return Err(LucidErr::from(
-                &format!("Unable to read data BLEGH from '{}'", bochsrc)));
+                &format!("Unable to read data from '{}'", bochsrc)));
         };
 
         // Create a file now for .bochsrc

@@ -13,41 +13,14 @@ mod files;
 use loader::load_bochs;
 use context::{start_bochs, LucidContext, Fault};
 use err::LucidErr;
-
-// Just create a fatal LucidErr if no image is provided
-fn fatal_image() {
-    fatal!(LucidErr::from("--bochs-image <image path> is required"));
-}
-
-// Parse the CLI args for the `--bochs-path` value
-fn get_bochs_image() -> String {
-    // Retrieve the Bochs image with some simple arg parsing for now
-    let args: Vec<String> = std::env::args().collect();
-
-    // Check to see if we have a "--bochs-image" argument (required)
-    if args.len() < 3 || !args.contains(&"--bochs-image".to_string()) { 
-        fatal_image();
-    }
-
-    // Search for path value in the most readable dumb way as possible
-    let mut path = None;
-    for (i, arg) in args.iter().enumerate() {
-        if arg == "--bochs-image" {
-            if i >= args.len() - 1 {
-                fatal_image();
-            }
-
-            path = Some(args[i + 1].clone());
-            break;
-        }
-    }
-    if path.is_none() { fatal_image(); }
-    path.unwrap()
-}
+use misc::get_arg_val;
 
 fn main() {
     // Retrieve the Bochs image with some simple arg parsing for now
-    let path = get_bochs_image();
+    let Some(path) = get_arg_val("--bochs-image") else {
+        fatal!(LucidErr::from("
+            No '--bochs-image' argument "));
+    };
     prompt!("Bochs image path: '{}'", path);
 
     // Load Bochs into our process space
