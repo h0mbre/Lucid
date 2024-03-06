@@ -58,7 +58,7 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
         0x0 => {
             // Check to make sure we have the requested file-descriptor
             let Some(file) = context.files.get_file(a1 as i32) else {
-                //println!("Non-existent file fd: {}", a1);
+                println!("Non-existent file fd: {}", a1);
                 fault!(contextp, Fault::NoFile);
             };
 

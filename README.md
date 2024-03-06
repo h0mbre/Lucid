@@ -8,62 +8,109 @@ The current codebase is more current than the latest blogpost.
 
 # Build
 ## Rust
-Building the Rust portions of the project is very straightfoward, you should just be able to:
+Now that we have packaged a Bochs binary in the repository, building Lucid and running Bochs is as simple as:
 
 `git clone https://github.com/h0mbre/Lucid`
 
 `cd Lucid`
 
-`cargo build --release`
+`cargo run -- --bochs-image bochs --bochsrc-path bochsrc`
 
-## Musl
-Lucid requires Musl libc 1.2.4, modified with Lucid-specific patches. [Download](https://musl.libc.org/releases/musl-1.2.4.tar.gz) and extract Musl:
-
-`tar -xzf musl-1.2.4.tar.gz`
-
-Apply Lucid patches to Musl:
-
-`cd path/to/musl-1.2.4`
-
-`patch -p1 < path/to/musl_patches/musl.patch`
-
-Build and install the customized Musl:
-
-`./configure`
-
-`make`
-
-`sudo make install`
-
-## Test Application
-Confirm that Musl is now installed at `/usr/local/musl`, then you can:
-
-`gcc --specs=/path/to/musl_specs/musl-gcc.specs test.c -o test -g --static-pie`
-
-# Usage
-`./lucid --bochs-image /path/to/test (--bochs-args)`
-
-## Expected Output
 ```terminal
-lucid· Bochs image path: 'test'
-lucid· Loading Bochs...
-lucid· Bochs mapping: 0x10000 - 0x18000
-lucid· Bochs mapping size: 0x8000
-lucid· Bochs stack: 0x7F906B7FD000
-lucid· Bochs entry: 0x11058
-lucid· Creating Bochs execution context...
-lucid· Starting Bochs...
-       Argument count: 1
-       Args:
-          -./bochs
-       Test alive!
-       Test alive!
-       Test alive!
-       Test alive!
-       Test alive!
-       g_lucid_ctx: 0x55a26ef9fce0
-fatal: Bochs exited early
+lucid✦ Bochs image path: 'bochs'
+lucid✦ Loading Bochs...
+lucid✦ Bochs mapping: 0x10000 - 0x1E84000
+lucid✦ Bochs mapping size: 0x1E74000
+lucid✦ Bochs stack: 0x7FCCE95BC000
+lucid✦ Bochs entry: 0x11CE35
+lucid✦ Creating Bochs execution context...
+lucid✦ LucidContext: 0x56174B6A1F00
+lucid✦ MMU Break Pool: 0x7FCCE81F8000 - 0x7FCCE8200000
+lucid✦ MMU Mmap Pool: 0x7FCCE8200000 - 0x7FCCE9200000
+lucid✦ Starting Bochs...
+========================================================================
+                        Bochs x86 Emulator 2.7
+              Built from SVN snapshot on August  1, 2021
+                Timestamp: Sun Aug  1 10:07:00 CEST 2021
+========================================================================
+00000000000i[      ] BXSHARE not set. using compile time default '/usr/local/share/bochs'
+00000000000i[      ] reading configuration from .bochsrc
+00000000000e[      ] .bochsrc:759: ataX-master/slave CHS set to 0/0/0 - autodetection enabled
+------------------------------
+Bochs Configuration: Main Menu
+------------------------------
+
+This is the Bochs Configuration Interface, where you can describe the
+machine that you want to simulate.  Bochs has already searched for a
+configuration file (typically called bochsrc.txt) and loaded it if it
+could be found.  When you are satisfied with the configuration, go
+ahead and start the simulation.
+
+You can also start bochs with the -q option to skip these menus.
+
+1. Restore factory default configuration
+2. Read options from...
+3. Edit options
+4. Save options to...
+5. Restore the Bochs state from...
+6. Begin simulation
+7. Quit now
+
+Please choose one: [6] Non-existent file fd: 0
+
+fatal: File I/O on non-existent file
 ```
+
+## Musl-Toolchain
+In order to replicate my steps of building Bochs as `--static-pie` against a custom Musl, you'll need to do the following:
+- `git clone https://github.com/richfelker/musl-cross-make`
+- `cd musl-cross-make`
+- `make TARGET=x86_64-linux-musl install`
+- This should've built a complete toolchain and you should see both `output/bin/x86_64-linux-musl-gcc` and `output/bin/x86_64-linux-musl-g++`
+- Apply our custom Musl patches to `musl-1.2.4` in `musl-cross-make/musl-1.2.4`
+- Patches can be applied with some variation of `patch -p1 < /path/to/Lucid/musl_patches/musl.patch`
+- Configure Musl to be built overtop of the completed toolchain's libc with `./configure --prefix=/path/to/musl-cross-make/output/x86_64-linux-musl`
+- `make install`
+
+You should now have a complete Lucid-compatible Musl toolchain
+
+## Bochs
+Now to build Bochs, all you have to do is create this configuration file:
+```bash
+CC="/path/to/musl-cross-make/output/bin/x86_64-linux-musl-gcc"
+CXX="/path/to/musl-cross-make/output/bin/x86_64-linux-musl-g++"
+CFLAGS="-Wall --static-pie -fPIE"
+CXXFLAGS="$CFLAGS"
+
+export CC
+export CXX
+export CFLAGS
+export CXXFLAGS
+
+./configure --enable-sb16 \
+                --enable-all-optimizations \
+                --enable-long-phy-address \
+                --enable-a20-pin \
+                --enable-cpu-level=6 \
+                --enable-x86-64 \
+                --enable-vmx=2 \
+                --enable-pci \
+                --enable-usb \
+                --enable-usb-ohci \
+                --enable-usb-ehci \
+                --enable-usb-xhci \
+                --enable-busmouse \
+                --enable-e1000 \
+                --enable-show-ips \
+                --enable-avx \
+                --with-nogui
+```
+Now you can simply `./path/to/this/config/file` to configure the Bochs build
+
+Finally, just `make` and Bochs should be built `static-pie` and be compatible with Lucid
+
+This configuration file is called `bochs_conf.lucid` in the repo
+
 ## Contributors
 People who have had a hand in the project one way or another thus far:
 - [Brandon Falk](https://twitter.com/gamozolabs)

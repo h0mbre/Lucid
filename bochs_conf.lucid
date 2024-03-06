@@ -1,0 +1,29 @@
+#!/bin/sh
+
+CC="/home/h0mbre/musl_stuff/musl-cross-make/output/bin/x86_64-linux-musl-gcc"
+CXX="/home/h0mbre/musl_stuff/musl-cross-make/output/bin/x86_64-linux-musl-g++"
+CFLAGS="-Wall --static-pie -fPIE"
+CXXFLAGS="$CFLAGS"
+
+export CC
+export CXX
+export CFLAGS
+export CXXFLAGS
+
+./configure --enable-sb16 \
+                --enable-all-optimizations \
+                --enable-long-phy-address \
+                --enable-a20-pin \
+                --enable-cpu-level=6 \
+                --enable-x86-64 \
+                --enable-vmx=2 \
+                --enable-pci \
+                --enable-usb \
+                --enable-usb-ohci \
+                --enable-usb-ehci \
+                --enable-usb-xhci \
+                --enable-busmouse \
+                --enable-e1000 \
+                --enable-show-ips \
+                --enable-avx \
+                --with-nogui
