@@ -66,7 +66,7 @@ impl FileTable {
             }
         }
 
-        // We didn't find the file, this really should never happen?
+        // We didn't find the file
         Err(())
     }
 

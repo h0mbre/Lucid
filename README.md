@@ -2,7 +2,7 @@
 Lucid is an educational fuzzing project which aims to create a Bochs emulator based snapshot fuzzer capable of fuzzing traditionally hard to fuzz targets such as kernels and browsers. Lucid is based on a fuzzer originally conceived of and developed by [Brandon Falk](https://twitter.com/gamozolabs). Lucid utilizes changes to Musl in order to affect Bochs' behavior and achieve a functional sandbox that will allow Lucid to run Bochs within its virtual address space without being able to interact directly with the operating system. The goal of the sandbox is to achieve determinism. 
 
 # Under Development
-Lucid is currently in the early stages of development and can load and run a `-static-pie` test program as well as `Bochs` itself. Lucid is also capable of sandboxing the test program from syscalls and access to thread-local-storage. More sandboxing work is required. You can catch up on development efforts on the blog detailing each development step: https://h0mbre.github.io/New_Fuzzer_Project/.
+Lucid is currently in the early stages of development and can load and run a `-static-pie` Bochs to its default start menu. More emulation and sandboxing work is required; however, that progress is on hold until a candidate fuzzing target is chosen. You can catch up on development efforts on the blog detailing each development step in blog posts titled "Fuzzer Development": https://h0mbre.github.io/New_Fuzzer_Project/.
 
 The current codebase is more current than the latest blogpost.
 
