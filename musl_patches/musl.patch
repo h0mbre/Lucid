@@ -1,6 +1,18 @@
-diff -urN musl-1.2.4/arch/x86_64/syscall_arch.h custom_musl/arch/x86_64/syscall_arch.h
+diff -urN '--exclude=config.mak' musl-1.2.4/arch/x86_64/pthread_arch.h custom_musl/arch/x86_64/pthread_arch.h
+--- musl-1.2.4/arch/x86_64/pthread_arch.h	2023-05-01 23:39:41.000000000 -0400
++++ custom_musl/arch/x86_64/pthread_arch.h	2024-03-09 15:59:58.675765496 -0500
+@@ -1,5 +1,8 @@
++#include <lucid.h>
++
+ static inline uintptr_t __get_tp()
+ {
++	if (g_lucid_ctx) { return (uintptr_t)(g_lucid_ctx->fs_reg); }
+ 	uintptr_t tp;
+ 	__asm__ ("mov %%fs:0,%0" : "=r" (tp) );
+ 	return tp;
+diff -urN '--exclude=config.mak' musl-1.2.4/arch/x86_64/syscall_arch.h custom_musl/arch/x86_64/syscall_arch.h
 --- musl-1.2.4/arch/x86_64/syscall_arch.h	2023-05-01 23:39:41.000000000 -0400
-+++ custom_musl/arch/x86_64/syscall_arch.h	2024-03-05 19:17:44.749399381 -0500
++++ custom_musl/arch/x86_64/syscall_arch.h	2024-03-09 15:59:58.675765496 -0500
 @@ -1,8 +1,13 @@
  #define __SYSCALL_LL_E(x) (x)
  #define __SYSCALL_LL_O(x) (x)
@@ -75,10 +87,10 @@ diff -urN musl-1.2.4/arch/x86_64/syscall_arch.h custom_musl/arch/x86_64/syscall_
  	unsigned long ret;
  	register long r10 __asm__("r10") = a4;
  	register long r8 __asm__("r8") = a5;
-diff -urN musl-1.2.4/include/lucid.h custom_musl/include/lucid.h
+diff -urN '--exclude=config.mak' musl-1.2.4/include/lucid.h custom_musl/include/lucid.h
 --- musl-1.2.4/include/lucid.h	1969-12-31 19:00:00.000000000 -0500
-+++ custom_musl/include/lucid.h	2024-03-05 19:20:37.510720352 -0500
-@@ -0,0 +1,113 @@
++++ custom_musl/include/lucid.h	2024-03-09 15:59:58.679765485 -0500
+@@ -0,0 +1,114 @@
 +#ifndef LUCID_H
 +#define LUCID_H
 +
@@ -177,6 +189,7 @@ diff -urN musl-1.2.4/include/lucid.h custom_musl/include/lucid.h
 +    size_t bochs_rsp;
 +    lucid_tls_t tls;
 +    size_t magic;
++    size_t fs_reg;
 +    /* Opaque Members */
 +} lucid_ctx_t;
 +
@@ -192,9 +205,9 @@ diff -urN musl-1.2.4/include/lucid.h custom_musl/include/lucid.h
 +extern lucid_syscall_p g_lucid_syscall;
 +
 +#endif // LUCID_H
-diff -urN musl-1.2.4/ldso/dlstart.c custom_musl/ldso/dlstart.c
+diff -urN '--exclude=config.mak' musl-1.2.4/ldso/dlstart.c custom_musl/ldso/dlstart.c
 --- musl-1.2.4/ldso/dlstart.c	2023-05-01 23:39:41.000000000 -0400
-+++ custom_musl/ldso/dlstart.c	2024-03-05 19:17:44.749399381 -0500
++++ custom_musl/ldso/dlstart.c	2024-03-09 15:59:58.691765446 -0500
 @@ -2,6 +2,8 @@
  #include "dynlink.h"
  #include "libc.h"
@@ -262,9 +275,9 @@ diff -urN musl-1.2.4/ldso/dlstart.c custom_musl/ldso/dlstart.c
  #if DL_FDPIC
  	for (i=0; i<DYN_CNT; i++) {
  		if (i==DT_RELASZ || i==DT_RELSZ) continue;
-diff -urN musl-1.2.4/src/env/__init_tls.c custom_musl/src/env/__init_tls.c
+diff -urN '--exclude=config.mak' musl-1.2.4/src/env/__init_tls.c custom_musl/src/env/__init_tls.c
 --- musl-1.2.4/src/env/__init_tls.c	2023-05-01 23:39:41.000000000 -0400
-+++ custom_musl/src/env/__init_tls.c	2024-03-05 19:17:44.749399381 -0500
++++ custom_musl/src/env/__init_tls.c	2024-03-09 15:59:58.695765433 -0500
 @@ -11,11 +11,16 @@
  
  volatile int __thread_list_lock;
@@ -283,7 +296,15 @@ diff -urN musl-1.2.4/src/env/__init_tls.c custom_musl/src/env/__init_tls.c
  	if (r < 0) return -1;
  	if (!r) libc.can_do_threads = 1;
  	td->detach_state = DT_JOINABLE;
-@@ -134,6 +139,7 @@
+@@ -24,6 +29,7 @@
+ 	td->robust_list.head = &td->robust_list.head;
+ 	td->sysinfo = __sysinfo;
+ 	td->next = td->prev = td;
++
+ 	return 0;
+ }
+ 
+@@ -134,6 +140,7 @@
  #ifndef SYS_mmap2
  #define SYS_mmap2 SYS_mmap
  #endif
@@ -291,7 +312,7 @@ diff -urN musl-1.2.4/src/env/__init_tls.c custom_musl/src/env/__init_tls.c
  		mem = (void *)__syscall(
  			SYS_mmap2,
  			0, libc.tls_size, PROT_READ|PROT_WRITE,
-@@ -142,7 +148,9 @@
+@@ -142,7 +149,9 @@
  		 * so don't bloat the init code checking for error codes and
  		 * explicitly calling a_crash(). */
  	} else {
@@ -302,9 +323,20 @@ diff -urN musl-1.2.4/src/env/__init_tls.c custom_musl/src/env/__init_tls.c
  	}
  
  	/* Failure to initialize thread pointer is always fatal. */
-diff -urN musl-1.2.4/src/lucid/lucid.c custom_musl/src/lucid/lucid.c
+diff -urN '--exclude=config.mak' musl-1.2.4/src/ldso/x86_64/tlsdesc.s custom_musl/src/ldso/x86_64/tlsdesc.s
+--- musl-1.2.4/src/ldso/x86_64/tlsdesc.s	2023-05-01 23:39:41.000000000 -0400
++++ custom_musl/src/ldso/x86_64/tlsdesc.s	2024-03-09 15:59:58.703765407 -0500
+@@ -10,6 +10,7 @@
+ .hidden __tlsdesc_dynamic
+ .type __tlsdesc_dynamic,@function
+ __tlsdesc_dynamic:
++	int3
+ 	mov 8(%rax),%rax
+ 	push %rdx
+ 	mov %fs:8,%rdx
+diff -urN '--exclude=config.mak' musl-1.2.4/src/lucid/lucid.c custom_musl/src/lucid/lucid.c
 --- musl-1.2.4/src/lucid/lucid.c	1969-12-31 19:00:00.000000000 -0500
-+++ custom_musl/src/lucid/lucid.c	2024-03-05 19:17:44.749399381 -0500
++++ custom_musl/src/lucid/lucid.c	2024-03-09 15:59:58.691765446 -0500
 @@ -0,0 +1,7 @@
 +#include <lucid.h>
 +

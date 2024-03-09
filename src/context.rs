@@ -223,6 +223,7 @@ pub struct LucidContext {
     bochs_rsp: usize,           // Stack that Bochs uses
     pub tls: Tls,               // Bochs' TLS instance
     pub magic: usize,           // Magic value for debugging purposes
+    pub fs_reg: usize,          // The %fs reg value that we're faking
 
     /* Opaque Members start here, not defined on C side */
     pub mmu: Mmu,               // Bochs' memory manager
@@ -367,7 +368,7 @@ impl LucidContext {
         let mmu = Mmu::new()?;
 
         // Create a new FileTable
-        let files = FileTable::new()?;
+        let files = FileTable::new();
 
         // Build and return the execution context so we can fuzz!
         Ok(LucidContext {
@@ -387,6 +388,7 @@ impl LucidContext {
             bochs_rsp: rsp,
             tls,
             magic: CTX_MAGIC,
+            fs_reg: 0,
             mmu,
             clock_time: 0,
             files,

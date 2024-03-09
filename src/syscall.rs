@@ -113,8 +113,8 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
             // Open the file
             let fd = context.files.open(path_str);
             if fd.is_err() {
-                println!("Non-existent file path: {}", path_str);
-                fault!(contextp, Fault::NoFile);
+                // We couldn't find the requested file, return -1
+                return -1_i64 as u64;
             }
 
             // Success
@@ -247,7 +247,17 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
                 // Program is trying to set the FS register, probably for TLS
                 ARCH_SET_FS => {
                     // Just make sure this is a valid pointer
-                    if a2 == 0 { return -1_i64 as u64; }
+                    let fs_val_p = a2 as *const libc::c_ulong;
+                    if fs_val_p.is_null() {
+                        context.tls.errno = libc::EINVAL;
+                        return -1_i64 as u64;
+                    }
+
+                    // Deref the raw pointer
+                    let fs_val = unsafe { &*fs_val_p };
+
+                    // Track the FS register value it wanted to set 
+                    context.fs_reg = *fs_val as usize;
 
                     // Success
                     0

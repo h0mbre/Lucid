@@ -1,8 +1,9 @@
 /// This file contains all of the logic related to file I/O from Bochs
 use std::fs::read;
 
-use crate::misc::get_arg_val;
-use crate::err::LucidErr;
+// This is the file-descriptor number base for assignment, we start here because
+// 0, 1, and 2 are all taken by STDIN, STDOUT, and STDERR
+const FD_BASE: usize = 3;
 
 #[derive(Clone)]
 pub struct FileTable {
@@ -11,45 +12,34 @@ pub struct FileTable {
 
 impl FileTable {
     // We will attempt to open and read all of our required files ahead of time
-    pub fn new() -> Result<Self, LucidErr> {
-        // Retrive command-line arg value
-        let Some(bochsrc) = get_arg_val("--bochsrc-path") else {
-            return Err(
-                LucidErr::from("No '--bochsrc-path' argument")
-            );
-        };
-
-        // Try to read the file
-        let Ok(data) = read(&bochsrc) else { 
-            return Err(LucidErr::from(
-                &format!("Unable to read data from '{}'", bochsrc)));
-        };
-
-        // Create a file now for .bochsrc
-        let bochsrc_file = File {
-            fd: 3,
-            path: ".bochsrc".to_string(),
-            contents: data.clone(),
-            cursor: 0,
-        };
-
-        // Insert the file into the FileTable
-        Ok(FileTable {
-            files: vec![bochsrc_file],
-        })
+    pub fn new() -> Self {
+        // Return an empty file table
+        FileTable {
+            files: Vec::new(),
+        }
     }
 
     // Attempt to open a file
     pub fn open(&mut self, path: &str) -> Result<i32, ()> {
-        // Try to find the requested path
-        for file in self.files.iter() {
-            if file.path == path {
-                return Ok(file.fd);
-            }
-        }
+        let Ok(data) = read(path) else {
+            return Err(());
+        };
 
-        // We didn't find the file
-        Err(())
+        // Calculate fd value
+        let fd = (FD_BASE + self.files.len()) as i32;
+
+        // Create file and store it
+        self.files.push(
+            File {
+                fd,
+                path: path.to_string(),
+                contents: data,
+                cursor: 0
+            }
+        );
+
+        // Return fd
+        Ok(fd)
     }
 
     // Look a file up by fd and then return a mutable reference to it
