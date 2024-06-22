@@ -9,17 +9,20 @@ mod misc;
 mod syscall;
 mod mmu;
 mod files;
+mod snapshot;
+mod stats;
+mod coverage;
+mod mutator;
 
 use loader::load_bochs;
-use context::{start_bochs, LucidContext, Fault};
+use context::{start_bochs, LucidContext, fuzz_loop, register_input};
 use err::LucidErr;
 use misc::get_arg_val;
 
 fn main() {
     // Retrieve the Bochs image with some simple arg parsing for now
     let Some(path) = get_arg_val("--bochs-image") else {
-        fatal!(LucidErr::from("
-            No '--bochs-image' argument "));
+        fatal!(LucidErr::from("No '--bochs-image' argument "));
     };
     prompt!("Bochs image path: '{}'", path);
 
@@ -28,36 +31,75 @@ fn main() {
     let bochs = load_bochs(path).unwrap_or_else(|error| {
         fatal!(error);
     });
-    prompt!("Bochs mapping: 0x{:X} - 0x{:X}",
-        bochs.addr, bochs.addr + bochs.size);
-    prompt!("Bochs mapping size: 0x{:X}", bochs.size);
-    prompt!("Bochs stack: 0x{:X}", bochs.rsp);
-    prompt!("Bochs entry: 0x{:X}", bochs.entry);
+
+    // Display all of the loading information
+    prompt!("Bochs loaded @ 0x{:X} - 0x{:X}",
+        bochs.image_base, bochs.image_base + bochs.image_length);
+    prompt!("Bochs stack @ 0x{:X} - 0x{:X}",
+        bochs.stack_base, bochs.stack_base + bochs.stack_length);
+    prompt!("Bochs entry @ 0x{:X}", bochs.entry);
+    prompt!("Bochs RSP @ 0x{:X}", bochs.rsp);
 
     // Create a new execution context
     prompt!("Creating Bochs execution context...");
-    let mut lucid_context = Box::new(LucidContext::new(bochs.entry, bochs.rsp)
+    let mut lucid_context = Box::new(LucidContext::new(bochs)
         .unwrap_or_else(|error| { fatal!(error); }));
 
-    // Update user with context address
-    prompt!("LucidContext: 0x{:X}",
+    prompt!("LucidContext @ 0x{:X}",
         &*lucid_context as *const LucidContext as usize);
 
+    // Display known snapshot dimensions
+    prompt!("Snapshot memory @ 0x{:X} - 0x{:X}",
+        lucid_context.snapshot.base,
+        lucid_context.snapshot.base + lucid_context.snapshot.length);
+
     // Update user with MMU details
-    prompt!("MMU Break Pool: 0x{:X} - 0x{:X}",
+    prompt!("MMU Brk Pool @ 0x{:X} - 0x{:X}",
         lucid_context.mmu.brk_base,
         lucid_context.mmu.brk_base + lucid_context.mmu.brk_size);
     
-    prompt!("MMU Mmap Pool: 0x{:X} - 0x{:X}",
+    prompt!("MMU Mmap Pool @ 0x{:X} - 0x{:X}",
         lucid_context.mmu.mmap_base,
         lucid_context.mmu.mmap_base + lucid_context.mmu.mmap_size);
 
+    prompt!("Lucid xsave area @ 0x{:X}", lucid_context.lucid_save_area);
+    prompt!("Bochs xsave area @ 0x{:X}", lucid_context.bochs_save_area);
+
+    prompt!("Scratch RSP @ 0x{:X}", lucid_context.scratch_rsp);
+
+    // Update user with Mutator details
+    prompt!("Mutator seeded with 0x{:X}", lucid_context.mutator.rng);
+    prompt!("Mutator max input size: 0x{:X}", lucid_context.mutator.max_size);
+    prompt!("Corpus contains {} inputs", lucid_context.mutator.corpus.len());
+
     // Start executing Bochs
-    prompt!("Starting Bochs...");
+    prompt!("Running Bochs up to snapshot...");
     start_bochs(&mut lucid_context);
 
     // Check to see if any faults occurred during Bochs execution
-    if !matches!(lucid_context.fault, Fault::Success) {
-        fatal!(LucidErr::from_fault(lucid_context.fault));
+    if lucid_context.err.is_some() {
+        fatal!(lucid_context.err.unwrap());
     }
+
+    // Register input dimensions
+    prompt!("Registering fuzzing input dimensions...");
+    let Some(signature) = get_arg_val("--input-signature") else {
+        fatal!(LucidErr::from("No '--input-signature' argument "));
+    };
+    register_input(&mut lucid_context, signature).unwrap_or_else(|error| {
+        fatal!(error);
+    });
+
+    // Display input dimensions
+    prompt!("Input size address @ 0x{:X}", lucid_context.input_size_addr);
+    prompt!("Input buf address @ 0x{:X}", lucid_context.input_buf_addr);
+
+    // Now we can fuzz
+    prompt!("Starting fuzzer...");
+    fuzz_loop(&mut lucid_context).unwrap_or_else(|error| {
+        fatal!(error);
+    });
+
+    // Campaign over
+    prompt!("Campaign suspended");
 }

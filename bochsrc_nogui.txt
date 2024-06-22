@@ -1,0 +1,12 @@
+romimage: file="/path/to/Bochs/bochs/bios/BIOS-bochs-latest"
+vgaromimage: file="/path/to/Bochs/bochs/bios/VGABIOS-lgpl-latest"
+pci: enabled=1, chipset=i440fx
+boot: cdrom
+ata0-master: type=cdrom, path="/path/to/iso", status=inserted
+log: bochsout.txt
+clock: sync=realtime, time0=local
+cpu: model=corei7_skylake_x
+cpu: count=1, ips=750000000, reset_on_triple_fault=1, ignore_bad_msrs=1
+cpu: cpuid_limit_winnt=0
+memory: guest=64, host=64
+#display_library: sdl2

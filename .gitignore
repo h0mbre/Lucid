@@ -2,3 +2,4 @@ target/*
 test
 Cargo.lock
 .git/*
+bochsout.txt

@@ -1,19 +1,25 @@
 /// This file contains all of the logic necessary to manage dynamically 
 /// allocated memory that Bochs asks for and uses (brk, mmap)
+
 use crate::err::LucidErr;
 
 // Duh
 const PAGE_SIZE: usize = 0x1000;
 
+// A MEG of memory
+const MEGABYTE: usize = 1_003_520;
+
 // The default size the MMU mmaps for brk pool
-const DEFAULT_BRK_SIZE: usize = 0x1000 * 8;
+const DEFAULT_BRK_SIZE: usize = MEGABYTE;
 
 // The default size the MMU mmaps for mmap pool
-const DEFAULT_MMAP_SIZE: usize = 0x1000 * 0x1000;
+const DEFAULT_MMAP_SIZE: usize = MEGABYTE * 128;
 
 // Structure to track memory usage in Bochs
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Mmu {
+    pub map_base: usize,        // Base address for entire mapping
+    pub map_length: usize,      // Total size of mapping
     pub brk_base: usize,        // Base address of brk region, never changes
     pub brk_size: usize,        // Size of the program break region
     pub curr_brk: usize,        // The current program break
@@ -25,34 +31,20 @@ pub struct Mmu {
 }
 
 impl Mmu {
-    pub fn new() -> Result<Self, LucidErr> {
-        // We don't care where it's mapped
-        let addr = std::ptr::null_mut::<libc::c_void>();
-
+    pub fn new(map_address: usize) -> Result<Self, LucidErr> {
         // Straight-forward
         let length = (DEFAULT_BRK_SIZE + DEFAULT_MMAP_SIZE) as libc::size_t;
-
-        // This is normal
-        let prot = libc::PROT_WRITE | libc::PROT_READ;
-
-        // This might change at some point?
-        let flags = libc::MAP_ANONYMOUS | libc::MAP_PRIVATE;
-
-        // No file backing
-        let fd = -1 as libc::c_int;
-
-        // No offset
-        let offset = 0 as libc::off_t;
+        assert!(length % PAGE_SIZE == 0);
 
         // Try to `mmap` this block
         let result = unsafe {
             libc::mmap(
-                addr,
+                map_address as *mut libc::c_void,
                 length,
-                prot,
-                flags,
-                fd,
-                offset
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_FIXED,
+                -1,
+                0
             )
         };
 
@@ -62,6 +54,8 @@ impl Mmu {
 
         // Create MMU
         Ok(Mmu {
+            map_base: result as usize,
+            map_length: length as usize,
             brk_base: result as usize,
             brk_size: DEFAULT_BRK_SIZE,
             curr_brk: result as usize,
@@ -105,7 +99,7 @@ impl Mmu {
         let len = (len + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
 
         // Make sure we have capacity left to satisfy this request
-        if len + self.next_mmap > self.mmap_base + self.mmap_size { 
+        if len + self.next_mmap > self.mmap_base + self.mmap_size {
             return Err(());
         }
 
@@ -133,4 +127,45 @@ impl Mmu {
         // curr_mmap now represents the base of the new requested allocation
         Ok(())
     }
+
+    // Copy the contents of an existing MMU, used for snapshot restore
+    pub fn restore(&mut self, mmu: &Mmu) {
+        self.map_base = mmu.map_base;
+        self.map_length = mmu.map_length;
+        self.brk_base = mmu.brk_base;
+        self.brk_size = mmu.brk_size;
+        self.curr_brk = mmu.curr_brk;
+        self.mmap_base = mmu.mmap_base;
+        self.mmap_size = mmu.mmap_size;
+        self.curr_mmap = mmu.curr_mmap;
+        self.next_mmap = mmu.next_mmap;
+    }
+
+    // Search MMU memory for pattern
+    pub fn search_memory(&self, pattern: &[u8]) -> Vec<usize> {
+        assert!(self.map_length > pattern.len());
+        let mut needles = Vec::new();
+
+        // Determine the last index to search from
+        let last_idx = self.map_length - pattern.len();        
+
+        // Iterate through memory looking for pattern
+        let mut curr = self.map_base;
+        for _ in 0..last_idx {
+            // Make a slice from current position
+            let curr_slice = unsafe {
+                std::slice::from_raw_parts(curr as *const u8, pattern.len())
+            };
+
+            // Check for match
+            if curr_slice == pattern {
+                needles.push(curr);
+            }
+
+            // Increment current
+            curr += 1;
+        }
+
+        needles
+    } 
 }

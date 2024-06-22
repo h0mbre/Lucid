@@ -46,6 +46,10 @@ impl ProgramHeader {
     pub fn is_load(&self) -> bool {
         self.typ == 1
     }
+
+    pub fn is_interp(&self) -> bool {
+        self.typ == 3
+    }
 }
 
 #[derive(Debug)]

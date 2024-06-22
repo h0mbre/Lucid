@@ -4,15 +4,19 @@
 /// The calling convention we use for context switching:
 /// r15 -- Pointer to a LucidContext
 
-use std::fmt;
 use std::arch::{global_asm, asm};
-use core::arch::x86_64::{_xgetbv, _xsave64, _fxsave64, _xrstor64, _fxrstor64};
 
 use crate::err::LucidErr;
 use crate::syscall::lucid_syscall;
 use crate::mmu::Mmu;
 use crate::files::FileTable;
-use crate::fault;
+use crate::loader::Bochs;
+use crate::snapshot::{take_snapshot, restore_snapshot, Snapshot};
+use crate::stats::Stats;
+use crate::coverage::CoverageMap;
+use crate::mutator::Mutator;
+use crate::misc::{get_xcr0, xsave64, fxsave64, xrstor64, fxrstor64, get_arg};
+use crate::{fault, mega_panic};
 
 // Duh
 const PAGE_SIZE: usize = 0x1000;
@@ -20,61 +24,8 @@ const PAGE_SIZE: usize = 0x1000;
 // Magic number member of the LucidContext, chosen by ChatGPT 
 pub const CTX_MAGIC: usize = 0x74DFF25D576D6F4D;
 
-// In the context-switching code here, we can't really continue if we encounter
-// errors at this point, so we're using this error type of `Fault` to somewhat
-// differentiate errors in the project and reserving this type to mean that 
-// something went awry in the "context-switching" like code. So far, we don't 
-// recover from these
-#[repr(i32)]
-#[derive(Clone, Copy, Debug)]
-pub enum Fault {
-    Success,
-    BadExitReason,
-    BadSaveInstruction,
-    BadSaveArea,
-    NullContext,
-    BadMagic,
-    BadXcr0,
-    BadLucidExit,
-    BadBochsExit,
-    BadExecMode,
-    Syscall,
-    SyscallMagic,
-    EarlyBochsExit,
-    InvalidBrk,
-    InvalidMmap,
-    NullPath,
-    InvalidPathStr,
-    NoFile,
-}
-
-// So we can plumb these up into LucidErrs if we need to
-impl fmt::Display for Fault {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let description = match *self {
-            Fault::Success => "No fault",
-            Fault::BadExitReason => "Invalid exit reason",
-            Fault::BadSaveInstruction => "Invalid save instruction",
-            Fault::BadSaveArea => "Invalid save area",
-            Fault::NullContext => "Context was NULL",
-            Fault::BadMagic => "Invalid magic value",
-            Fault::BadXcr0 => "Invalid XCR0 value",
-            Fault::BadLucidExit => "Invalid Lucid exit reason",
-            Fault::BadBochsExit => "Invalid Bochs exit reason",
-            Fault::BadExecMode => "Invalid execution mode",
-            Fault::Syscall => "Fault during syscall",
-            Fault::SyscallMagic => "Invalid magic value in syscall",
-            Fault::EarlyBochsExit => "Bochs exited early",
-            Fault::InvalidBrk => "Invalid `brk` request",
-            Fault::InvalidMmap => "Invalid `mmap` request",
-            Fault::NullPath => "Open path was NULL",
-            Fault::InvalidPathStr => "Open path contained invalid characters",
-            Fault::NoFile => "File I/O on non-existent file",
-
-        };
-        write!(f, "{}", description)
-    }
-}
+// Length of scratch stack
+const SCRATCH_STACK_LEN: usize = 0x21000;
 
 // This represents the reason why a VM has exited execution and is now trying
 // to context-switch for event handling
@@ -82,6 +33,9 @@ impl fmt::Display for Fault {
 pub enum VmExit {
     NoExit = 0,
     StartBochs = 1,
+    TakeSnapshot = 2,
+    PostFuzzHook = 3,
+    ResumeBochs = 4,
 }
 
 // We get passed an i32, have to go through this to get a Rust enum
@@ -93,6 +47,9 @@ impl TryFrom<i32> for VmExit {
     fn try_from(val: i32) -> Result<Self, Self::Error> {
         match val {
             1 => Ok(VmExit::StartBochs),
+            2 => Ok(VmExit::TakeSnapshot),
+            3 => Ok(VmExit::PostFuzzHook),
+            4 => Ok(VmExit::ResumeBochs),
             _ => Err(()),
         }
     }
@@ -101,7 +58,7 @@ impl TryFrom<i32> for VmExit {
 // The kind of extended state saving instruction we need to use based on our 
 // processor
 #[repr(i32)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SaveInst {
     NoSave   = 0,
     XSave64  = 1,
@@ -207,116 +164,186 @@ pub struct RegisterBank {
 #[repr(C)]
 #[derive(Clone)]
 pub struct LucidContext {
+    /* These cannot change order, context_switch depends on them */
     pub context_switch: usize,  // Address of context_switch()
     mode: ExecMode,             // Our current mode of execution
     lucid_regs: RegisterBank,   // Holds Lucid register state for GPRs
-    bochs_regs: RegisterBank,   // Holds Bochs register state for GRPs
-    pub fault: Fault,           // Current fault code if there is one
-    exit_reason: VmExit,        // Why we're context switching
+    pub bochs_regs: RegisterBank,// Holds Bochs register state for GPRs
+    pub scratch_rsp: usize,     // Stack pointer for the scratch stack
     lucid_syscall: usize,       // Address of lucid_syscall()
-    save_inst: SaveInst,        // Type of save instruction we use for exstate
-    save_size: usize,           // Size of the save area
-    lucid_save_area: usize,     // Pointer to the save area for Lucid
-    bochs_save_area: usize,     // Pointer to the save area for Bochs
-    xcr0: usize,                // The xcr0 value when we initialize
-    bochs_entry: usize,         // Entry point for Bochs ELF
-    bochs_rsp: usize,           // Stack that Bochs uses
-    pub tls: Tls,               // Bochs' TLS instance
-    pub magic: usize,           // Magic value for debugging purposes
-    pub fs_reg: usize,          // The %fs reg value that we're faking
 
-    /* Opaque Members start here, not defined on C side */
+    /* Defined on C side */
+    pub tls: Tls,               // Bochs' TLS instance
+    pub fs_reg: usize,          // The %fs reg value that we're faking
+    exit_reason: VmExit,        // Why we're context switching
+    coverage_map_addr: usize,   // Address of the coverage map buffer
+    coverage_map_size: usize,   // Size of the coverage map in members
+    crash: i32,                 // Did we have a crash? Set by Bochs side
+
+    /* Opaque members, not defined on C side */
+    pub save_inst: SaveInst,    // Type of save instruction we use for exstate
+    pub save_size: usize,       // Size of the save area
+    pub lucid_save_area: usize, // Pointer to the save area for Lucid
+    pub bochs_save_area: usize, // Pointer to the save area for Bochs
+    pub bochs: Bochs,           // The Bochs image
+    pub magic: usize,           // Magic value for debugging purposes
     pub mmu: Mmu,               // Bochs' memory manager
     pub clock_time: usize,      // Nanoseconds
     pub files: FileTable,       // Bochs' files
+    pub err: Option<LucidErr>,  // Current erro if there is one for faults
+    pub verbose: bool,          // Are we printing Bochs output
+    pub fuzzing: bool,          // Status flag to track file dirtying
+    pub dirty_files: bool,      // Did we dirty any files during fuzzing?
+    pub snapshot: Snapshot,     // The Bochs snapshot
+    pub stats: Stats,           // Fuzzing stats
+    coverage: CoverageMap,      // The coverage map
+    pub input_size_addr: usize, // The memory address of the input size variable
+    pub input_buf_addr: usize,  // The memory address of the input buf variable
+    pub mutator: Mutator,       // Mutator we're using
 }
 
-// Functions taking a pointer as an arg should have been NULL-checked by caller
 impl LucidContext {
-    pub fn get_magic(context: *const LucidContext) -> usize {
-        unsafe { (*context).magic }
-    }
-
-    pub fn get_exit_reason(context: *const LucidContext) ->
-        Result<VmExit, ()> {
-        // Raw deref to get an i32 value
-        let exit_reason = unsafe { (*context).exit_reason as i32 };
-
-        // Try to cast the i32 to a VmExit enum
-        let Ok(exit_reason) = VmExit::try_from(exit_reason) else {
-            return Err(());
-        };
-
-        // Return reason
-        Ok(exit_reason)
-    }
-
-    pub fn get_save_inst(context: *const LucidContext) ->
-        Result<SaveInst, ()> {
-        // Raw deref to get an i32 value
-        let save_inst = unsafe { (*context).save_inst as i32 };
-        
-        // Try to cast the i32 to a SaveInst enum
-        let Ok(save_inst) = SaveInst::try_from(save_inst) else {
-            return Err(());
-        };
-
-        // Return save instruction
-        Ok(save_inst)
-    }
-
-    pub fn is_lucid_mode(context: *const LucidContext) ->
-        bool {
-        // Raw deref to get an i32 value
-        let mode = unsafe { (*context).mode as i32 };
-        
-        // Try to cast the i32 to a ExecMode enum
-        let Ok(mode) = ExecMode::try_from(mode) else {
+    // Static method to check if a contextp is sane
+    pub fn is_valid(contextp: *mut LucidContext) -> bool {
+        if contextp.is_null() {
             return false;
-        };
+        }
 
-        // Return true or false
-        matches!(mode, ExecMode::Lucid)
-    }
+        let context = unsafe { &*contextp };
 
-    pub fn is_bochs_mode(context: *const LucidContext) ->
-        bool {
-        // Raw deref to get an i32 value
-        let mode = unsafe { (*context).mode as i32 };
-        
-        // Try to cast the i32 to a ExecMode enum
-        let Ok(mode) = ExecMode::try_from(mode) else {
+        // Check the magic value
+        if context.magic != CTX_MAGIC {
             return false;
-        };
+        }
+    
+        if SaveInst::try_from(context.save_inst as i32).is_err() {
+            return false;
+        }
 
-        // Return true or false
-        matches!(mode, ExecMode::Bochs)
+        // Ensure ExecMode conversion succeeds
+        if ExecMode::try_from(context.mode as i32).is_err() {
+            return false;
+        }
+
+        // Ensure VmExit conversion succeeds
+        if VmExit::try_from(context.exit_reason as i32).is_err() {
+            return false;
+        }
+
+        true
     }
 
-    #[allow(unreachable_patterns)]
-    pub fn get_save_area(context: *const LucidContext)
-        -> usize {
-        let context = unsafe { &*context };
-
-        match context.mode {
-            ExecMode::Bochs => context.bochs_save_area,
-            ExecMode::Lucid => context.lucid_save_area,
-            _ => 0,
+    // Get a non-mutable context reference from a raw pointer
+    #[inline]
+    pub fn from_ptr(contextp: *mut LucidContext) -> &'static LucidContext {
+        unsafe {
+            &*contextp
         }
     }
 
-    pub fn _get_lucid_regs(context: *mut LucidContext) ->
-        &'static mut RegisterBank {
-        unsafe { &mut (*context).lucid_regs }
+    // Get a mutable context reference from raw pointer
+    #[inline]
+    pub fn from_ptr_mut(contextp: *mut LucidContext)
+        -> &'static mut LucidContext {
+        unsafe {
+            &mut *contextp
+        }
     }
 
-    pub fn _get_bochs_regs(context: *mut LucidContext) ->
-        &'static mut RegisterBank {
-        unsafe { &mut (*context).bochs_regs }
+    #[inline]
+    pub fn is_lucid_mode(&self) -> bool {
+        matches!(self.mode, ExecMode::Lucid)
     }
 
-    // Only ever called from main.rs, so return LucidErr at that level not Fault
-    pub fn new(entry: usize, rsp: usize) -> Result<Self, LucidErr> {
+    #[inline]
+    pub fn _is_bochs_mode(&self) -> bool {
+        matches!(self.mode, ExecMode::Bochs)
+    }
+
+    // Get the address of the save area based on our current ExecMode
+    #[inline]
+    pub fn get_save_area(&self) -> usize {
+        match self.mode {
+            ExecMode::Bochs => self.bochs_save_area,
+            ExecMode::Lucid => self.lucid_save_area,
+        }
+    }
+
+    // Return pointer to the Lucid register bank
+    #[inline]
+    pub fn lucid_regs_ptr(&self) -> *const RegisterBank {
+        &self.lucid_regs as *const RegisterBank
+    }
+
+    // Return pointer to the Bochs register bank
+    #[inline]
+    pub fn snapshot_regs_ptr(&self) -> *const RegisterBank {
+        &self.snapshot.regs as *const RegisterBank
+    }
+
+    // Save the extended state
+    pub fn save_xstate(&self) {
+        // Check if there is saving
+        if self.save_inst == SaveInst::NoSave {
+            return;
+        }
+
+        // Make sure there's save area
+        if self.lucid_save_area == 0 || self.bochs_save_area == 0 {
+            return;
+        }
+
+        // Determine save area based on execution mode
+        let save_area = self.get_save_area();
+
+        // Do the saving
+        match self.save_inst {
+            SaveInst::XSave64 => {
+                let xcr0 = get_xcr0();
+                xsave64(save_area as *mut u8, xcr0);       
+            },
+            SaveInst::FxSave64 => {
+                fxsave64(save_area as *mut u8);
+            },
+            _ => unreachable!(), // NoSave
+        }
+    }
+
+    pub fn restore_xstate(&self) {
+        // Check if there is saving
+        if self.save_inst == SaveInst::NoSave {
+            return;
+        }
+
+        // Make sure there's save area
+        if self.lucid_save_area == 0 || self.bochs_save_area == 0 {
+            return;
+        }
+
+        // Determine save area based on execution mode
+        let save_area = self.get_save_area();
+
+        // Restore
+        match self.save_inst {
+            SaveInst::XSave64 => {
+                let xcr0 = get_xcr0();
+                xrstor64(save_area as *const u8, xcr0);
+            },
+            SaveInst::FxSave64 => {
+                fxrstor64(save_area as *const u8);
+            },
+            _ => unreachable!(), // NoSave
+        }
+    }
+
+    // Check if we're fuzzing or not
+    #[inline]
+    pub fn is_fuzzing(&self) -> bool {
+        self.fuzzing
+    }
+
+    // Only ever called from main.rs
+    pub fn new(bochs: Bochs) -> Result<Self, LucidErr> {
         // Check for what kind of features are supported we check from most 
         // advanced to least
         let save_inst = if std::is_x86_feature_detected!("xsave") {
@@ -333,67 +360,101 @@ impl LucidContext {
             _ => calc_save_size(),
         };
 
-        // If we have a save_size, we need to capture XCR0's value
-        let xcr0 = if save_size != 0 {
-            (unsafe { _xgetbv(0) }) as usize
-        } else {
-            0_usize
-        };
-
         // If we have to save, let's map some memory to save the extended
         // state for the fuzzer and Bochs
         let (lucid_save_area, bochs_save_area) = match save_inst {
             SaveInst::NoSave => (0, 0),
-            _ => map_save_areas(save_size)?,
+            _ => map_save_areas(save_size, &bochs)?,
         };
 
-        // Create default (empty) register banks for the GPRs
-        let lucid_regs = RegisterBank::default();
-        let bochs_regs = RegisterBank::default();
-
-        // We can only initialize an execution context from Lucid, so this is
-        // self-explanatory
-        let mode = ExecMode::Lucid;
-
-        // We don't start with an exit reason, that needs to be set by caller
-        let exit_reason = VmExit::NoExit;
-
-        // We don't start with a fault obviously
-        let fault = Fault::Success;
-
-        // Create a new Tls
-        let tls = Tls::new();
+        // Calculate the boundary of the save area
+        let initial_boundary
+            = bochs.write_base + bochs.write_length + (save_size * 2);
 
         // Create an MMU
-        let mmu = Mmu::new()?;
+        let mmu = Mmu::new(initial_boundary)?;
 
-        // Create a new FileTable
-        let files = FileTable::new();
+        // Get the new boundary
+        let final_boundary = initial_boundary + mmu.map_length;
+
+        // Get the snapshot area base and length
+        let snapshot_base = bochs.write_base;
+        let snapshot_length = final_boundary - snapshot_base;
+
+        // Create an empty snapshot but then initialize the information about
+        // the snapshot dimensions
+        let mut snapshot = Snapshot::default();
+        snapshot.base = snapshot_base;
+        snapshot.length = snapshot_length;
+        
+        // Create scratch stack
+        let scratch_stack_base = create_scratch_stack()?; 
+
+        // Set the stack pointer
+        let scratch_rsp = scratch_stack_base + SCRATCH_STACK_LEN - PAGE_SIZE;
+
+        // Create coverage map
+        let coverage = CoverageMap::new();
+        let coverage_map_addr = coverage.addr();
+        let coverage_map_size = coverage.curr_map.len();
+
+        // Create mutator
+        let mutator = Mutator::new(None, 1024);
 
         // Build and return the execution context so we can fuzz!
         Ok(LucidContext {
             context_switch: context_switch as usize,
-            mode,
-            fault,
-            exit_reason,
+            mode: ExecMode::Lucid,
+            exit_reason: VmExit::NoExit,
+            scratch_rsp,
             lucid_syscall: lucid_syscall as usize,
             save_inst,
             save_size,
             lucid_save_area,
             bochs_save_area,
-            lucid_regs,
-            bochs_regs,
-            xcr0,
-            bochs_entry: entry,
-            bochs_rsp: rsp,
-            tls,
+            lucid_regs: RegisterBank::default(),
+            bochs_regs: RegisterBank::default(),
+            bochs,
+            tls: Tls::new(),
             magic: CTX_MAGIC,
             fs_reg: 0,
             mmu,
             clock_time: 0,
-            files,
+            files: FileTable::new(),
+            err: None,
+            verbose: get_arg("--verbose"), 
+            fuzzing: false,
+            dirty_files: false,
+            snapshot,
+            stats: Stats::default(),
+            coverage,
+            coverage_map_addr,
+            coverage_map_size,
+            input_size_addr: 0,
+            input_buf_addr: 0,
+            mutator,
+            crash: 0,
         })
     }
+}
+
+fn create_scratch_stack() -> Result<usize, LucidErr> {
+    let result = unsafe {
+        libc::mmap(
+            std::ptr::null_mut::<libc::c_void>(),
+            SCRATCH_STACK_LEN,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_ANONYMOUS | libc::MAP_PRIVATE,
+            -1,
+            0
+        )
+    };
+
+    if result == libc::MAP_FAILED {
+        return Err(LucidErr::from("Failed to mmap scratch stack"));
+    }
+
+    Ok(result as usize)
 }
 
 // Standalone function to calculate the size of the save area for saving the 
@@ -424,133 +485,56 @@ fn calc_save_size() -> usize {
 }
 
 // Standalone function that just maps pages for the extended state save area,
-// we actually surround the save area with guard pages with no perms just to 
-// fail explicitly if anything weird happens. We return two page addresses
-// Guard page -- No perms
-// Save area -- RW <-- Returned
-// Guard page -- No perms
-// Save area -- RW <-- Returned
-// Guard page -- No perms
-fn map_save_areas(size: usize) -> Result<(usize, usize), LucidErr> {
+// for both Lucid and Bochs, these are mapped contiguously with our Bochs
+// image and the Bochs stack
+fn map_save_areas(size: usize, bochs: &Bochs)
+    -> Result<(usize, usize), LucidErr> {
     assert!(size % PAGE_SIZE == 0);
 
-    // Track the mapping addrs
-    let mut ret_addrs = (0, 0);
+    // Determine where we're mapping this writable memory
+    let map_addr = bochs.write_base + bochs.write_length;
 
-    // We need 3 total guard pages
-    let page_size = PAGE_SIZE * 3;
+    // Calculate the total size needed
+    let total_size = size * 2;
 
-    // We have two separate save areas, so we multiply by 2
-    let doubled_size = size.checked_mul(2)
-        .ok_or(LucidErr::from("Integer Overflow"))?;
-
-    // The total mapping size we need is the guard pages + the save areas
-    let map_size = page_size.checked_add(doubled_size)
-        .ok_or(LucidErr::from("Integer Overflow"))?;
-
-    // Cast to libc
-    let map_size = map_size as libc::size_t;
-
-    // Set the protection to none for now
-    let prot = libc::PROT_NONE;
-
-    // Anonymous mem
-    let flags = libc::MAP_ANONYMOUS | libc::MAP_PRIVATE;
-
-    // No file and no offset
-    let fd = -1 as libc::c_int;
-    let offset = 0 as libc::off_t;
-
-    // Map the memory
+    // Perform the mmap operation
     let result = unsafe {
         libc::mmap(
-            std::ptr::null_mut::<libc::c_void>(),
-            map_size,
-            prot,
-            flags,
-            fd,
-            offset
+            map_addr as *mut libc::c_void,
+            total_size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_FIXED,
+            -1,
+            0
         )
     };
 
-    if result == libc::MAP_FAILED {
-        return Err(LucidErr::from("Failed `mmap` memory for save area"));
+    if result == libc::MAP_FAILED || result != map_addr as *mut libc::c_void {
+        return Err(LucidErr::from("Failed mmap memory for xsave area"));
     }
 
-    // Now we need to calculate where to add permissions
-    let mut curr_addr: usize = result as usize;
-
-    // Increase by the guard page
-    curr_addr += PAGE_SIZE;
-
-    // Make a copy of this address for return
-    ret_addrs.0 = curr_addr;
-
-    // Now for size, we need to change the perms of this range
-    let mut mprotect = unsafe {
-        libc::mprotect(
-            curr_addr as *mut libc::c_void,
-            size as libc::size_t,
-            libc::PROT_READ | libc::PROT_WRITE
-        )
-    };
-
-    if mprotect == -1 {
-        return Err(LucidErr::from("Failed to `mprotect` save area"));
-    }
-
-    // Increment the pointer now to cover the changed range
-    curr_addr += size;
-
-    // Increment the pointer over the next guard page
-    curr_addr += PAGE_SIZE;
-
-    // Make a copy again
-    ret_addrs.1 = curr_addr;
-
-    // Call mprotect a final time to change the perms of the 2nd save area
-    mprotect = unsafe {
-        libc::mprotect(
-            curr_addr as *mut libc::c_void,
-            size as libc::size_t,
-            libc::PROT_READ | libc::PROT_WRITE
-        )
-    };
-
-    if mprotect == -1 {
-        return Err(LucidErr::from("Failed to `mprotect` save area"));
-    }
-
-    // We made it, return the mapping addresses for the save areas
-    Ok(ret_addrs)
+    // Return the two addresses
+    Ok((map_addr, map_addr + size))
 }
 
-// Standalone function to literally jump to Bochs entry and provide the stack
-// address to Bochs
-fn jump_to_bochs(context: *mut LucidContext) {
-    // RDX: we have to clear this register as the ABI specifies that exit
-    // hooks are set when rdx is non-null at program start
-    //
-    // RAX: arbitrarily used as a jump target to the program entry
-    //
-    // RSP: Rust does not allow you to use 'rsp' explicitly with in(), so we
-    // have to manually set it with a `mov`
-    //
-    // R15: holds a pointer to the execution context, if this value is non-
-    // null, then Bochs learns at start time that it is running under Lucid
-    //
-    // We don't really care about execution order as long as we specify clobbers
-    // with out/lateout, that way the compiler doesn't allocate a register we 
-    // then immediately clobber
+// Start Bochs execution by providing a stack and jumping to entry
+// RDX must be cleared as otherwise it will set exit hooks
+// R15 must point to LucidContext as per our calling convention
+fn jump_to_bochs(contextp: *mut LucidContext) {
+    // Get the read-only reference to the context
+    let context = LucidContext::from_ptr(contextp);
+    let rsp = context.bochs.rsp;
+    let entry = context.bochs.entry;
+
     unsafe {
         asm!(
             "xor rdx, rdx",
             "mov rsp, {0}",
             "mov r15, {1}",
             "jmp rax",
-            in(reg) (*context).bochs_rsp,
-            in(reg) context,
-            in("rax") (*context).bochs_entry,
+            in(reg) rsp,
+            in(reg) contextp,
+            in("rax") entry,
             lateout("rax") _,   // Clobber (inout so no conflict with in)
             out("rdx") _,       // Clobber
             out("r15") _,       // Clobber
@@ -558,108 +542,76 @@ fn jump_to_bochs(context: *mut LucidContext) {
     }
 }
 
-// This is where the actual logic is for handling the Bochs exit, we have to 
-// use no_mangle here so that we can call it from the assembly blob. We need
-// to see why we've exited and dispatch to the appropriate function
+// This is where the actual logic is for handling the Lucid/Bochs exits, we have
+// to use no_mangle here so that we can call it from the assembly blob. We need
+// to see why we've exited and dispatch to the appropriate function. This is the
+// only place thus far where we do comprehensive sanity checks on the context
+// pointer. 
 #[no_mangle]
-fn switch_handler(context: *mut LucidContext) {
+fn switch_handler(contextp: *mut LucidContext) {
     // We have to make sure this bad boy isn't NULL 
-    if context.is_null() {
-        fault!(context, Fault::NullContext);
+    if !LucidContext::is_valid(contextp) {
+        mega_panic!("Invalid context\n");
     }
 
-    // Ensure that we have our magic value intact, if this is wrong, then we 
-    // are in some kind of really bad state and just need to die
-    let magic = LucidContext::get_magic(context);
-    if magic != CTX_MAGIC {
-        fault!(context, Fault::BadMagic);
-    }
+    // Get read-only context
+    let context = LucidContext::from_ptr(contextp);
 
     // Before we do anything else, save the extended state
-    let Ok(save_inst) = LucidContext::get_save_inst(context) else {
-        fault!(context, Fault::BadSaveInstruction);
-    };
-
-    // Get the save area
-    let save_area = LucidContext::get_save_area(context);
-    if save_area == 0 || save_area % 64 != 0 {
-        fault!(context, Fault::BadSaveArea);
-    }
-
-    // Determine save logic
-    match save_inst {
-        SaveInst::XSave64 => {
-            // Retrieve XCR0 value, this will serve as our save mask
-            let xcr0 = unsafe { _xgetbv(0) };
-
-            // Make sure this matches the original xcr0
-            if xcr0 !=  unsafe { (*context).xcr0 } as u64 {
-                fault!(context, Fault::BadXcr0);
-            }
-
-            // Call xsave to save the extended state to Bochs save area
-            unsafe { _xsave64(save_area as *mut u8, xcr0); }             
-        },
-        SaveInst::FxSave64 => {
-            // Call fxsave to save the extended state to Bochs save area
-            unsafe { _fxsave64(save_area as *mut u8); }
-        },
-        _ => (), // NoSave
-    }
+    context.save_xstate();
 
     // Try to get the VmExit reason 
-    let Ok(exit_reason) = LucidContext::get_exit_reason(context) else {
-        fault!(context, Fault::BadExitReason);
-    };
+    let exit_reason = context.exit_reason;
     
     // Handle Lucid context switches here
-    if LucidContext::is_lucid_mode(context) {
+    if context.is_lucid_mode() {
         match exit_reason {
             // Dispatch to Bochs entry point
             VmExit::StartBochs => {
-                jump_to_bochs(context);
+                jump_to_bochs(contextp);
             },
+            VmExit::ResumeBochs => {
+                restore_bochs_execution(contextp);
+            }
             _ => {
-                fault!(context, Fault::BadLucidExit);
+                fault!(contextp, LucidErr::from("Bad Lucid exit"));
             }
         }
     }
 
     // Handle Bochs context switches here
-    else if LucidContext::is_bochs_mode(context) {
-        fault!(context, Fault::BadBochsExit);
-    }
-
-    // Should never reach this, right?
     else {
-        fault!(context, Fault::BadExecMode);
+        match exit_reason {
+            // Take a snapshot of Bochs
+            VmExit::TakeSnapshot => {
+                take_snapshot(contextp);
+
+                // Come back to Lucid
+                restore_lucid_execution(contextp);
+            },
+            // Restore a snapshot of Bochs
+            VmExit::PostFuzzHook => {
+                restore_lucid_execution(contextp);
+            },
+            _ => {
+                fault!(contextp, LucidErr::from("Bad Bochs exit"));
+            }
+        }
     }
 
-    // Restore extended state, determine restore logic
-    match save_inst {
-        SaveInst::XSave64 => {
-            // Retrieve XCR0 value, this will serve as our save mask
-            let xcr0 = unsafe { _xgetbv(0) };
-
-            // Call xrstor to restore the extended state from Bochs save area
-            unsafe { _xrstor64(save_area as *const u8, xcr0); }             
-        },
-        SaveInst::FxSave64 => {
-            // Call fxrstor to restore the extended state from Bochs save area
-            unsafe { _fxrstor64(save_area as *const u8); }
-        },
-        _ => (), // NoSaveS
-    }
+    // Restore extended state
+    context.restore_xstate();
 }
 
 // This is our context_switch function, this stub is meant to save as much state
 // as necessary before we can start calling regular Rust functions, right now it
-// saves the CPU flags and the GPRs before calling int `switch_handler`.
+// saves the CPU flags and the GPRs and then switches to a 'scratch stack' that
+// we use during context switch higher-level logic before calling into
+// `switch_handler`.
 extern "C" { fn context_switch(); }
 global_asm!(
     ".global context_switch",
     "context_switch:",
-
     // Save the CPU flags before we do any operations
     "pushfq",
 
@@ -712,14 +664,17 @@ global_asm!(
     // Set up the context function argument for the exit handler
     "mov rdi, r15",
 
-    // We're ready to call a function now since we've saved all of our registers
-    // but we need to make sure RSP is 16-byte aligned before the call
-    "test rsp, 0xF",
-    "jz aligned",
-    "sub rsp, 0x8",
+    // Change over to the scratch stack for context switch stuff
+    "mov rsp, [r15 + 0x110]",
 
-    "aligned: ",
+    // We're ready to call a function now since we've saved all of our registers
     "call switch_handler",
+
+    // Get original RSP back
+    "mov rsp, [r14 + 0x38]",
+    
+    // To recover pointer to cpu flags
+    "sub rsp, 0x8",
     
     // Restore the flags
     "popfq",
@@ -746,79 +701,30 @@ global_asm!(
     "ret"
 );
 
-// Where we handle faults that may occur when context-switching from Bochs. We
-// just want to make the fault visible to Lucid so we set it in the context,
-// then we try to restore Lucid execution from its last-known good state
-pub fn fault_handler(contextp: *mut LucidContext, fault: Fault) {
-    let context = unsafe { &mut *contextp };
-    match fault {
-        Fault::Success => context.fault = Fault::Success,
-        Fault::BadExitReason => context.fault = Fault::BadExitReason,
-        Fault::BadSaveInstruction => context.fault = Fault::BadSaveInstruction,
-        Fault::BadSaveArea => context.fault = Fault::BadSaveArea,
-        Fault::NullContext => context.fault = Fault::NullContext,
-        Fault::BadMagic => context.fault = Fault::BadMagic,
-        Fault::BadXcr0 => context.fault = Fault::BadXcr0,
-        Fault::BadLucidExit => context.fault = Fault::BadLucidExit,
-        Fault::BadBochsExit => context.fault = Fault::BadBochsExit,
-        Fault::BadExecMode => context.fault = Fault::BadExecMode,
-        Fault::Syscall => context.fault = Fault::Syscall,
-        Fault::SyscallMagic => context.fault = Fault::SyscallMagic,
-        Fault::EarlyBochsExit => context.fault = Fault::EarlyBochsExit,
-        Fault::InvalidBrk => context.fault = Fault::InvalidBrk,
-        Fault::InvalidMmap => context.fault = Fault::InvalidMmap,
-        Fault::NullPath => context.fault = Fault::NullPath,
-        Fault::InvalidPathStr => context.fault = Fault::InvalidPathStr,
-        Fault::NoFile => context.fault = Fault::NoFile,
-    }
+// Where we handle errors during context switching or syscalls, we just set
+// an error value in the context and then switch execution back over to Lucid
+pub fn fault_handler(contextp: *mut LucidContext, err: LucidErr) {
+    // Plumb up the error
+    let context = LucidContext::from_ptr_mut(contextp);
+    context.err = Some(err);
 
     // Attempt to restore Lucid execution
     restore_lucid_execution(contextp);
 }
 
-// We use this function to restore Lucid execution to its last known good state
-// This is just really trying to plumb up a fault to a level that is capable of
-// discerning what action to take. Right now, we probably just call it fatal. 
-// We don't really deal with double-faults, it doesn't make much sense at the
-// moment when a single-fault will likely be fatal already. Maybe later?
+// Restore Lucid's state from last saved on context-switch
 fn restore_lucid_execution(contextp: *mut LucidContext) {
-    let context = unsafe { &mut *contextp };
-    
-    // Fault should be set, but change the execution mode now since we're
-    // jumping back to Lucid
+    // Set the mode to Lucid
+    let context = LucidContext::from_ptr_mut(contextp);
     context.mode = ExecMode::Lucid;
 
+    // Get the Lucid register bank pointer
+    let lucid_regsp = context.lucid_regs_ptr();
+
     // Restore extended state
-    let save_area = context.lucid_save_area;
-    let save_inst = context.save_inst;
-    match save_inst {
-        SaveInst::XSave64 => {
-            // Retrieve XCR0 value, this will serve as our save mask
-            let xcr0 = unsafe { _xgetbv(0) };
+    context.restore_xstate();
 
-            // Call xrstor to restore the extended state from Bochs save area
-            unsafe { _xrstor64(save_area as *const u8, xcr0); }             
-        },
-        SaveInst::FxSave64 => {
-            // Call fxrstor to restore the extended state from Bochs save area
-            unsafe { _fxrstor64(save_area as *const u8); }
-        },
-        _ => (), // NoSave
-    }
-
-    // Next, we need to restore our GPRs. This is kind of different order than
-    // returning from a successful context switch since normally we'd still be
-    // using our own stack; however right now, we still have Bochs' stack, so
-    // we need to recover our own Lucid stack which is saved as RSP in our 
-    // register bank
-    let lucid_regsp = &context.lucid_regs as *const _;
-
-    // Move that pointer into R14 and restore our GPRs. After that we have the
-    // RSP value that we saved when we called into context_switch, this RSP was
-    // then subtracted from by 0x8 for the pushfq operation that comes right
-    // after. So in order to recover our CPU flags, we need to manually sub
-    // 0x8 from the stack pointer. Pop the CPU flags back into place, and then 
-    // return to the last known good Lucid state
+    // Move that pointer into R14 and restore our GPRs
     unsafe {
         asm!(
             "mov r14, {0}",
@@ -838,10 +744,50 @@ fn restore_lucid_execution(contextp: *mut LucidContext) {
             "mov r13, [r14 + 0x68]",
             "mov r15, [r14 + 0x78]",
             "mov r14, [r14 + 0x70]",
-            "sub rsp, 0x8",
+            "sub rsp, 0x8",             // Recover saved CPU flags 
             "popfq",
             "ret",
             in(reg) lucid_regsp,
+        );
+    }
+}
+
+// Restore Bochs' state from the snapshot
+fn restore_bochs_execution(contextp: *mut LucidContext) {
+    // Set the mode to Bochs
+    let context = LucidContext::from_ptr_mut(contextp);
+    context.mode = ExecMode::Bochs;
+
+    // Get the pointer to the snapshot regs
+    let snap_regsp = context.snapshot_regs_ptr();
+
+    // Restore the extended state
+    context.restore_xstate();
+
+    // Move that pointer into R14 and restore our GPRs
+    unsafe {
+        asm!(
+            "mov r14, {0}",
+            "mov rax, [r14 + 0x0]",
+            "mov rbx, [r14 + 0x8]",
+            "mov rcx, [r14 + 0x10]",
+            "mov rdx, [r14 + 0x18]",
+            "mov rsi, [r14 + 0x20]",
+            "mov rdi, [r14 + 0x28]",
+            "mov rbp, [r14 + 0x30]",
+            "mov rsp, [r14 + 0x38]",
+            "mov r8, [r14 + 0x40]",
+            "mov r9, [r14 + 0x48]",
+            "mov r10, [r14 + 0x50]",
+            "mov r11, [r14 + 0x58]",
+            "mov r12, [r14 + 0x60]",
+            "mov r13, [r14 + 0x68]",
+            "mov r15, [r14 + 0x78]",
+            "mov r14, [r14 + 0x70]",
+            "sub rsp, 0x8",             // Recover saved CPU flags 
+            "popfq",
+            "ret",
+            in(reg) snap_regsp,
         );
     }
 }
@@ -862,5 +808,156 @@ pub fn start_bochs(context: &mut LucidContext) {
             "pop r15",  // Restore callee-saved register
             in(reg) context as *mut LucidContext,
         );
+    }
+}
+
+#[inline(never)]
+pub fn resume_bochs(context: &mut LucidContext) {
+    // Set the execution mode and the reason why we're exiting the Lucid VM
+    context.mode = ExecMode::Lucid;
+    context.exit_reason = VmExit::ResumeBochs;
+
+    // Set up the calling convention and then start Bochs by context switching
+    unsafe {
+        asm!(
+            "push r15", // Callee-saved register we have to preserve
+            "mov r15, {0}", // Move context into R15
+            "call qword ptr [r15]", // Call context_switch
+            "pop r15",  // Restore callee-saved register
+            in(reg) context as *mut LucidContext,
+        );
+    }
+}
+
+// Called from main.rs
+pub fn register_input(context: &mut LucidContext, signature: String)
+    -> Result<(), LucidErr> {
+    // If it starts with 0x, trim that off
+    let sig = if signature.starts_with("0x") || signature.starts_with("0X") {
+        &signature[2..]
+    } else {
+        &signature
+    };
+
+    // Make sure its the right length for 128 bit value
+    if sig.len() != 32 {
+        return Err(LucidErr::from(&format!(
+            "Invalid signature string length {}, should be 32", sig.len())));
+    }
+
+    // Try to convert the hex digits into bytes
+    let mut sig_bytes: [u8; 16] = [0; 16];
+    for i in 0..16 {
+        let curr_byte = u8::from_str_radix(&sig[i * 2..i * 2 + 2], 16);
+        if curr_byte.is_err() {
+            return Err(LucidErr::from("Invalid non-hex value in signature"));
+        }
+
+        // Store byte
+        sig_bytes[i] = curr_byte.unwrap(); 
+    }
+
+    // Search for the byte pattern in the MMU
+    let candidates = context.mmu.search_memory(&sig_bytes);
+
+    // Analyze search results
+    match candidates.len() {
+        0 => return Err(LucidErr::from("Unable to find signature in memory")),
+        1 => (),
+        _ => return Err(LucidErr::from("Found input signature collision")),
+    }
+
+    // Mark location
+    let sig_addr = candidates[0];
+
+    // Input looks like this in harness:
+    // - signature[16 bytes] [offset 0]
+    // - input size [8 bytes] [offset 0x10]
+    // - input [max input size] [offset 0x18]
+
+    // Find location of input size
+    context.input_size_addr = sig_addr + 0x10;
+
+    // Find location of input buffer
+    context.input_buf_addr = sig_addr + 0x18;
+
+    Ok(())
+}
+
+#[inline]
+fn start_timer() -> std::time::Instant {
+    std::time::Instant::now()
+}
+
+#[inline]
+fn end_timer(time_bank: &mut std::time::Duration, start: std::time::Instant) {
+    let elapsed = start.elapsed();
+    *time_bank += elapsed;
+}
+
+// Called from main.rs
+pub fn fuzz_loop(context: &mut LucidContext) -> Result<(), LucidErr> {
+    // Start time-keeping
+    context.stats.start_session(context.coverage.curr_map.len());
+
+    // Mark that we're fuzzing now
+    context.fuzzing = true;
+
+    loop {
+        // Restore Bochs snapshot state
+        let start = start_timer();
+        restore_snapshot(context)?;
+        end_timer(&mut context.stats.batch_restore, start);
+
+        // Get a new input
+        let start = start_timer();
+        context.mutator.generate_input();
+
+        // Insert the fuzzcase
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                context.mutator.input.as_ptr(),
+                context.input_buf_addr as *mut u8,
+                context.mutator.input.len()
+            );
+        }
+        end_timer(&mut context.stats.batch_mutator, start);
+
+        // Context switch into Bochs to resume
+        let start = start_timer();
+        resume_bochs(context);
+
+        // Check to see if there was an error during Bochs execution
+        if context.err.is_some() {
+            return Err(context.err.as_ref().unwrap().clone());
+        }
+        end_timer(&mut context.stats.batch_target, start);
+
+        // Check code coverage updates, if true, we found a new input
+        let start = start_timer();
+        let coverage_results = context.coverage.update();
+        if coverage_results.0 {
+            // Save current input if it's not a crash
+            if context.crash == 0 {
+                context.mutator.save_input();
+            }
+
+            // Update stats
+            context.stats.new_coverage(coverage_results.1);
+        }
+        end_timer(&mut context.stats.batch_coverage, start);
+
+        // We've returned from a fuzzcase, Update stats
+        context.stats.update(context.crash);
+
+        // Clear crash flag
+        if context.crash == 1 {
+            context.crash = 0;
+        }
+
+        // Report stats
+        if context.stats.report_ready() {
+            context.stats.report();
+        }
     }
 }

@@ -11,14 +11,11 @@ const LOAD_TARGET: usize = 0x10000;
 // Duh
 const PAGE_SIZE: usize = 0x1000;
 
-// How many pages we place before and after Read/Write Stack memory
-const NUM_GUARD_PAGES: usize = 2;
-
-// Size of the guard page buffer in bytes
-const GUARD_SIZE: usize = NUM_GUARD_PAGES * PAGE_SIZE;
+// A MEG of memory
+const MEGABYTE: usize = 1_003_520;
 
 // Size of the actual Read/Write stack allocation
-const STACK_ALLOC_SIZE: usize = 0x100000;
+const STACK_ALLOC_SIZE: usize = MEGABYTE;
 
 // Size of a void *, this should always just be 8 for now, no planned support
 // for anything else
@@ -33,45 +30,31 @@ const STACK_DATA_MAX: usize = 0x1000;
 
 // This is what we return to `main`, this is the information required to 
 // jump to Bochs and start execution
+#[derive(Clone)]
 pub struct Bochs {
+    pub image_base: usize,
+    pub image_length: usize,
+    pub stack_base: usize,
+    pub stack_length: usize,
+    pub write_base: usize,
+    pub write_length: usize,
     pub entry: usize,
-    pub rsp: usize,
-    pub addr: usize,
-    pub size: usize,
+    pub rsp: usize 
 }
 
-// Call `mmap` to map memory into our process to hold all of the loadable 
-// program header contents in a contiguous range. Right now the perms will be
-// generic across the entire range as PROT_WRITE,
-// later we'll go back and `mprotect` them appropriately
+// Map all of the memory we need to hold the ELF image of Bochs but also Bochs'
+// stack in one contiguous block. We have to map this as writable so we can 
+// write to it, but we'll go back and mprotect certain page ranges later. 
 fn initial_mmap(size: usize) -> Result<usize, LucidErr> {
-    // We don't want to specify a fixed address
-    let addr = LOAD_TARGET as *mut libc::c_void;
-
-    // Length is straight forward
-    let length = size as libc::size_t;
-
-    // Set the protections for now to writable
-    let prot = libc::PROT_WRITE;
-
-    // Set the flags, this is anonymous memory
-    let flags = libc::MAP_ANONYMOUS | libc::MAP_PRIVATE;
-
-    // We don't have a file to map, so this is -1
-    let fd = -1 as libc::c_int;
-
-    // We don't specify an offset 
-    let offset = 0 as libc::off_t;
-
     // Call `mmap` and make sure it succeeds
     let result = unsafe {
         libc::mmap(
-            addr,
-            length,
-            prot,
-            flags,
-            fd,
-            offset
+            LOAD_TARGET as *mut libc::c_void,   // Alignment? It works?
+            size,
+            libc::PROT_WRITE,
+            libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_FIXED,
+            -1,
+            0
         )
     };
 
@@ -84,7 +67,8 @@ fn initial_mmap(size: usize) -> Result<usize, LucidErr> {
 
 // Iterate through all the loadable segments and adjust their memory backing
 // according to their permissions and load the binary data
-pub fn load_segments(addr: usize, elf: &Elf) -> Result<(), LucidErr> {
+fn load_segments(addr: usize, elf: &Elf) 
+    -> Result<(usize, usize), LucidErr> {
     // Extract relevant data from loadable segments
     let mut load_segments = Vec::new();
     for ph in elf.program_headers.iter() {
@@ -100,13 +84,15 @@ pub fn load_segments(addr: usize, elf: &Elf) -> Result<(), LucidErr> {
     }
 
     // Iterate through the loadable segments and change their perms and then 
-    // copy the data over
+    // copy the data over. For our snapshotting logic to work, all writable
+    // segments must be contiguous
+    let mut write_start = 0;
+    let mut write_end = 0;
     for segment in load_segments.iter() {
         // Copy the binary data over, the destination is where in our process
         // memory we're copying the binary data to. The source is where we copy
         // from, this is going to be an offset into the binary data in the file,
         // len is going to be how much binary data is in the file, that's filesz 
-        // This is going to be unsafe no matter what
         let len = segment.4;
         let dst = (addr + segment.1) as *mut u8;
         let src = (elf.data[segment.3..segment.3 + len]).as_ptr();
@@ -122,7 +108,14 @@ pub fn load_segments(addr: usize, elf: &Elf) -> Result<(), LucidErr> {
             as *mut libc::c_void;
 
         // Get the length
-        let mprotect_len = segment.2 as libc::size_t;
+        let mut mprotect_len = segment.2 as libc::size_t;
+
+        // Adjust the length to round up to nearest page if necessary
+        if mprotect_len % PAGE_SIZE != 0 {
+            let remainder = mprotect_len % PAGE_SIZE;
+            let round_amt = PAGE_SIZE - remainder;
+            mprotect_len += round_amt;
+        }
 
         // Get the protection
         let mut mprotect_prot = 0 as libc::c_int;
@@ -142,74 +135,23 @@ pub fn load_segments(addr: usize, elf: &Elf) -> Result<(), LucidErr> {
         if result < 0 {
             return Err(LucidErr::from("Failed to `mprotect` memory for Bochs"));
         }
+
+        // Do we have a writable segment?
+        if mprotect_prot & libc::PROT_WRITE != 0 {
+            // If we haven't encountered a writable segment, start tracking
+            if write_start == 0 { write_start = mprotect_addr as usize; }
+            
+            // Update write end
+            write_end = mprotect_addr as usize + mprotect_len;
+        }
+
+        // We don't have a writable segment, make sure we haven't had one yet
+        else if write_start != 0 {
+            return Err(LucidErr::from("Non-contiguous writable segments"));
+        }
     }
-
-    Ok(())
-}
-
-// Allocate memory for the stack via `mmap` and `mprotect` calls
-// The allocation will look like this in memory:
-// GUARD_SIZE (No perms)
-// STACK_ALLOC_SIZE (Read/Write Actual Stack)
-// GUARD_SIZE (No perms)
-// Total is GUARD_SIZE * 2 + STACK_ALLOC_SIZE
-fn allocate_stack() -> Result<usize, LucidErr> {
-    let addr = std::ptr::null_mut::<libc::c_void>();
-    let length = STACK_ALLOC_SIZE + (GUARD_SIZE * 2);
-    let prot = libc::PROT_NONE;
-    let flags = libc::MAP_ANONYMOUS | libc::MAP_PRIVATE;
-    let fd = -1 as libc::c_int;
-    let offset = 0 as libc::off_t;
-
-    let base_alloc = unsafe {
-        libc::mmap(
-            addr,
-            length,
-            prot,
-            flags,
-            fd,
-            offset
-        )    
-    };
-
-    if base_alloc == libc::MAP_FAILED {
-        return Err(LucidErr::from("Failed to `mmap` memory for Bochs stack"));
-    }
-
-    // Change the protections for the stack segment, calc the stack address
-    let mprotect_addr = (base_alloc as usize + GUARD_SIZE) as *mut libc::c_void;
-    let mprotect_len = STACK_ALLOC_SIZE;
-    let mprotect_prot = libc::PROT_READ | libc::PROT_WRITE;
-
-    let result = unsafe {
-        libc::mprotect(
-            mprotect_addr,
-            mprotect_len,
-            mprotect_prot
-        )
-    };
-
-    if result < 0 {
-        return Err(LucidErr::from("Failed to `mprotect` stack for Bochs"));
-    }
-
-    // Calculate what RSP we want to return, we're assuming that the stack data
-    // once populated, will be <= the STACK_DATA_MAX, so we can safely calc
-    // where we want RSP. We want to place it at the absolute end of the R/W
-    // section as that will provide us with the most slack space as the stack 
-    // grows down:
-    // GUARD
-    // STACK
-    // STACK
-    // STACK <-- RSP
-    // STACK DATA
-    // GUARD
-    let rsp = (base_alloc as usize + GUARD_SIZE + STACK_ALLOC_SIZE)
-        - STACK_DATA_MAX;
-    assert!(rsp % PAGE_SIZE == 0); 
-
-    // Return rsp
-    Ok(rsp)
+    
+    Ok((write_start, write_end))
 }
 
 // Iterate through the arguments passed to the fuzzer, and determine if there
@@ -262,25 +204,6 @@ fn push_string(stack: &mut Vec<u8>, string: String) {
 
     for &byte in bytes.iter().rev() {
         stack.insert(0, byte);
-    }
-}
-
-// I couldn't figure out how computers work so I had ChatGPT write this function
-// for me to figure out how strings on the stack should work, but we got there!
-fn _debug_print_stack(stack: &[u8], base_addr: usize) {
-    // Ensure the stack length is a multiple of 8 (size of sizet)
-    assert!(stack.len() % U64_SIZE == 0);
-
-    let u64_slice: &[u64] = unsafe {
-        std::slice::from_raw_parts(
-            stack.as_ptr() as *const u64, stack.len() / 8)
-    };
-
-    for (i, &value) in u64_slice.iter().enumerate() {
-        let offset = i * 8;
-        let absolute_addr = base_addr + offset;
-        println!("Offset: 0x{:X}, Absolute Address: 0x{:X}, Value: 0x{:016X}",
-            offset, absolute_addr, value);
     }
 }
 
@@ -428,29 +351,6 @@ fn create_stack_data(base: usize, stack_addr: usize, elf: &Elf) ->
     Ok(stack_data)
 }
 
-fn create_stack(base: usize, elf: &Elf) -> Result<usize, LucidErr> {
-    // Allocate memory for the stack
-    let stack_addr = allocate_stack()?;
-
-    // This should always be 16-byte aligned as the x86_64 ABI requires that 
-    // at program entry, RSP % 16 == 0
-    assert!(stack_addr % 16 == 0);
-
-    // Populate a vector with all of the stack data
-    let stack_data = create_stack_data(base, stack_addr, elf)?;
-
-    // Copy the stack data into the allocated stack space
-    let len = stack_data.len() as libc::size_t;
-    let dst = stack_addr as *mut u8;
-    let src = (stack_data[..stack_data.len()]).as_ptr();
-
-    unsafe {
-        std::ptr::copy_nonoverlapping(src, dst, len);
-    }
-
-    Ok(stack_addr)
-}
-
 pub fn load_bochs(bochs_image: String) -> Result<Bochs, LucidErr> {
     // Read the executable file into memory
     let data = read(bochs_image).map_err(|_| LucidErr::from(
@@ -459,38 +359,90 @@ pub fn load_bochs(bochs_image: String) -> Result<Bochs, LucidErr> {
     // Parse ELF 
     let elf = parse_elf(&data)?;
 
-    // We need to iterate through all of the loadable program headers and 
-    // determine the size of the address range we need
-    let mut mapping_size: usize = 0;
+    // Make sure there are no interpreter program headers for -static-pie check
     for ph in elf.program_headers.iter() {
-        if ph.is_load() {
-            let end_addr = (ph.vaddr + ph.memsz) as usize;
-            if mapping_size < end_addr { mapping_size = end_addr; }
+        if ph.is_interp() {
+            return Err(LucidErr::from("Invalid ELF, not -static-pie"));
         }
     }
 
-    // Round the mapping up to a page
-    if mapping_size % PAGE_SIZE > 0 {
-        mapping_size += PAGE_SIZE - (mapping_size % PAGE_SIZE);
+    // Calculate the size of the ELF image that we need to load into memory
+    let mut image_size: usize = 0;
+    for ph in elf.program_headers.iter() {
+        // We have a loadable program header
+        if ph.is_load() {
+            // If this is our first loadable header, make sure vaddr is 0 for
+            // a -static-pie sanity check
+            if image_size == 0 && ph.vaddr != 0 {
+                return Err(LucidErr::from("Invalid ELF, not -static-pie"));
+            }
+
+            // Calculate the end address
+            let end_addr = (ph.vaddr + ph.memsz) as usize;
+            if image_size < end_addr { image_size = end_addr; }
+        }
     }
 
+    // Round the image size up to a page
+    if image_size % PAGE_SIZE > 0 {
+        image_size += PAGE_SIZE - (image_size % PAGE_SIZE);
+    }
+
+    // Calculate a total size
+    let total_size = image_size + STACK_ALLOC_SIZE;
+
     // Get an initial `mmap()` of the range
-    let bochs_addr = initial_mmap(mapping_size)?;
+    let mapping = initial_mmap(total_size)?;
 
     // Load the segments with their permissions and their binary data
-    load_segments(bochs_addr, &elf)?;
+    let (write_base, write_end) = load_segments(mapping, &elf)?;
 
-    // Create a stack in memory for Bochs
-    let stack_addr = create_stack(bochs_addr, &elf)?;
+    // Calc the writable memory length, the length of the writable memory
+    // in the process image + the size of the stack
+    let write_length = (write_end - write_base) + STACK_ALLOC_SIZE;
 
-    // Return the entry point and RSP values
-    let bochs = Bochs {
-        entry: (bochs_addr as u64 + elf.elf_header.entry) as usize,
-        rsp: stack_addr,
-        addr: bochs_addr,
-        size: mapping_size,
+    // Calculate the stack base
+    let stack_addr = mapping + image_size;
+
+    // Calculate the stack pointer, give the stack as much slack space as we can
+    let rsp = stack_addr + STACK_ALLOC_SIZE - STACK_DATA_MAX;
+
+    // Create stack data
+    let stack_data = create_stack_data(mapping, rsp, &elf)?;
+
+    // Copy the stack data over to the stack
+    let len = stack_data.len() as libc::size_t;
+    let dst = rsp as *mut u8;
+    let src = stack_data.as_ptr();
+    unsafe { std::ptr::copy_nonoverlapping(src, dst, len); }
+
+    // Change the memory protections of the stack to be readable as well
+    let mprotect_prot = libc::PROT_READ | libc::PROT_WRITE;
+    let result = unsafe {
+        libc::mprotect(
+            stack_addr as *mut libc::c_void,
+            STACK_ALLOC_SIZE,
+            mprotect_prot
+        )
     };
+    if result < 0 {
+        return Err(LucidErr::from("Failed to mprotect stack"));
+    }
 
-    // Return to main
-    Ok(bochs)
+    // Calculate the entry address for Bochs ELF
+    let entry = mapping + elf.elf_header.entry as usize;
+
+    // Return Bochs
+    Ok(
+        Bochs {
+            image_base: mapping,
+            image_length: image_size,
+            stack_base: stack_addr,
+            stack_length: STACK_ALLOC_SIZE,
+            write_base,
+            write_length,
+            entry,
+            rsp
+        }
+    )
 }
