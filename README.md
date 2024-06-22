@@ -1,64 +1,25 @@
 # Lucid
 Lucid is an educational fuzzing project which aims to create a Bochs emulator based snapshot fuzzer capable of fuzzing traditionally hard to fuzz targets such as kernels and browsers. Lucid is based on a fuzzer originally conceived of and developed by [Brandon Falk](https://twitter.com/gamozolabs). Lucid utilizes changes to Musl in order to affect Bochs' behavior and achieve a functional sandbox that will allow Lucid to run Bochs within its virtual address space without being able to interact directly with the operating system. The goal of the sandbox is to achieve determinism. 
 
+Once Bochs has been built with the custom Musl as a `-static-pie`, the fuzzer can load the Bochs ELF into its memory and have it run your target.
+
 # Under Development
-Lucid is currently in the early stages of development and can load and run a `-static-pie` Bochs to its default start menu. More emulation and sandboxing work is required; however, that progress is on hold until a candidate fuzzing target is chosen. You can catch up on development efforts on the blog detailing each development step in blog posts titled "Fuzzer Development": https://h0mbre.github.io/New_Fuzzer_Project/.
+Lucid is currently in the early stages of development and can currently fuzz a Linux kernel syscall. Lucid currently features snapshots, code-coverage feedback, and can register crashes. Right now it uses a toy mutator for demonstration purposes. More emulation and sandboxing work may be required based on your fuzzing target. You can catch up on development efforts on the blog detailing each development step in blog posts titled "Fuzzer Development": https://h0mbre.github.io/New_Fuzzer_Project/.
 
 The current codebase is more current than the latest blogpost.
 
+# Workflow Overview
+Step 1: Develop your environment, probably using something like QEMU system in order to do quick iterations. For instance, if fuzzing a Linux kernel subsystem, you may develop a harness which sends user controlled input to a kernel API. Once you've confirmed your harness works in something like QEMU, you can create an `.iso` out of the kernel image (`bzImage`) which Bochs can then run. 
+
+Step 2: Use a vanilla GUI version of Bochs that you've compiled using the `native_gui_bochs.conf` configuration file and run your harness. If your harness was built correctly, Bochs will save its state to disk when it reaches the `xchg dx, dx` special NOP instruction. 
+
+Step 3: Now with the saved-to-disk Bochs state, we are able to resume execution in the fuzzer. We do this by pointing Lucid at the specially compiled with Musl and `lucid_bochs.conf` Bochs `static-pie` image file (included pre-built in this repo as `lucid_bochs`) as well as giving Bochs the path to the saved snapshot (likely in `/tmp/lucid_snapshot`).
+
+Step 4: The fuzzer should be able to resume the saved state of Bochs and continue execution from where it left off. This allows you to manipulate the user input and explore new code via fuzzing. You will need to adequately anticipate all possible code paths your input can cause as you will need to identify an appropriate chokepoint to call back into the fuzzer to reset the snapshot via the special NOP instruction (`xchg bx, bx`).
+
 # Build
-Now that we have packaged a Bochs binary in the repository, building Lucid and running Bochs is as simple as:
-
-`git clone https://github.com/h0mbre/Lucid`
-
-`cd Lucid`
-
-`cargo run -- --bochs-image bochs --bochsrc-path bochsrc`
-
-```terminal
-lucid✦ Bochs image path: 'bochs'
-lucid✦ Loading Bochs...
-lucid✦ Bochs mapping: 0x10000 - 0x1E84000
-lucid✦ Bochs mapping size: 0x1E74000
-lucid✦ Bochs stack: 0x7FCCE95BC000
-lucid✦ Bochs entry: 0x11CE35
-lucid✦ Creating Bochs execution context...
-lucid✦ LucidContext: 0x56174B6A1F00
-lucid✦ MMU Break Pool: 0x7FCCE81F8000 - 0x7FCCE8200000
-lucid✦ MMU Mmap Pool: 0x7FCCE8200000 - 0x7FCCE9200000
-lucid✦ Starting Bochs...
-========================================================================
-                        Bochs x86 Emulator 2.7
-              Built from SVN snapshot on August  1, 2021
-                Timestamp: Sun Aug  1 10:07:00 CEST 2021
-========================================================================
-00000000000i[      ] BXSHARE not set. using compile time default '/usr/local/share/bochs'
-00000000000i[      ] reading configuration from .bochsrc
-00000000000e[      ] .bochsrc:759: ataX-master/slave CHS set to 0/0/0 - autodetection enabled
-------------------------------
-Bochs Configuration: Main Menu
-------------------------------
-
-This is the Bochs Configuration Interface, where you can describe the
-machine that you want to simulate.  Bochs has already searched for a
-configuration file (typically called bochsrc.txt) and loaded it if it
-could be found.  When you are satisfied with the configuration, go
-ahead and start the simulation.
-
-You can also start bochs with the -q option to skip these menus.
-
-1. Restore factory default configuration
-2. Read options from...
-3. Edit options
-4. Save options to...
-5. Restore the Bochs state from...
-6. Begin simulation
-7. Quit now
-
-Please choose one: [6] Non-existent file fd: 0
-
-fatal: File I/O on non-existent file
-```
+Lucid should be built with `cargo build --release`. There is only one crate that
+we depend on right now which is `libc`.  
 
 # Musl-Toolchain
 In order to replicate my steps of building Bochs as `--static-pie` against a custom Musl, you'll need to do the following:
@@ -67,48 +28,22 @@ In order to replicate my steps of building Bochs as `--static-pie` against a cus
 - `make TARGET=x86_64-linux-musl install`
 - This should've built a complete toolchain and you should see both `output/bin/x86_64-linux-musl-gcc` and `output/bin/x86_64-linux-musl-g++`
 - Apply our custom Musl patches to `musl-1.2.4` in `musl-cross-make/musl-1.2.4`
-- Patches can be applied with some variation of `patch -p1 < /path/to/Lucid/musl_patches/musl.patch`
+- Patches can be applied with some variation of `patch -p1 < /path/to/Lucid/patches/musl.patch`
 - Configure Musl to be built overtop of the completed toolchain's libc with `./configure --prefix=/path/to/musl-cross-make/output/x86_64-linux-musl`
 - `make install`
 
 You should now have a complete Lucid-compatible Musl toolchain
 
 # Bochs
-Now to build Bochs, all you have to do is create this configuration file:
-```bash
-CC="/path/to/musl-cross-make/output/bin/x86_64-linux-musl-gcc"
-CXX="/path/to/musl-cross-make/output/bin/x86_64-linux-musl-g++"
-CFLAGS="-Wall --static-pie -fPIE"
-CXXFLAGS="$CFLAGS"
+Building Bochs as `-static-pie` can be a pain, that is why I've included my personal build in the repo already built. But if you want to build from source, make sure your Musl toolchain is built correctly and is building every object as `-fPIE`. We need to build two different types of Bochs binaries in order to get Lucid fuzzing. 
 
-export CC
-export CXX
-export CFLAGS
-export CXXFLAGS
+## Vanilla GUI Bochs
+We need to build Bochs with a GUI initially so that it's easier to run our harness. This makes it as easy as doing something like compiling your harness and placing it at `/usr/bin/harness` on disk and booting that `.iso` in Bochs to run it. To build the Vanilla GUI Bochs, you'll need to pick a compatible GUI library and install it on your system, I have chosen [https://wiki.libsdl.org/SDL2/Installation]. Next, you'll want to configure Bochs with `Lucid/bochs_configs/native_gui_bochs.conf`. This ensures that we have the appropriate `#define` values to do what we want. Once configured, simply run `make` and you should be good to go. 
 
-./configure --enable-sb16 \
-                --enable-all-optimizations \
-                --enable-long-phy-address \
-                --enable-a20-pin \
-                --enable-cpu-level=6 \
-                --enable-x86-64 \
-                --enable-vmx=2 \
-                --enable-pci \
-                --enable-usb \
-                --enable-usb-ohci \
-                --enable-usb-ehci \
-                --enable-usb-xhci \
-                --enable-busmouse \
-                --enable-e1000 \
-                --enable-show-ips \
-                --enable-avx \
-                --with-nogui
-```
-Now you can simply `./path/to/this/config/file` to configure the Bochs build
+## Lucid Bochs
+To build Lucid Bochs, you should be able to just use `Lucid/bochs_configs/lucid_bochs.conf` to configure Bochs and then run `make` which should build you a `-static-pie` version of Bochs that is compatible with Lucid. 
 
-Finally, just `make` and Bochs should be built `static-pie` and be compatible with Lucid
-
-This configuration file is called `bochs_conf.lucid` in the repo
+**Remember to update the path in `Lucid/bochs_configs/lucid_bochs.conf` with the path to your musl toolchain**
 
 # Contributors
 People who have had a hand in the project one way or another thus far:
