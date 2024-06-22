@@ -52,3 +52,10 @@ People who have had a hand in the project one way or another thus far:
 - [epi](https://twitter.com/epi052)
 - [Kharos](https://twitter.com/Kharosx0)
 - [netspooky](https://twitter.com/netspooky)
+- [richinseattle](https://twitter.com/richinseattle)
+- [eqv](https://twitter.com/is_eqv)
+- [Axel Souchet](https://x.com/0vercl0k)
+- [domenuk](https://x.com/domenuk)
+- [Addison](https://x.com/addisoncrump_vr)
+- [thc](https://x.com/hackerschoice)
+
