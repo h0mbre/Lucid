@@ -1,5 +1,5 @@
 --- bochs/instrument/stubs/instrument.h	2024-06-22 17:01:14.506222144 -0400
-+++ /home/h0mbre/git_bochs/Bochs/bochs/instrument/stubs/instrument.h	2024-06-15 10:17:09.961773819 -0400
++++ bochs/instrument/stubs/instrument.h	2024-06-15 10:17:09.961773819 -0400
 @@ -41,7 +41,7 @@
  void bx_instr_debug_cmd(const char *cmd);
  
@@ -28,7 +28,7 @@
  #define BX_INSTR_FAR_BRANCH(cpu_id, what, prev_cs, prev_eip, new_cs, new_eip)
  
 --- bochs/instrument/stubs/instrument.cc	2024-06-22 17:14:06.410743338 -0400
-+++ /home/h0mbre/git_bochs/Bochs/bochs/instrument/stubs/instrument.cc	2024-06-15 09:40:33.406782044 -0400
++++ bochs/instrument/stubs/instrument.cc	2024-06-15 09:40:33.406782044 -0400
 @@ -21,9 +21,12 @@
  
  
@@ -100,7 +100,7 @@
  void bx_instr_repeat_iteration(unsigned cpu, bxInstruction_c *i) {}
  
 --- bochs/gui/siminterface.cc	2024-06-22 17:19:57.574361662 -0400
-+++ /home/h0mbre/git_bochs/Bochs/bochs/gui/siminterface.cc	2024-05-15 14:19:19.245169022 -0400
++++ bochs/gui/siminterface.cc	2024-05-15 14:19:19.245169022 -0400
 @@ -1376,7 +1376,9 @@
                      if (*fpp != NULL) {
                        char *buffer = new char[4096];
@@ -112,7 +112,7 @@
                        }
                        delete [] buffer;
 --- bochs/cpu/data_xfer16.cc	2024-06-22 17:01:14.454221517 -0400
-+++ /home/h0mbre/git_bochs/Bochs/bochs/cpu/data_xfer16.cc	2024-06-21 14:45:32.520934181 -0400
++++ bochs/cpu/data_xfer16.cc	2024-06-21 14:45:32.520934181 -0400
 @@ -22,6 +22,7 @@
  #define NEED_CPU_REG_SHORTCUTS 1
  #include "bochs.h"
@@ -168,7 +168,7 @@
  }
  
 --- bochs/cpu/ctrl_xfer64.cc	2024-06-22 17:01:14.454221517 -0400
-+++ /home/h0mbre/git_bochs/Bochs/bochs/cpu/ctrl_xfer64.cc	2024-06-02 08:38:51.861018513 -0400
++++ bochs/cpu/ctrl_xfer64.cc	2024-06-02 08:38:51.861018513 -0400
 @@ -223,7 +223,8 @@
      BX_LINK_TRACE(i);
    }
@@ -400,7 +400,7 @@
  #endif
  
 --- bochs/cpu/ctrl_xfer32.cc	2024-06-22 17:01:14.454221517 -0400
-+++ /home/h0mbre/git_bochs/Bochs/bochs/cpu/ctrl_xfer32.cc	2024-06-02 08:46:58.714472162 -0400
++++ bochs/cpu/ctrl_xfer32.cc	2024-06-02 08:46:58.714472162 -0400
 @@ -288,7 +288,8 @@
      BX_LINK_TRACE(i);
    }
@@ -632,7 +632,7 @@
  #endif
  
 --- bochs/cpu/ctrl_xfer16.cc	2024-06-22 17:01:14.454221517 -0400
-+++ /home/h0mbre/git_bochs/Bochs/bochs/cpu/ctrl_xfer16.cc	2024-06-02 08:40:45.165995576 -0400
++++ bochs/cpu/ctrl_xfer16.cc	2024-06-02 08:40:45.165995576 -0400
 @@ -288,7 +288,8 @@
      BX_LINK_TRACE(i);
    }
@@ -864,7 +864,7 @@
  #endif
  
 --- bochs/cpu/cpu.cc	2024-06-22 17:01:14.430221229 -0400
-+++ /home/h0mbre/git_bochs/Bochs/bochs/cpu/cpu.cc	2024-06-21 10:40:37.975673657 -0400
++++ bochs/cpu/cpu.cc	2024-06-21 10:40:37.975673657 -0400
 @@ -63,6 +63,11 @@
    BX_CPU_THIS_PTR stop_reason = STOP_NO_REASON;
  #endif
@@ -878,7 +878,7 @@
      // can get here only from exception function or VMEXIT
      BX_CPU_THIS_PTR icount++;
 --- bochs/bochs.h	2024-06-22 17:01:14.390220748 -0400
-+++ /home/h0mbre/git_bochs/Bochs/bochs/bochs.h	2024-05-15 18:28:11.556120698 -0400
++++ bochs/bochs.h	2024-05-15 18:28:11.556120698 -0400
 @@ -45,6 +45,11 @@
  #include <stdarg.h>
  #include <stdio.h>
