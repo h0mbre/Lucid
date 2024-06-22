@@ -51,6 +51,32 @@ Right now, we don't have many options to worry about. This will probably all cha
 ./lucid --input-signature 0x13371337133713371338133813381338 --verbose --bochs-image /tmp/lucid_bochs --bochs-args -f /home/h0mbre/git_bochs/Bochs/bochs/bochsrc_nogui.txt -q -r /tmp/lucid_snapshot
 ```
 
+## Arguments
++ `--input-signature`: This is a 128-bit byte signature that we should scan for from the fuzzer in Bochs' memory in order to find your user input. This will change in the future, but for now, this is how I've chosen to do it. For instance, here is the user input defined in my current harness:
+```c
+#define LUCID_SIGNATURE { 0x13, 0x37, 0x13, 0x37, 0x13, 0x37, 0x13, 0x37, \
+                          0x13, 0x38, 0x13, 0x38, 0x13, 0x38, 0x13, 0x38 }
+
+#define MAX_INPUT_SIZE 1024UL
+
+struct fuzz_input {
+    unsigned char signature[16];
+    size_t input_len;
+    char input[MAX_INPUT_SIZE];
+};
+```
+So Lucid will scan Bochs for the memory pattern specified by `--input-signature` and it will automatically know what the `input_len` address and `input` addresses are
+
++ `--verbose`: This flag will make sure that Bochs writes to your fuzzer's `STDOUT` and `STDERR`
++ `--bochs-image`: This is the location of the `lucid_bochs` binary
++ `--bochs-args`: This starts a dividing line whereafter each argument will be sent to `lucid_bochs`
+
+### Bochs-specific Arguments
+I won't go into too much detail here, as Bochs documentation exists, but the relevant options can be explained as:
++ `-f`: Use the following configuration file
++ `-q`: Don't ask for user input, just start
++ `-r`: Resume a saved Bochs state from disk at the location specified (should be what we saved to disk with Vanilla GUI Bochs)
+
 # Contributors
 People who have had a hand in the project one way or another thus far:
 - [Brandon Falk](https://twitter.com/gamozolabs)
