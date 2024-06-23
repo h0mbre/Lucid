@@ -150,3 +150,5 @@ People who have had a hand in the project one way or another thus far:
 + Instruction traces
 + RedQueen
 + LibAFL integration
++ Documentation
++ Code comments
