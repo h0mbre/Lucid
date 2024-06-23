@@ -77,6 +77,9 @@ I won't go into too much detail here, as Bochs documentation exists, but the rel
 + `-q`: Don't ask for user input, just start
 + `-r`: Resume a saved Bochs state from disk at the location specified (should be what we saved to disk with Vanilla GUI Bochs)
 
+# Documentation
+Right now, we don't have any documentation besides the blog series: https://h0mbre.github.io/New_Fuzzer_Project/
+
 # Output Examples
 ```terminal
 ✦lucid✦ Bochs image path: '/tmp/lucid_bochs'
@@ -127,7 +130,6 @@ I won't go into too much detail here, as Bochs documentation exists, but the rel
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-
 # Contributors
 People who have had a hand in the project one way or another thus far:
 - [Brandon Falk](https://twitter.com/gamozolabs)
@@ -142,3 +144,9 @@ People who have had a hand in the project one way or another thus far:
 - [Addison](https://x.com/addisoncrump_vr)
 - [thc](https://x.com/hackerschoice)
 
+# TODOs
++ Script build stuff
++ Corpus/crash saving
++ Instruction traces
++ RedQueen
++ LibAFL integration
