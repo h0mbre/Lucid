@@ -861,14 +861,11 @@ pub fn register_input(context: &mut LucidContext, signature: String)
     let candidates = context.mmu.search_memory(&sig_bytes);
 
     // Analyze search results
-    match candidates.len() {
+    let sig_addr = match candidates.len() {
         0 => return Err(LucidErr::from("Unable to find signature in memory")),
-        1 => (),
+        1 => candidates[0],
         _ => return Err(LucidErr::from("Found input signature collision")),
-    }
-
-    // Mark location
-    let sig_addr = candidates[0];
+    };
 
     // Input looks like this in harness:
     // - signature[16 bytes] [offset 0]
@@ -935,15 +932,15 @@ pub fn fuzz_loop(context: &mut LucidContext) -> Result<(), LucidErr> {
 
         // Check code coverage updates, if true, we found a new input
         let start = start_timer();
-        let coverage_results = context.coverage.update();
-        if coverage_results.0 {
+        let (new_coverage, edge_count) = context.coverage.update();
+        if new_coverage {
             // Save current input if it's not a crash
             if context.crash == 0 {
                 context.mutator.save_input();
             }
 
             // Update stats
-            context.stats.new_coverage(coverage_results.1);
+            context.stats.new_coverage(edge_count);
         }
         end_timer(&mut context.stats.batch_coverage, start);
 
