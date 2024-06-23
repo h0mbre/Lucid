@@ -9,13 +9,17 @@ Lucid is currently in the early stages of development and can currently fuzz a L
 The current codebase is more current than the latest blogpost.
 
 # Workflow Overview
-### Step 1: Develop your environment, probably using something like QEMU system in order to do quick iterations. For instance, if fuzzing a Linux kernel subsystem, you may develop a harness which sends user controlled input to a kernel API. Once you've confirmed your harness works in something like QEMU, you can create an `.iso` out of the kernel image (`bzImage`) which Bochs can then run. 
+### Step 1:
+ Develop your environment, probably using something like QEMU system in order to do quick iterations. For instance, if fuzzing a Linux kernel subsystem, you may develop a harness which sends user controlled input to a kernel API. Once you've confirmed your harness works in something like QEMU, you can create an `.iso` out of the kernel image (`bzImage`) which Bochs can then run. 
 
-### Step 2: Use a vanilla GUI version of Bochs that you've compiled using the `native_gui_bochs.conf` configuration file and run your harness. If your harness was built correctly, Bochs will save its state to disk when it reaches the `xchg dx, dx` special NOP instruction. 
+### Step 2:
+ Use a vanilla GUI version of Bochs that you've compiled using the `native_gui_bochs.conf` configuration file and run your harness. If your harness was built correctly, Bochs will save its state to disk when it reaches the `xchg dx, dx` special NOP instruction. 
 
-### Step 3: Now with the saved-to-disk Bochs state, we are able to resume execution in the fuzzer. We do this by pointing Lucid at the specially compiled with Musl and `lucid_bochs.conf` Bochs `static-pie` image file (included pre-built in this repo as `lucid_bochs`) as well as giving Bochs the path to the saved snapshot (likely in `/tmp/lucid_snapshot`).
+### Step 3:
+ Now with the saved-to-disk Bochs state, we are able to resume execution in the fuzzer. We do this by pointing Lucid at the specially compiled with Musl and `lucid_bochs.conf` Bochs `static-pie` image file (included pre-built in this repo as `lucid_bochs`) as well as giving Bochs the path to the saved snapshot (likely in `/tmp/lucid_snapshot`).
 
-### Step 4: The fuzzer should be able to resume the saved state of Bochs and continue execution from where it left off. This allows you to manipulate the user input and explore new code via fuzzing. You will need to adequately anticipate all possible code paths your input can cause as you will need to identify an appropriate chokepoint to call back into the fuzzer to reset the snapshot via the special NOP instruction (`xchg bx, bx`).
+### Step 4:
+ The fuzzer should be able to resume the saved state of Bochs and continue execution from where it left off. This allows you to manipulate the user input and explore new code via fuzzing. You will need to adequately anticipate all possible code paths your input can cause as you will need to identify an appropriate chokepoint to call back into the fuzzer to reset the snapshot via the special NOP instruction (`xchg bx, bx`).
 
 # Build
 Lucid should be built with `cargo build --release`. There is only one crate that
