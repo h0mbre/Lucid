@@ -77,6 +77,57 @@ I won't go into too much detail here, as Bochs documentation exists, but the rel
 + `-q`: Don't ask for user input, just start
 + `-r`: Resume a saved Bochs state from disk at the location specified (should be what we saved to disk with Vanilla GUI Bochs)
 
+# Output Examples
+```terminal
+✦lucid✦ Bochs image path: '/tmp/lucid_bochs'
+✦lucid✦ Loading Bochs...
+✦lucid✦ Bochs loaded @ 0x10000 - 0x1DD8000
+✦lucid✦ Bochs stack @ 0x1DD8000 - 0x1ECD000
+✦lucid✦ Bochs entry @ 0x106E55
+✦lucid✦ Bochs RSP @ 0x1ECC000
+✦lucid✦ Creating Bochs execution context...
+✦lucid✦ LucidContext @ 0x6377286B5580
+✦lucid✦ Snapshot memory @ 0x57F000 - 0x9A44000
+✦lucid✦ MMU Brk Pool @ 0x1ECF000 - 0x1FC4000
+✦lucid✦ MMU Mmap Pool @ 0x1FC4000 - 0x9A44000
+✦lucid✦ Lucid xsave area @ 0x1ECD000
+✦lucid✦ Bochs xsave area @ 0x1ECE000
+✦lucid✦ Scratch RSP @ 0x7BEA794D4000
+✦lucid✦ Mutator seeded with 0x11AB1E6F78EFA0
+✦lucid✦ Mutator max input size: 0x400
+✦lucid✦ Corpus contains 1 inputs
+✦lucid✦ Running Bochs up to snapshot...
+<BOCHS STDOUT/STDERR>
+✦lucid✦ Taking snapshot of Bochs...
+✦lucid✦ Snapshot dimensions: 0x57F000 - 0x9A44000
+✦lucid✦ Snapshot complete!
+✦lucid✦ Registering fuzzing input dimensions...
+✦lucid✦ Input size address @ 0x562EA60
+✦lucid✦ Input buf address @ 0x562EA68
+✦lucid✦ Starting fuzzer...
+```
+
+```terminal
+                             lucid stats                             
+┌globals─────────────────────────────────────────────────────────────┐
+│uptime : 0d 0h 0m 0s                                                │
+│iters : 0.0005M                                                     │
+│iters/s : 598.09                                                    │
+│crashes : 0                                                         │
+├coverage────────────────────────────────────────────────────────────┤
+│edges : 348                                                         │
+│last find : 0h 0m 0s                                                │
+│map : 0.53%                                                         │
+├cpu─────────────────────────────────────────────────────────────────┤
+│target : 82.9%                                                      │
+│reset : 13.5%                                                       │
+│mutator : 0.2%                                                      │
+│coverage : 3.2%                                                     │
+│misc : 0.1%                                                         │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+
 # Contributors
 People who have had a hand in the project one way or another thus far:
 - [Brandon Falk](https://twitter.com/gamozolabs)
