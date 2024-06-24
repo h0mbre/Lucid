@@ -2,8 +2,8 @@
 
 use std::time::{Instant, Duration};
 
-// Default batch size for stat reporting
-const BATCH_SIZE: usize = 500;
+// Default batch time for stat reporting in milliseconds
+const BATCH_TIME: u128 = 1_000;  // Print stats every second
 
 fn print_top_title(title: &str, line_len: usize) {
     // Determine padding
@@ -94,7 +94,11 @@ impl Stats {
     // Check if time to report
     #[inline]
     pub fn report_ready(&self) -> bool {
-        self.batch_iters % BATCH_SIZE == 0
+        if let Some(batch_start) = self.batch_start {
+            batch_start.elapsed().as_millis() > BATCH_TIME
+        } else {
+            false
+        }
     }
 
     pub fn new_coverage(&mut self, edges: usize) {
