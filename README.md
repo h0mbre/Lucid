@@ -56,7 +56,7 @@ Right now, we don't have many options to worry about. This will probably all cha
 ```
 
 ## Arguments
-+ `--input-signature`: This is a 128-bit byte signature that we should scan for from the fuzzer in Bochs' memory in order to find your user input. This will change in the future, but for now, this is how I've chosen to do it. For instance, here is the user input defined in my current harness:
++ `--input-signature`: This is a 128-bit signature that we should scan for from the fuzzer in Bochs' memory in order to find your user input. This will change in the future, but for now, this is how I've chosen to do it. For instance, here is the user input defined in my current harness:
 ```c
 #define LUCID_SIGNATURE { 0x13, 0x37, 0x13, 0x37, 0x13, 0x37, 0x13, 0x37, \
                           0x13, 0x38, 0x13, 0x38, 0x13, 0x38, 0x13, 0x38 }
