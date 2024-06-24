@@ -10,10 +10,9 @@ fn print_top_title(title: &str, line_len: usize) {
     let padding = line_len - title.len() - 2;
     
     // Format string
-    let line = format!("┌\x1b[1;32m{}\x1b[0m{}{}",
+    let line = format!("┌\x1b[1;32m{}\x1b[0m{}┐",
         title,
-        "─".repeat(padding),
-        "┐");
+        "─".repeat(padding));
 
     println!("{line}");
 }
@@ -23,10 +22,9 @@ fn print_mid_title(title: &str, line_len: usize) {
     let padding = line_len - title.len() - 2;
     
     // Format string
-    let line = format!("├\x1b[1;32m{}\x1b[0m{}{}",
+    let line = format!("├\x1b[1;32m{}\x1b[0m{}┤",
         title,
-        "─".repeat(padding),
-        "┤");
+        "─".repeat(padding));
 
     println!("{line}");
 }
@@ -119,9 +117,6 @@ impl Stats {
         let minutes = (total_seconds % 3600) / 60;
         let seconds = total_seconds % 60;
 
-        // Calculate iters out of a million
-        let iters = self.session_iters as f64 / 1_000_000.0;
-
         // Calculate last find
         let lf_elapsed = self.last_find.unwrap().elapsed().as_secs();
         let lf_hours = lf_elapsed / 3600;
@@ -133,6 +128,14 @@ impl Stats {
         let batch_millis = batch_elapsed.as_millis();
         let batch_seconds = batch_millis as f64 / 1000.0;
         let iters_sec = self.batch_iters as f64 / batch_seconds;
+
+        // Calculate total iters unit
+        let iters_str = match self.session_iters {
+            0..=999 => format!("{}", self.session_iters),
+            1_000..=999_999 => 
+                format!("{:.1}K", self.session_iters as f64 / 1_000.0),
+            _ => format!("{:.1}M", self.session_iters as f64 / 1_000_000.0),
+        };
 
         // Calculate batch proportions
         let restore_percent = if batch_millis > 0 {
@@ -186,7 +189,7 @@ impl Stats {
         print_top_title("globals", line_length);
         print_entry("uptime", format!("{days}d {hours}h {minutes}m {seconds}s"),
             line_length);
-        print_entry("iters", format!("{iters}M"), line_length);
+        print_entry("iters", iters_str, line_length);
         print_entry("iters/s", format!("{iters_sec:.2}"), line_length);
         print_entry("crashes", self.crashes, line_length);
 

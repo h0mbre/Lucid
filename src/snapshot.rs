@@ -14,7 +14,7 @@ pub struct Snapshot {
     fd:         i32,                // File descriptor for shmem object
     pub base:   usize,              // Base address for writable memory block
     pub length: usize,              // Length of writable memory block
-    pub regs:       RegisterBank,   // GPRs for Bochs
+    pub regs:   RegisterBank,       // GPRs for Bochs
     mmu:        Mmu,                // The saved state of the MMU
     _files:     FileTable,          // Saved file table
 }
