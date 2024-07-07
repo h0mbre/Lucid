@@ -157,3 +157,8 @@ People who have had a hand in the project one way or another thus far:
 + LibAFL integration
 + Documentation
 + Code comments
+
+# Misc:
++ Bochs patch generator command ```terminal
+diff -x 'Makefile' -x'bochs' -x '*.txt' -x 'bochs-dlx' -x '*.plist' -x'*.nsi' -x'bxhub' -x'bximage' -x'*.o' -x'bxversion.h' -x'*.rc' -x'config.h' -x'*.log' -x'*.status' -x'*.a' -x'libtool' -x'ltdlconf.h' -x'*.conf' -ruN
+```
