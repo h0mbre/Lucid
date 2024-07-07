@@ -75,7 +75,8 @@ impl CoverageMap {
                     // Zero out the current map for next fuzzing iteration
                     *curr = 0;
                 }
-            });
+            })
+        ;
 
         // If we have new coverage, take the time to walk the map again and 
         // count the number of edges we've hit
@@ -88,5 +89,13 @@ impl CoverageMap {
         } 
 
         (new_coverage, edge_count)
+    }
+
+    // Reset the current coverage map, usually called because we ran an input 
+    // with Cmplog mode enabled so we aren't anticipating new coverage but
+    // Bochs would be updating the coverage map because it doesn't know any
+    // better
+    pub fn reset(&mut self) {
+        self.curr_map.fill(0);
     }
 }

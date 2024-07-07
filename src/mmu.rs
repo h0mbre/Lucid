@@ -13,7 +13,7 @@ const MEGABYTE: usize = 1_003_520;
 const DEFAULT_BRK_SIZE: usize = MEGABYTE;
 
 // The default size the MMU mmaps for mmap pool
-const DEFAULT_MMAP_SIZE: usize = MEGABYTE * 128;
+const DEFAULT_MMAP_SIZE: usize = MEGABYTE * 512;
 
 // Structure to track memory usage in Bochs
 #[derive(Clone, Default)]
@@ -94,30 +94,30 @@ impl Mmu {
         flags: usize,
         fd: usize,
         offset: usize
-    ) -> Result<(), ()> {
+    ) -> Result<(), &str> {
         // Page-align the len
         let len = (len + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
 
         // Make sure we have capacity left to satisfy this request
         if len + self.next_mmap > self.mmap_base + self.mmap_size {
-            return Err(());
+            return Err("OOM");
         }
 
         // Sanity-check that we don't have any weird `mmap` arguments
         if prot as i32 != libc::PROT_READ | libc::PROT_WRITE {
-            return Err(())
+            return Err("bad `prot` value");
         }
 
         if flags as i32 != libc::MAP_PRIVATE | libc::MAP_ANONYMOUS {
-            return Err(())
+            return Err("bad `flags` value");
         }
 
         if fd as i64 != -1 {
-            return Err(())
+            return Err("`fd` value != -1");
         }
 
         if offset != 0 {
-            return Err(())
+            return Err("`offset` != 0");
         }
 
         // Set current to next, and set next to current + len

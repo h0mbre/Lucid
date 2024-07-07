@@ -134,6 +134,35 @@ pub fn get_arg_val(arg: &str) -> Option<String> {
     val
 }
 
+// Retrieve the u64 value corresponding to a given command line argument
+pub fn get_arg_val_u64(arg: &str) -> Option<u64> {
+    // Retrieve envvars
+    let args: Vec<String> = std::env::args().collect();
+
+    // Check to see if we have the provided args
+    if !args.contains(&arg.to_string()) {
+        return None;
+    }
+
+    // Search for corresponding value
+    for (i, a) in args.iter().enumerate() {
+        if a == arg {
+            if i >= args.len() - 1 {
+                return None;
+            }
+
+            // Attempt to parse the next argument as u64
+            if let Ok(val) = args[i + 1].parse::<u64>() {
+                return Some(val);
+            } else {
+                return None;
+            }
+        }
+    }
+
+    None
+}
+
 // Wrappers for these unsafe functions to tuck unsafes away 
 pub fn get_xcr0() -> u64 {
     unsafe { _xgetbv(0) }

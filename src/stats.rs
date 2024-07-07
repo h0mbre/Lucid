@@ -1,6 +1,7 @@
 /// This file contains all of the code for keeping stats for the current session
 
 use std::time::{Instant, Duration};
+use chrono::Local;
 
 // Default batch time for stat reporting in milliseconds
 const BATCH_TIME: u128 = 1_000;  // Print stats every second
@@ -53,6 +54,7 @@ fn close_stats(line_len: usize) {
 #[derive(Clone, Default)]
 pub struct Stats {
     // Stats for the entire campaign so far
+    pub start_str: String,                      // String repr of date start
     pub session_iters: usize,                   // Total fuzzcases
     session_start: Option<Instant>,             // Start time
     last_find: Option<Instant>,                 // Last new coverage find
@@ -65,6 +67,7 @@ pub struct Stats {
     pub batch_mutator: Duration,                // Batch time spent in mutator
     pub batch_target: Duration,                 // Batch time spent in target
     pub batch_coverage: Duration,               // Batch time spent in coverage
+    pub batch_redqueen: Duration,               // Batch time spent in redqueen
 
     pub edges: usize,                           // Number of edges we've hit
     map_size: usize,                            // Size of coverage map
@@ -74,6 +77,7 @@ impl Stats {
     // Start the timers
     #[inline]
     pub fn start_session(&mut self, map_size: usize) {
+        self.start_str = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         self.session_start = Some(Instant::now());
         self.batch_start = Some(Instant::now());
         self.last_find = Some(Instant::now());
@@ -137,8 +141,8 @@ impl Stats {
         let iters_str = match self.session_iters {
             0..=999 => format!("{}", self.session_iters),
             1_000..=999_999 => 
-                format!("{:.1}K", self.session_iters as f64 / 1_000.0),
-            _ => format!("{:.1}M", self.session_iters as f64 / 1_000_000.0),
+                format!("{:.2}K", self.session_iters as f64 / 1_000.0),
+            _ => format!("{:.3}M", self.session_iters as f64 / 1_000_000.0),
         };
 
         // Calculate batch proportions
@@ -170,9 +174,16 @@ impl Stats {
             0.0
         };
 
+        let rq_percent = if batch_millis > 0 {
+            (self.batch_redqueen.as_millis() as f64 / batch_millis as f64)
+            * 100.0
+        } else {
+            0.0
+        };
+
         let misc_percent = if batch_millis > 0 {
             100.0 - restore_percent - mutator_percent - target_percent
-                - coverage_percent
+                - coverage_percent - rq_percent
         } else {
             0.0
         };
@@ -184,13 +195,15 @@ impl Stats {
         print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
         
         // Print the title bar
-        let title = "lucid stats";
+        let current_time = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let title = format!("lucid stats [{}]", current_time);
         let padding = line_length - title.len(); 
         println!("{}\x1b[1;35m{}\x1b[0m{}",
             " ".repeat(padding / 2), title, " ".repeat(padding / 2));
         
         // Print Globals
         print_top_title("globals", line_length);
+        print_entry("start", &self.start_str, line_length);
         print_entry("uptime", format!("{days}d {hours}h {minutes}m {seconds}s"),
             line_length);
         print_entry("iters", iters_str, line_length);
@@ -211,6 +224,7 @@ impl Stats {
         print_entry("reset", format!("{restore_percent:.1}%"), line_length);
         print_entry("mutator", format!("{mutator_percent:.1}%"), line_length);
         print_entry("coverage", format!("{coverage_percent:.1}%"), line_length);
+        print_entry("redqueen", format!("{rq_percent:.1}%"), line_length);
         print_entry("misc", format!("{misc_percent:.1}%"), line_length);
 
         // Close the stat box
@@ -223,5 +237,6 @@ impl Stats {
         self.batch_mutator = Duration::new(0, 0);
         self.batch_target = Duration::new(0, 0);
         self.batch_coverage = Duration::new(0, 0);
+        self.batch_redqueen = Duration::new(0, 0);
     }
 }

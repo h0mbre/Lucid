@@ -13,6 +13,7 @@ mod snapshot;
 mod stats;
 mod coverage;
 mod mutator;
+mod redqueen;
 
 use loader::load_bochs;
 use context::{start_bochs, LucidContext, fuzz_loop, register_input};
@@ -92,7 +93,22 @@ fn main() {
 
     // Display input dimensions
     prompt!("Input size address @ 0x{:X}", lucid_context.input_size_addr);
-    prompt!("Input buf address @ 0x{:X}", lucid_context.input_buf_addr);
+    prompt!("Input buffer address @ 0x{:X}", lucid_context.input_buf_addr);
+
+    // Try to reach into the Bochs memory and pull out these values for
+    // confirmation
+    let input_size = 
+        unsafe { *(lucid_context.input_size_addr as *const usize) };
+
+    let display_len = std::cmp::min(input_size, 8);
+
+    let input_buf: &[u8] = 
+        unsafe { std::slice::from_raw_parts(
+            lucid_context.input_buf_addr as *const u8, display_len)
+        };
+
+    prompt!("Input size in snapshot: 0x{:X}", input_size);
+    prompt!("Input buffer in snapshot: {:X?}", input_buf);
 
     // Now we can fuzz
     prompt!("Starting fuzzer...");

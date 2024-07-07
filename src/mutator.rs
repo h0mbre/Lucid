@@ -18,7 +18,7 @@ impl Mutator {
         };
 
         // Initialize corpus
-        let corpus = vec![vec![0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41]];
+        let corpus = vec![vec![0x41; 512]];
 
         Mutator {
             rng,
@@ -63,6 +63,14 @@ impl Mutator {
             // Set the value there randomly
             self.input[idx] = (self.rand() % 256) as u8;
         }
+    }
+
+    pub fn memcpy_input(&mut self, slice: &[u8]) {
+        // Clear the current input
+        self.input.clear();
+
+        // Copy the passed in buffer
+        self.input.extend_from_slice(slice);
     }
 
     pub fn save_input(&mut self) {

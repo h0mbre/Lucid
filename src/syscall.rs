@@ -300,8 +300,13 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
         0x9 => {
             // If a1 is NULL, we just do a normal mmap
             if a1 == 0 {
-                if context.mmu.do_mmap(a2, a3, a4, a5, a6).is_err() {
-                    fault!(contextp, LucidErr::from("Invalid mmap request"));
+                let result = context.mmu.do_mmap(a2, a3, a4, a5, a6);
+                match result {
+                    Ok(_) => (), // Successful `mmap`
+                    Err(e) => {
+                        let err_msg = format!("Invalid mmap request: {}", e);
+                        fault!(contextp, LucidErr::from(&err_msg));
+                    }
                 }
 
                 // Succesful regular mmap
