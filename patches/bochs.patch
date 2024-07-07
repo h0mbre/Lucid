@@ -1,637 +1,304 @@
---- bochs/instrument/stubs/instrument.h	2024-06-22 17:01:14.506222144 -0400
-+++ bochs/instrument/stubs/instrument.h	2024-06-15 10:17:09.961773819 -0400
-@@ -41,7 +41,7 @@
- void bx_instr_debug_cmd(const char *cmd);
- 
- void bx_instr_cnear_branch_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip);
--void bx_instr_cnear_branch_not_taken(unsigned cpu, bx_address branch_eip);
-+void bx_instr_cnear_branch_not_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip);
- void bx_instr_ucnear_branch(unsigned cpu, unsigned what, bx_address branch_eip, bx_address new_eip);
- void bx_instr_far_branch(unsigned cpu, unsigned what, Bit16u prev_cs, bx_address prev_eip, Bit16u new_cs, bx_address new_eip);
- 
-@@ -90,7 +90,7 @@
- 
- /* branch resolution */
- #define BX_INSTR_CNEAR_BRANCH_TAKEN(cpu_id, branch_eip, new_eip) bx_instr_cnear_branch_taken(cpu_id, branch_eip, new_eip)
--#define BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(cpu_id, branch_eip) bx_instr_cnear_branch_not_taken(cpu_id, branch_eip)
-+#define BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(cpu_id, branch_eip, new_eip) bx_instr_cnear_branch_not_taken(cpu_id, branch_eip, new_eip)
- #define BX_INSTR_UCNEAR_BRANCH(cpu_id, what, branch_eip, new_eip) bx_instr_ucnear_branch(cpu_id, what, branch_eip, new_eip)
- #define BX_INSTR_FAR_BRANCH(cpu_id, what, prev_cs, prev_eip, new_cs, new_eip) \
-                        bx_instr_far_branch(cpu_id, what, prev_cs, prev_eip, new_cs, new_eip)
-@@ -154,7 +154,7 @@
- 
- /* branch resolution */
- #define BX_INSTR_CNEAR_BRANCH_TAKEN(cpu_id, branch_eip, new_eip)
--#define BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(cpu_id, branch_eip)
-+#define BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(cpu_id, branch_eip, new_eip)
- #define BX_INSTR_UCNEAR_BRANCH(cpu_id, what, branch_eip, new_eip)
- #define BX_INSTR_FAR_BRANCH(cpu_id, what, prev_cs, prev_eip, new_cs, new_eip)
- 
---- bochs/instrument/stubs/instrument.cc	2024-06-22 17:14:06.410743338 -0400
-+++ bochs/instrument/stubs/instrument.cc	2024-06-15 09:40:33.406782044 -0400
-@@ -21,9 +21,12 @@
- 
- 
- #include "bochs.h"
-+#include <stdint.h>
- 
- #if BX_INSTRUMENTATION
- 
-+class bxInstruction_c;
-+
- void bx_instr_init_env(void) {}
- void bx_instr_exit_env(void) {}
- 
-@@ -36,8 +39,43 @@
- void bx_instr_debug_promt() {}
- void bx_instr_debug_cmd(const char *cmd) {}
- 
--void bx_instr_cnear_branch_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip) {}
--void bx_instr_cnear_branch_not_taken(unsigned cpu, bx_address branch_eip) {}
-+static inline uint32_t dbj2_hash(uint64_t src, uint64_t dst) {
-+    if (!g_lucid_ctx)
-+        return 0;
-+
-+    uint32_t hash = 5381;
-+    hash = ((hash << 5) + hash) + (uint32_t)(src);
-+    hash = ((hash << 5) + hash) + (uint32_t)(dst);
-+    return hash & (g_lucid_ctx->coverage_map_size - 1);
-+}
-+
-+static inline void update_coverage_map(uint64_t hash) {
-+    // Get the address of the coverage map
-+    if (!g_lucid_ctx)
-+        return;
-+
-+    uint8_t *map_addr = g_lucid_ctx->coverage_map_addr;
-+
-+    // Mark this as hit
-+    map_addr[hash]++;
-+
-+    // If it's been rolled-over to zero, make it one
-+    if (map_addr[hash] == 0) {
-+        map_addr[hash] = 1;
-+    }
-+}
-+
-+void bx_instr_cnear_branch_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip) {
-+    uint64_t hash = dbj2_hash(branch_eip, new_eip);
-+    update_coverage_map(hash);
-+    //printf("CNEAR TAKEN: (0x%lx, 0x%lx) Hash: 0x%lx\n", branch_eip, new_eip, hash);
-+}
-+void bx_instr_cnear_branch_not_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip) {
-+    uint64_t hash = dbj2_hash(branch_eip, new_eip);
-+    update_coverage_map(hash);
-+    //printf("CNEAR NOT TAKEN: (0x%lx, 0x%lx) Hash: 0x%lx\n", branch_eip, new_eip, hash);
-+}
-+
- void bx_instr_ucnear_branch(unsigned cpu, unsigned what, bx_address branch_eip, bx_address new_eip) {}
- void bx_instr_far_branch(unsigned cpu, unsigned what, Bit16u prev_cs, bx_address prev_eip, Bit16u new_cs, bx_address new_eip) {}
- 
-@@ -52,7 +90,9 @@
- void bx_instr_cache_cntrl(unsigned cpu, unsigned what) {}
- void bx_instr_prefetch_hint(unsigned cpu, unsigned what, unsigned seg, bx_address offset) {}
- 
--void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i) {}
-+void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i) {
-+    //printf("About to execute %p\n", i);
-+}
- void bx_instr_after_execution(unsigned cpu, bxInstruction_c *i) {}
- void bx_instr_repeat_iteration(unsigned cpu, bxInstruction_c *i) {}
- 
---- bochs/gui/siminterface.cc	2024-06-22 17:19:57.574361662 -0400
-+++ bochs/gui/siminterface.cc	2024-05-15 14:19:19.245169022 -0400
-@@ -1376,7 +1376,9 @@
-                     if (*fpp != NULL) {
-                       char *buffer = new char[4096];
-                       while (!feof(fp2)) {
-+                        //printf("READING 4096 bytes into buffer!\n");
-                         size_t chars = fread(buffer, 1, 4096, fp2);
-+                        //printf("WRITING to tmpfile!\n");
-                         fwrite(buffer, 1, chars, *fpp);
-                       }
-                       delete [] buffer;
---- bochs/cpu/data_xfer16.cc	2024-06-22 17:01:14.454221517 -0400
-+++ bochs/cpu/data_xfer16.cc	2024-06-21 14:45:32.520934181 -0400
-@@ -22,6 +22,7 @@
- #define NEED_CPU_REG_SHORTCUTS 1
- #include "bochs.h"
- #include "cpu.h"
-+#include "gui/siminterface.h"
- #define LOG_THIS BX_CPU_THIS_PTR
- 
- void BX_CPP_AttrRegparmN(1) BX_CPU_C::MOV_EwIwM(bxInstruction_c *i)
-@@ -235,6 +236,45 @@
-   BX_WRITE_16BIT_REG(i->src(), op1_16);
-   BX_WRITE_16BIT_REG(i->dst(), op2_16);
- 
-+#if BX_SNAPSHOT
-+  // Check for take snapshot instruction `xchg dx, dx`
-+  if ((i->src() == i->dst()) && (i->src() == 2)) {
-+    BX_COMMIT_INSTRUCTION(i);
-+    if (BX_CPU_THIS_PTR async_event)
-+      return;
-+    ++i;
-+    char save_dir[] = "/tmp/lucid_snapshot";
-+    mkdir(save_dir, 0777);
-+    printf("Saving Lucid snapshot to '%s'...\n", save_dir);
-+    if (SIM->save_state(save_dir)) {
-+      printf("Successfully saved snapshot\n");
-+      sleep(2);
-+      exit(0);
-+    }
-+    else {
-+      printf("Failed to save snapshot\n");
-+    }
-+    BX_EXECUTE_INSTRUCTION(i);
-+  }
-+#endif
+--- bochs/bochs.h	2024-07-07 12:54:41.268545141 -0400
++++ bochs/bochs.h	2024-05-15 18:28:11.556120698 -0400
+@@ -45,6 +45,11 @@
+ #include <stdarg.h>
+ #include <stdio.h>
+ #include <stdlib.h>
 +
 +#if BX_LUCID
-+  // Check for special NOP
-+  if (i->src() == i->dst()) {
-+    // Check for crash
-+    if (i->src() == 4 && g_lucid_ctx) {
-+      g_lucid_ctx->crash = 1;
-+      lucid_postfuzz_hook();
-+    }
-+
-+    // Normal snapshot reset
-+    if (i->src() == 3 && g_lucid_ctx) {
-+      // Call into post-fuzz hook
-+      lucid_postfuzz_hook();
-+    }
-+  }
++#include <lucid.h>
 +#endif
++
+ #if defined(__sun__)
+ #undef EAX
+ #undef ECX
+--- bochs/cpu/arith16.cc	2024-07-07 12:54:41.288545367 -0400
++++ bochs/cpu/arith16.cc	2024-07-05 16:35:59.408056512 -0400
+@@ -250,6 +250,9 @@
+ 
+   SET_FLAGS_OSZAPC_SUB_16(op1_16, op2_16, diff_16);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_16, op2_16, 16, RIP);
 +
    BX_NEXT_INSTR(i);
  }
  
---- bochs/cpu/ctrl_xfer64.cc	2024-06-22 17:01:14.454221517 -0400
-+++ bochs/cpu/ctrl_xfer64.cc	2024-06-02 08:38:51.861018513 -0400
-@@ -223,7 +223,8 @@
-     BX_LINK_TRACE(i);
-   }
+@@ -261,6 +264,9 @@
  
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+   SET_FLAGS_OSZAPC_SUB_16(op1_16, op2_16, diff_16);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_16, op2_16, 16, RIP);
++
+   BX_NEXT_INSTR(i);
  }
  
-@@ -235,7 +236,8 @@
-     BX_LINK_TRACE(i);
-   }
+@@ -274,6 +280,9 @@
  
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+   SET_FLAGS_OSZAPC_SUB_16(op1_16, op2_16, diff_16);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_16, op2_16, 16, RIP);
++
+   BX_NEXT_INSTR(i);
  }
  
-@@ -247,7 +249,8 @@
-     BX_LINK_TRACE(i);
-   }
+@@ -439,6 +448,9 @@
  
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+   SET_FLAGS_OSZAPC_SUB_16(op1_16, op2_16, diff_16);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_16, op2_16, 16, RIP);
++
+   BX_NEXT_INSTR(i);
  }
  
-@@ -259,7 +262,8 @@
-     BX_LINK_TRACE(i);
-   }
+@@ -450,6 +462,9 @@
  
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+   SET_FLAGS_OSZAPC_SUB_16(op1_16, op2_16, diff_16);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_16, op2_16, 16, RIP);
++
+   BX_NEXT_INSTR(i);
  }
  
-@@ -271,7 +275,8 @@
-     BX_LINK_TRACE(i);
-   }
+--- bochs/cpu/arith32.cc	2024-07-07 12:54:41.288545367 -0400
++++ bochs/cpu/arith32.cc	2024-07-05 16:37:40.441228275 -0400
+@@ -268,6 +268,9 @@
  
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+   SET_FLAGS_OSZAPC_SUB_32(op1_32, op2_32, diff_32);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_32, op2_32, 32, RIP);
++
+   BX_NEXT_INSTR(i);
  }
  
-@@ -283,7 +288,8 @@
-     BX_LINK_TRACE(i);
-   }
+@@ -281,6 +284,9 @@
  
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+   SET_FLAGS_OSZAPC_SUB_32(op1_32, op2_32, diff_32);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_32, op2_32, 32, RIP);
++
+   BX_NEXT_INSTR(i);
  }
  
-@@ -295,7 +301,8 @@
-     BX_LINK_TRACE(i);
-   }
+@@ -296,6 +302,9 @@
  
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+   SET_FLAGS_OSZAPC_SUB_32(op1_32, op2_32, diff_32);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_32, op2_32, 32, RIP);
++
+   BX_NEXT_INSTR(i);
  }
  
-@@ -307,7 +314,8 @@
-     BX_LINK_TRACE(i);
-   }
+@@ -471,6 +480,9 @@
  
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+   SET_FLAGS_OSZAPC_SUB_32(op1_32, op2_32, diff_32);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_32, op2_32, 32, RIP);
++
+   BX_NEXT_INSTR(i);
  }
  
-@@ -319,7 +327,8 @@
-     BX_LINK_TRACE(i);
-   }
+@@ -484,6 +496,9 @@
  
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+   SET_FLAGS_OSZAPC_SUB_32(op1_32, op2_32, diff_32);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_32, op2_32, 32, RIP);
++
+   BX_NEXT_INSTR(i);
  }
  
-@@ -331,7 +340,8 @@
-     BX_LINK_TRACE(i);
-   }
+--- bochs/cpu/arith64.cc	2024-07-07 12:54:41.288545367 -0400
++++ bochs/cpu/arith64.cc	2024-07-05 16:38:41.593925855 -0400
+@@ -263,6 +263,9 @@
  
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+   SET_FLAGS_OSZAPC_SUB_64(op1_64, op2_64, diff_64);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_64, op2_64, 64, RIP);
++
+   BX_NEXT_INSTR(i);
  }
  
-@@ -343,7 +353,8 @@
-     BX_LINK_TRACE(i);
-   }
+@@ -276,6 +279,9 @@
  
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+   SET_FLAGS_OSZAPC_SUB_64(op1_64, op2_64, diff_64);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_64, op2_64, 64, RIP);
++
+   BX_NEXT_INSTR(i);
  }
  
-@@ -355,7 +366,8 @@
-     BX_LINK_TRACE(i);
-   }
+@@ -291,6 +297,9 @@
  
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+   SET_FLAGS_OSZAPC_SUB_64(op1_64, op2_64, diff_64);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_64, op2_64, 64, RIP);
++
+   BX_NEXT_INSTR(i);
  }
  
-@@ -367,7 +379,8 @@
-     BX_LINK_TRACE(i);
-   }
+@@ -471,6 +480,9 @@
  
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+   SET_FLAGS_OSZAPC_SUB_64(op1_64, op2_64, diff_64);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_64, op2_64, 64, RIP);
++
+   BX_NEXT_INSTR(i);
  }
  
-@@ -379,7 +392,8 @@
-     BX_LINK_TRACE(i);
-   }
+@@ -484,6 +496,9 @@
  
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+   SET_FLAGS_OSZAPC_SUB_64(op1_64, op2_64, diff_64);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_64, op2_64, 64, RIP);
++
+   BX_NEXT_INSTR(i);
  }
  
-@@ -391,7 +405,8 @@
-     BX_LINK_TRACE(i);
-   }
+--- bochs/cpu/arith8.cc	2024-07-07 12:54:41.288545367 -0400
++++ bochs/cpu/arith8.cc	2024-07-05 16:50:30.065625895 -0400
+@@ -232,6 +232,9 @@
  
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+   SET_FLAGS_OSZAPC_SUB_8(op1_8, op2_8, diff_8);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_8, op2_8, 8, RIP);
++
+   BX_NEXT_INSTR(i);
  }
  
-@@ -403,7 +418,8 @@
-     BX_LINK_TRACE(i);
-   }
+@@ -243,6 +246,9 @@
  
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+   SET_FLAGS_OSZAPC_SUB_8(op1_8, op2_8, diff_8);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_8, op2_8, 8, RIP);
++
+   BX_NEXT_INSTR(i);
  }
  
-@@ -519,7 +535,8 @@
-     BX_LINK_TRACE(i);
-   }
+@@ -256,6 +262,9 @@
  
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_TRACE(i);
+   SET_FLAGS_OSZAPC_SUB_8(op1_8, op2_8, diff_8);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_8, op2_8, 8, RIP);
++
+   BX_NEXT_INSTR(i);
  }
  
-@@ -544,7 +561,8 @@
-     }
- #if BX_INSTRUMENTATION
-     else {
--      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+      bx_address taken = PREV_RIP + i->ilen();
-+      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-     }
+@@ -401,6 +410,9 @@
+ 
+   SET_FLAGS_OSZAPC_SUB_8(op1_8, op2_8, diff_8);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_8, op2_8, 8, RIP);
++
+   BX_NEXT_INSTR(i);
+ }
+ 
+@@ -412,6 +424,9 @@
+ 
+   SET_FLAGS_OSZAPC_SUB_8(op1_8, op2_8, diff_8);
+ 
++  // Added for fuzzing with Lucid in cmplog mode
++  BX_INST_REPORT_CMP(op1_8, op2_8, 8, RIP);
++
+   BX_NEXT_INSTR(i);
+ }
+ 
+--- bochs/cpu/cpu.cc	2024-07-07 12:54:41.296545458 -0400
++++ bochs/cpu/cpu.cc	2024-07-03 09:52:50.522106226 -0400
+@@ -63,6 +63,11 @@
+   BX_CPU_THIS_PTR stop_reason = STOP_NO_REASON;
  #endif
  
-@@ -559,7 +577,8 @@
-     }
- #if BX_INSTRUMENTATION
-     else {
--      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+      bx_address taken = PREV_RIP + i->ilen();
-+      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-     }
++// Place the Lucid snapshot taking code here above potential long jump returns
++#if BX_LUCID
++  lucid_take_snapshot();
++#endif
++
+   if (setjmp(BX_CPU_THIS_PTR jmp_buf_env)) {
+     // can get here only from exception function or VMEXIT
+     BX_CPU_THIS_PTR icount++;
+@@ -115,7 +120,7 @@
+ #if BX_SUPPORT_HANDLERS_CHAINING_SPEEDUPS
+     for(;;) {
+       // want to allow changing of the instruction inside instrumentation callback
+-      BX_INSTR_BEFORE_EXECUTION(BX_CPU_ID, i);
++      BX_INSTR_BEFORE_EXECUTION(BX_CPU_ID, i, RIP);
+       RIP += i->ilen();
+       // when handlers chaining is enabled this single call will execute entire trace
+       BX_CPU_CALL_METHOD(i->execute1, (i)); // might iterate repeat instruction
+@@ -138,7 +143,7 @@
  #endif
  
-@@ -580,7 +599,8 @@
-     }
- #if BX_INSTRUMENTATION
-     else {
--      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+      bx_address taken = PREV_RIP + i->ilen();
-+      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-     }
- #endif
+       // want to allow changing of the instruction inside instrumentation callback
+-      BX_INSTR_BEFORE_EXECUTION(BX_CPU_ID, i);
++      BX_INSTR_BEFORE_EXECUTION(BX_CPU_ID, i, RIP);
+       RIP += i->ilen();
+       BX_CPU_CALL_METHOD(i->execute1, (i)); // might iterate repeat instruction
+       BX_CPU_THIS_PTR prev_rip = RIP; // commit new RIP
+@@ -186,7 +191,7 @@
  
-@@ -595,7 +615,8 @@
-     }
- #if BX_INSTRUMENTATION
-     else {
--      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+      bx_address taken = PREV_RIP + i->ilen();
-+      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-     }
- #endif
+ #if BX_SUPPORT_HANDLERS_CHAINING_SPEEDUPS
+   // want to allow changing of the instruction inside instrumentation callback
+-  BX_INSTR_BEFORE_EXECUTION(BX_CPU_ID, i);
++  BX_INSTR_BEFORE_EXECUTION(BX_CPU_ID, i, RIP);
+   RIP += i->ilen();
+   // when handlers chaining is enabled this single call will execute entire trace
+   BX_CPU_CALL_METHOD(i->execute1, (i)); // might iterate repeat instruction
+@@ -200,7 +205,7 @@
  
-@@ -616,7 +637,8 @@
-     }
- #if BX_INSTRUMENTATION
-     else {
--      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+      bx_address taken = PREV_RIP + i->ilen();
-+      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-     }
- #endif
+   for(;;) {
+     // want to allow changing of the instruction inside instrumentation callback
+-    BX_INSTR_BEFORE_EXECUTION(BX_CPU_ID, i);
++    BX_INSTR_BEFORE_EXECUTION(BX_CPU_ID, i, RIP);
+     RIP += i->ilen();
+     BX_CPU_CALL_METHOD(i->execute1, (i)); // might iterate repeat instruction
+     BX_CPU_THIS_PTR prev_rip = RIP; // commit new RIP
+--- bochs/cpu/cpu.h	2024-07-07 12:54:41.296545458 -0400
++++ bochs/cpu/cpu.h	2024-07-03 10:12:52.633845353 -0400
+@@ -4536,7 +4536,7 @@
  
-@@ -631,7 +653,8 @@
-     }
- #if BX_INSTRUMENTATION
-     else {
--      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+      bx_address taken = PREV_RIP + i->ilen();
-+      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-     }
- #endif
- 
---- bochs/cpu/ctrl_xfer32.cc	2024-06-22 17:01:14.454221517 -0400
-+++ bochs/cpu/ctrl_xfer32.cc	2024-06-02 08:46:58.714472162 -0400
-@@ -288,7 +288,8 @@
-     BX_LINK_TRACE(i);
-   }
- 
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+   BX_SMF void repeat(bxInstruction_c *i, BxRepIterationPtr_tR execute) BX_CPP_AttrRegparmN(2);
+   BX_SMF void repeat_ZF(bxInstruction_c *i, BxRepIterationPtr_tR execute) BX_CPP_AttrRegparmN(2);
+-
++  
+   // linear address for access_linear expected to be canonical !
+   BX_SMF int access_read_linear(bx_address laddr, unsigned len, unsigned curr_pl, unsigned xlate_rw, Bit32u ac_mask, void *data);
+   BX_SMF int access_write_linear(bx_address laddr, unsigned len, unsigned curr_pl, unsigned xlate_rw, Bit32u ac_mask, void *data);
+@@ -5714,11 +5714,11 @@
+   BX_CPU_THIS_PTR icount++;                            \
  }
  
-@@ -301,7 +302,8 @@
-     BX_LINK_TRACE(i);
-   }
+-#define BX_EXECUTE_INSTRUCTION(i) {                    \
+-  BX_INSTR_BEFORE_EXECUTION(BX_CPU_ID, (i));           \
+-  RIP += (i)->ilen();                                  \
+-  return BX_CPU_CALL_METHOD(i->execute1, (i));         \
+-}
++#define BX_EXECUTE_INSTRUCTION(i) do {                  \
++  BX_INSTR_BEFORE_EXECUTION(BX_CPU_ID, (i), RIP);       \
++  RIP += ((i)->ilen());                                 \
++  return BX_CPU_CALL_METHOD((i)->execute1, (i));        \
++} while (0)
  
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
- }
- 
-@@ -314,7 +316,8 @@
-     BX_LINK_TRACE(i);
-   }
- 
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
- }
- 
-@@ -327,7 +330,8 @@
-     BX_LINK_TRACE(i);
-   }
- 
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
- }
- 
-@@ -340,7 +344,8 @@
-     BX_LINK_TRACE(i);
-   }
- 
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
- }
- 
-@@ -353,7 +358,8 @@
-     BX_LINK_TRACE(i);
-   }
- 
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
- }
- 
-@@ -366,7 +372,8 @@
-     BX_LINK_TRACE(i);
-   }
- 
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
- }
- 
-@@ -379,7 +386,8 @@
-     BX_LINK_TRACE(i);
-   }
- 
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
- }
- 
-@@ -392,7 +400,8 @@
-     BX_LINK_TRACE(i);
-   }
- 
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
- }
- 
-@@ -405,7 +414,8 @@
-     BX_LINK_TRACE(i);
-   }
- 
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
- }
- 
-@@ -418,7 +428,8 @@
-     BX_LINK_TRACE(i);
-   }
- 
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
- }
- 
-@@ -431,7 +442,8 @@
-     BX_LINK_TRACE(i);
-   }
- 
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
- }
- 
-@@ -444,7 +456,8 @@
-     BX_LINK_TRACE(i);
-   }
- 
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
- }
- 
-@@ -457,7 +470,8 @@
-     BX_LINK_TRACE(i);
-   }
- 
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
- }
- 
-@@ -470,7 +484,8 @@
-     BX_LINK_TRACE(i);
-   }
- 
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
- }
- 
-@@ -483,7 +498,8 @@
-     BX_LINK_TRACE(i);
-   }
- 
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
- }
- 
-@@ -630,7 +646,8 @@
-     BX_LINK_TRACE(i);
-   }
- 
--  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+  bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-   BX_NEXT_TRACE(i);
- }
- 
-@@ -660,7 +677,8 @@
-     }
- #if BX_INSTRUMENTATION
-     else {
--      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+      bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-     }
- #endif
- 
-@@ -677,7 +695,8 @@
-     }
- #if BX_INSTRUMENTATION
-     else {
--      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+      bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-     }
- #endif
- 
-@@ -703,7 +722,8 @@
-     }
- #if BX_INSTRUMENTATION
-     else {
--      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+      bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-     }
- #endif
- 
-@@ -720,7 +740,8 @@
-     }
- #if BX_INSTRUMENTATION
-     else {
--      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+      bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-     }
- #endif
- 
-@@ -746,7 +767,8 @@
-     }
- #if BX_INSTRUMENTATION
-     else {
--      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+      bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-     }
- #endif
- 
-@@ -763,7 +785,8 @@
-     }
- #if BX_INSTRUMENTATION
-     else {
--      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
-+      bx_address taken = PREV_RIP + i->ilen();
-+  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
-     }
- #endif
- 
---- bochs/cpu/ctrl_xfer16.cc	2024-06-22 17:01:14.454221517 -0400
+ #define BX_NEXT_TRACE(i) {                             \
+   BX_COMMIT_INSTRUCTION(i);                            \
+--- bochs/cpu/ctrl_xfer16.cc	2024-07-07 12:54:41.300545504 -0400
 +++ bochs/cpu/ctrl_xfer16.cc	2024-06-02 08:40:45.165995576 -0400
 @@ -288,7 +288,8 @@
      BX_LINK_TRACE(i);
@@ -863,31 +530,732 @@
      }
  #endif
  
---- bochs/cpu/cpu.cc	2024-06-22 17:01:14.430221229 -0400
-+++ bochs/cpu/cpu.cc	2024-06-21 10:40:37.975673657 -0400
-@@ -63,6 +63,11 @@
-   BX_CPU_THIS_PTR stop_reason = STOP_NO_REASON;
+--- bochs/cpu/ctrl_xfer32.cc	2024-07-07 12:54:41.300545504 -0400
++++ bochs/cpu/ctrl_xfer32.cc	2024-06-02 08:46:58.714472162 -0400
+@@ -288,7 +288,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -301,7 +302,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -314,7 +316,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -327,7 +330,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -340,7 +344,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -353,7 +358,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -366,7 +372,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -379,7 +386,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -392,7 +400,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -405,7 +414,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -418,7 +428,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -431,7 +442,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -444,7 +456,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -457,7 +470,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -470,7 +484,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -483,7 +498,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -630,7 +646,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_TRACE(i);
+ }
+ 
+@@ -660,7 +677,8 @@
+     }
+ #if BX_INSTRUMENTATION
+     else {
+-      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++      bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+     }
  #endif
  
-+// Place the Lucid snapshot taking code here above potential long jump returns
-+#if BX_LUCID
-+  lucid_take_snapshot();
+@@ -677,7 +695,8 @@
+     }
+ #if BX_INSTRUMENTATION
+     else {
+-      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++      bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+     }
+ #endif
+ 
+@@ -703,7 +722,8 @@
+     }
+ #if BX_INSTRUMENTATION
+     else {
+-      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++      bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+     }
+ #endif
+ 
+@@ -720,7 +740,8 @@
+     }
+ #if BX_INSTRUMENTATION
+     else {
+-      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++      bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+     }
+ #endif
+ 
+@@ -746,7 +767,8 @@
+     }
+ #if BX_INSTRUMENTATION
+     else {
+-      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++      bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+     }
+ #endif
+ 
+@@ -763,7 +785,8 @@
+     }
+ #if BX_INSTRUMENTATION
+     else {
+-      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++      bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+     }
+ #endif
+ 
+--- bochs/cpu/ctrl_xfer64.cc	2024-07-07 12:54:41.300545504 -0400
++++ bochs/cpu/ctrl_xfer64.cc	2024-06-02 08:38:51.861018513 -0400
+@@ -223,7 +223,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -235,7 +236,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -247,7 +249,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -259,7 +262,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -271,7 +275,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -283,7 +288,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -295,7 +301,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -307,7 +314,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -319,7 +327,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -331,7 +340,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -343,7 +353,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -355,7 +366,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -367,7 +379,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -379,7 +392,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -391,7 +405,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -403,7 +418,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_INSTR(i); // trace can continue over non-taken branch
+ }
+ 
+@@ -519,7 +535,8 @@
+     BX_LINK_TRACE(i);
+   }
+ 
+-  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++  bx_address taken = PREV_RIP + i->ilen();
++  BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+   BX_NEXT_TRACE(i);
+ }
+ 
+@@ -544,7 +561,8 @@
+     }
+ #if BX_INSTRUMENTATION
+     else {
+-      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++      bx_address taken = PREV_RIP + i->ilen();
++      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+     }
+ #endif
+ 
+@@ -559,7 +577,8 @@
+     }
+ #if BX_INSTRUMENTATION
+     else {
+-      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++      bx_address taken = PREV_RIP + i->ilen();
++      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+     }
+ #endif
+ 
+@@ -580,7 +599,8 @@
+     }
+ #if BX_INSTRUMENTATION
+     else {
+-      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++      bx_address taken = PREV_RIP + i->ilen();
++      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+     }
+ #endif
+ 
+@@ -595,7 +615,8 @@
+     }
+ #if BX_INSTRUMENTATION
+     else {
+-      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++      bx_address taken = PREV_RIP + i->ilen();
++      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+     }
+ #endif
+ 
+@@ -616,7 +637,8 @@
+     }
+ #if BX_INSTRUMENTATION
+     else {
+-      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++      bx_address taken = PREV_RIP + i->ilen();
++      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+     }
+ #endif
+ 
+@@ -631,7 +653,8 @@
+     }
+ #if BX_INSTRUMENTATION
+     else {
+-      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP);
++      bx_address taken = PREV_RIP + i->ilen();
++      BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(BX_CPU_ID, PREV_RIP, taken);
+     }
+ #endif
+ 
+--- bochs/cpu/data_xfer16.cc	2024-07-07 12:54:41.300545504 -0400
++++ bochs/cpu/data_xfer16.cc	2024-06-21 14:45:32.520934181 -0400
+@@ -22,6 +22,7 @@
+ #define NEED_CPU_REG_SHORTCUTS 1
+ #include "bochs.h"
+ #include "cpu.h"
++#include "gui/siminterface.h"
+ #define LOG_THIS BX_CPU_THIS_PTR
+ 
+ void BX_CPP_AttrRegparmN(1) BX_CPU_C::MOV_EwIwM(bxInstruction_c *i)
+@@ -235,6 +236,45 @@
+   BX_WRITE_16BIT_REG(i->src(), op1_16);
+   BX_WRITE_16BIT_REG(i->dst(), op2_16);
+ 
++#if BX_SNAPSHOT
++  // Check for take snapshot instruction `xchg dx, dx`
++  if ((i->src() == i->dst()) && (i->src() == 2)) {
++    BX_COMMIT_INSTRUCTION(i);
++    if (BX_CPU_THIS_PTR async_event)
++      return;
++    ++i;
++    char save_dir[] = "/tmp/lucid_snapshot";
++    mkdir(save_dir, 0777);
++    printf("Saving Lucid snapshot to '%s'...\n", save_dir);
++    if (SIM->save_state(save_dir)) {
++      printf("Successfully saved snapshot\n");
++      sleep(2);
++      exit(0);
++    }
++    else {
++      printf("Failed to save snapshot\n");
++    }
++    BX_EXECUTE_INSTRUCTION(i);
++  }
 +#endif
 +
-   if (setjmp(BX_CPU_THIS_PTR jmp_buf_env)) {
-     // can get here only from exception function or VMEXIT
-     BX_CPU_THIS_PTR icount++;
---- bochs/bochs.h	2024-06-22 17:01:14.390220748 -0400
-+++ bochs/bochs.h	2024-05-15 18:28:11.556120698 -0400
-@@ -45,6 +45,11 @@
- #include <stdarg.h>
- #include <stdio.h>
- #include <stdlib.h>
++#if BX_LUCID
++  // Check for special NOP
++  if (i->src() == i->dst()) {
++    // Check for crash
++    if (i->src() == 4 && g_lucid_ctx) {
++      g_lucid_ctx->crash = 1;
++      lucid_postfuzz_hook();
++    }
 +
++    // Normal snapshot reset
++    if (i->src() == 3 && g_lucid_ctx) {
++      // Call into post-fuzz hook
++      lucid_postfuzz_hook();
++    }
++  }
++#endif
++
+   BX_NEXT_INSTR(i);
+ }
+ 
+--- bochs/gui/siminterface.cc	2024-07-07 12:54:41.344546001 -0400
++++ bochs/gui/siminterface.cc	2024-05-15 14:19:19.245169022 -0400
+@@ -1376,7 +1376,9 @@
+                     if (*fpp != NULL) {
+                       char *buffer = new char[4096];
+                       while (!feof(fp2)) {
++                        //printf("READING 4096 bytes into buffer!\n");
+                         size_t chars = fread(buffer, 1, 4096, fp2);
++                        //printf("WRITING to tmpfile!\n");
+                         fwrite(buffer, 1, chars, *fpp);
+                       }
+                       delete [] buffer;
+--- bochs/instrument/stubs/instrument.cc	2024-07-07 12:54:41.348546047 -0400
++++ bochs/instrument/stubs/instrument.cc	2024-07-05 20:35:35.233388026 -0400
+@@ -21,6 +21,7 @@
+ 
+ 
+ #include "bochs.h"
++#include <stdint.h>
+ 
+ #if BX_INSTRUMENTATION
+ 
+@@ -38,8 +39,66 @@
+ void bx_instr_debug_promt() {}
+ void bx_instr_debug_cmd(const char *cmd) {}
+ 
++static inline uint32_t dbj2_hash_coverage(uint64_t src, uint64_t dst) {
++    uint32_t hash = 5381;
++    hash = ((hash << 5) + hash) + (uint32_t)(src);
++    hash = ((hash << 5) + hash) + (uint32_t)(dst);
++    
++    return hash & (g_lucid_ctx->coverage_map_size - 1);
++}
++
++static inline uint64_t dbj2_hash_trace(uint64_t src, uint64_t dst) {
++    uint64_t hash = src;
++    if (hash == 0) {
++        hash = 5381;
++    }
++
++    hash = ((hash << 5) + hash) + (uint32_t)(dst);
++
++    return hash;
++}
++
++static inline void update_coverage_map(uint32_t hash) {
++    // Get the address of the coverage map
++    uint8_t *map_addr = g_lucid_ctx->coverage_map_addr;
++
++    // Mark this as hit
++    map_addr[hash]++;
++
++    // If it's been rolled-over to zero, make it one
++    if (map_addr[hash] == 0) {
++        map_addr[hash] = 1;
++    }
++}
++
++#if BX_LUCID
++void bx_instr_cnear_branch_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip) {
++    uint32_t hash = dbj2_hash_coverage(branch_eip, new_eip);
++    update_coverage_map(hash);
++}
++
++void bx_instr_cnear_branch_not_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip) {
++    uint32_t hash = dbj2_hash_coverage(branch_eip, new_eip);
++    update_coverage_map(hash);
++}
++
++void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i, bx_address eip) {
++    // Check to see if we're in tracing mode
++    if (g_lucid_ctx->cpu_mode != TRACE_HASH) {
++        return;
++    } 
++
++    // Update g_lucid_ctx->trace_hash
++    g_lucid_ctx->trace_hash = dbj2_hash_trace(g_lucid_ctx->trace_hash, eip);
++}
++
++#else
+ void bx_instr_cnear_branch_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip) {}
+-void bx_instr_cnear_branch_not_taken(unsigned cpu, bx_address branch_eip) {}
++void bx_instr_cnear_branch_not_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip) {}
++void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i, bx_address eip) {}
++
++#endif /* BX_LUCID */
++
+ void bx_instr_ucnear_branch(unsigned cpu, unsigned what, bx_address branch_eip, bx_address new_eip) {}
+ void bx_instr_far_branch(unsigned cpu, unsigned what, Bit16u prev_cs, bx_address prev_eip, Bit16u new_cs, bx_address new_eip) {}
+ 
+@@ -54,7 +113,6 @@
+ void bx_instr_cache_cntrl(unsigned cpu, unsigned what) {}
+ void bx_instr_prefetch_hint(unsigned cpu, unsigned what, unsigned seg, bx_address offset) {}
+ 
+-void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i) {}
+ void bx_instr_after_execution(unsigned cpu, bxInstruction_c *i) {}
+ void bx_instr_repeat_iteration(unsigned cpu, bxInstruction_c *i) {}
+ 
+--- bochs/instrument/stubs/instrument.h	2024-07-07 12:44:37.852337286 -0400
++++ bochs/instrument/stubs/instrument.h	2024-07-05 18:16:38.202352664 -0400
+@@ -19,6 +19,10 @@
+ //  License along with this library; if not, write to the Free Software
+ //  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
+ 
 +#if BX_LUCID
 +#include <lucid.h>
++#endif /* BX_LUCID */
++
+ #if BX_INSTRUMENTATION
+ 
+ class bxInstruction_c;
+@@ -41,7 +45,7 @@
+ void bx_instr_debug_cmd(const char *cmd);
+ 
+ void bx_instr_cnear_branch_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip);
+-void bx_instr_cnear_branch_not_taken(unsigned cpu, bx_address branch_eip);
++void bx_instr_cnear_branch_not_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip);
+ void bx_instr_ucnear_branch(unsigned cpu, unsigned what, bx_address branch_eip, bx_address new_eip);
+ void bx_instr_far_branch(unsigned cpu, unsigned what, Bit16u prev_cs, bx_address prev_eip, Bit16u new_cs, bx_address new_eip);
+ 
+@@ -56,7 +60,7 @@
+ void bx_instr_prefetch_hint(unsigned cpu, unsigned what, unsigned seg, bx_address offset);
+ void bx_instr_clflush(unsigned cpu, bx_address laddr, bx_phy_address paddr);
+ 
+-void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i);
++void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i, bx_address eip);
+ void bx_instr_after_execution(unsigned cpu, bxInstruction_c *i);
+ void bx_instr_repeat_iteration(unsigned cpu, bxInstruction_c *i);
+ 
+@@ -90,7 +94,7 @@
+ 
+ /* branch resolution */
+ #define BX_INSTR_CNEAR_BRANCH_TAKEN(cpu_id, branch_eip, new_eip) bx_instr_cnear_branch_taken(cpu_id, branch_eip, new_eip)
+-#define BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(cpu_id, branch_eip) bx_instr_cnear_branch_not_taken(cpu_id, branch_eip)
++#define BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(cpu_id, branch_eip, new_eip) bx_instr_cnear_branch_not_taken(cpu_id, branch_eip, new_eip)
+ #define BX_INSTR_UCNEAR_BRANCH(cpu_id, what, branch_eip, new_eip) bx_instr_ucnear_branch(cpu_id, what, branch_eip, new_eip)
+ #define BX_INSTR_FAR_BRANCH(cpu_id, what, prev_cs, prev_eip, new_cs, new_eip) \
+                        bx_instr_far_branch(cpu_id, what, prev_cs, prev_eip, new_cs, new_eip)
+@@ -114,7 +118,7 @@
+                        bx_instr_prefetch_hint(cpu_id, what, seg, offset)
+ 
+ /* execution */
+-#define BX_INSTR_BEFORE_EXECUTION(cpu_id, i)  bx_instr_before_execution(cpu_id, i)
++#define BX_INSTR_BEFORE_EXECUTION(cpu_id, i, eip)  bx_instr_before_execution(cpu_id, i, eip);
+ #define BX_INSTR_AFTER_EXECUTION(cpu_id, i)   bx_instr_after_execution(cpu_id, i)
+ #define BX_INSTR_REPEAT_ITERATION(cpu_id, i)  bx_instr_repeat_iteration(cpu_id, i)
+ 
+@@ -135,6 +139,17 @@
+ /* vmexit callback */
+ #define BX_INSTR_VMEXIT(cpu_id, reason, qualification) bx_instr_vmexit(cpu_id, reason, qualification)
+ 
++/* Added for fuzzing with Lucid */
++#if BX_LUCID
++#define BX_INST_REPORT_CMP(op1, op2, size, eip)                                                 \
++    do {                                                                                        \
++        if (g_lucid_ctx->cpu_mode == CMPLOG)                                                    \
++            g_lucid_report_cmps(g_lucid_ctx, (size_t)(op1), (size_t)(op2), size, (size_t)(eip));\
++    } while (0)
++#else
++#define BX_INST_REPORT_CMP(op1, op2, size, eip)
 +#endif
 +
- #if defined(__sun__)
- #undef EAX
- #undef ECX
+ #else
+ 
+ /* initialization/deinitialization of instrumentalization */
+@@ -154,7 +169,7 @@
+ 
+ /* branch resolution */
+ #define BX_INSTR_CNEAR_BRANCH_TAKEN(cpu_id, branch_eip, new_eip)
+-#define BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(cpu_id, branch_eip)
++#define BX_INSTR_CNEAR_BRANCH_NOT_TAKEN(cpu_id, branch_eip, new_eip)
+ #define BX_INSTR_UCNEAR_BRANCH(cpu_id, what, branch_eip, new_eip)
+ #define BX_INSTR_FAR_BRANCH(cpu_id, what, prev_cs, prev_eip, new_cs, new_eip)
+ 
+@@ -173,7 +188,7 @@
+ #define BX_INSTR_PREFETCH_HINT(cpu_id, what, seg, offset)
+ 
+ /* execution */
+-#define BX_INSTR_BEFORE_EXECUTION(cpu_id, i)
++#define BX_INSTR_BEFORE_EXECUTION(cpu_id, i, eip)
+ #define BX_INSTR_AFTER_EXECUTION(cpu_id, i)
+ #define BX_INSTR_REPEAT_ITERATION(cpu_id, i)
+ 
+@@ -194,4 +209,7 @@
+ /* vmexit callback */
+ #define BX_INSTR_VMEXIT(cpu_id, reason, qualification)
+ 
++/* Added for fuzzing with Lucid */
++#define BX_INST_REPORT_CMP(op1, op2, size, eip)
++
+ #endif
+--- bochs/main.cc	2024-07-07 12:54:41.368546273 -0400
++++ bochs/main.cc	2024-07-05 16:53:06.459628808 -0400
+@@ -306,6 +306,14 @@
+ 
+ int bxmain(void)
+ {
++
++  // Added for fuzzing with Lucid 
++#if BX_LUCID
++  if (!g_lucid_ctx) {
++    BX_PANIC(("Lucid configured but g_lucid_ctx is NULL"));
++  }
++#endif /* BX_LUCID */
++
+ #ifdef HAVE_LOCALE_H
+   // Initialize locale (for isprint() and other functions)
+   setlocale (LC_ALL, "");
+Binary files bochs/windows_xp.img and bochs/windows_xp.img differ
