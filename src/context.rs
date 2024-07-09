@@ -18,7 +18,7 @@ use crate::mutator::Mutator;
 use crate::redqueen::{Redqueen, lucid_report_cmps, redqueen_pass};
 use crate::misc::{get_xcr0, xsave64, fxsave64, xrstor64, fxrstor64, get_arg,
     get_arg_val_u64};
-use crate::{fault, mega_panic};
+use crate::{fault, mega_panic, prompt};
 
 // Duh
 const PAGE_SIZE: usize = 0x1000;
@@ -970,13 +970,18 @@ pub fn run_fuzzcase(context: &mut LucidContext) -> Result<(), LucidErr> {
 
 // Check the coverage map for new code coverage
 pub fn check_coverage(context: &mut LucidContext) -> bool {
+    let old_edge_count = context.stats.edges;
     let (new_coverage, edge_count) = context.coverage.update();
     if new_coverage {
         // Save current input even if it's a crash
-        context.mutator.save_input();
+        let hash = context.mutator.save_input();
 
         // Update stats
         context.stats.new_coverage(edge_count);
+
+        // Send message
+        prompt!("Input '{:X}' found {} new edges",
+            hash, edge_count - old_edge_count);
     }
 
     new_coverage
@@ -999,6 +1004,12 @@ fn fuzzcase_epilogue(context: &mut LucidContext) {
 }
 
 pub fn fuzz_loop(context: &mut LucidContext) -> Result<(), LucidErr> {
+    // Quick sleep
+    std::thread::sleep(std::time::Duration::from_secs(3));
+
+    // Reset screen
+    println!("\x1B[2J\x1B[1;1H");
+
     // Start time-keeping
     context.stats.start_session(context.coverage.curr_map.len());
 

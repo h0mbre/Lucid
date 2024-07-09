@@ -1,5 +1,9 @@
 /// This file contains all of the logic necessary to implement a crude mutator
 
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
+
+
 #[derive(Clone, Default)]
 pub struct Mutator {
     pub rng: usize,
@@ -73,7 +77,14 @@ impl Mutator {
         self.input.extend_from_slice(slice);
     }
 
-    pub fn save_input(&mut self) {
+    pub fn save_input(&mut self) -> u64 {
         self.corpus.push(self.input.clone());
+
+        // Hash input
+        let mut hasher = DefaultHasher::new();
+        self.input.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        hash
     }
 }

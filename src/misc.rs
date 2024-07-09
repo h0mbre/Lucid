@@ -5,10 +5,10 @@ use core::arch::x86_64::{_xgetbv, _xsave64, _fxsave64, _xrstor64, _fxrstor64};
 #[macro_export]
 macro_rules! prompt {
     () => ({
-        print!("\x1b[1;35m\u{2726}lucid\u{2726}\x1b[0m\n");
+        print!("\x1b[1;35m[lucid]\x1b[0m\n");
     });
     ($($arg:tt)*) => ({
-        print!("\x1b[1;35m\u{2726}lucid\u{2726}\x1b[0m ");
+        print!("\x1b[1;35m[lucid]\x1b[0m ");
         println!($($arg)*);
     });
 }
@@ -16,10 +16,10 @@ macro_rules! prompt {
 #[macro_export]
 macro_rules! prompt_warn {
     () => ({
-        print!("\x1b[1;33m\u{2726}lucid\u{2726}\x1b[0m\n");
+        print!("\x1b[1;33m[lucid]\x1b[0m\n");
     });
     ($($arg:tt)*) => ({
-        print!("\x1b[1;33m\u{2726}lucid\u{2726}\x1b[0m ");
+        print!("\x1b[1;33m[lucid]\x1b[0m ");
         println!($($arg)*);
     });
 }

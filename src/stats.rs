@@ -6,49 +6,13 @@ use chrono::Local;
 // Default batch time for stat reporting in milliseconds
 const BATCH_TIME: u128 = 1_000;  // Print stats every second
 
-fn print_top_title(title: &str, line_len: usize) {
-    // Determine padding
-    let padding = line_len - title.len() - 2;
-    
-    // Format string
-    let line = format!("┌\x1b[1;32m{}\x1b[0m{}┐",
-        title,
-        "─".repeat(padding));
-
-    println!("{line}");
-}
-
-fn print_mid_title(title: &str, line_len: usize) {
-    // Determine padding
-    let padding = line_len - title.len() - 2;
-    
-    // Format string
-    let line = format!("├\x1b[1;32m{}\x1b[0m{}┤",
-        title,
-        "─".repeat(padding));
-
-    println!("{line}");
-}
-
-fn print_entry<T: std::fmt::Display>(key: &str, val: T, line_len: usize) {
-    // Format key value
-    let key_val_str = format!("{} : {}", key, val);
-
-    // Calculate padding
-    let padding = line_len - key_val_str.len() - 2;
-
-    // Format final line
-    let line = format!("│{}{}│",
-        key_val_str,
-        " ".repeat(padding));
-
-    println!("{line}");
-}
-
-fn close_stats(line_len: usize) {
-    let padding = line_len - 2;
-    let line = format!("└{}┘", "─".repeat(padding));
-    println!("{line}");
+// Helper function to format a group of stats
+fn format_group(title: &str, stats: &[(String, String)]) -> String {
+    let stats_str = stats.iter()
+        .map(|(k, v)| format!("{}: {}", k, v))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    format!("\x1b[1;32m{}:\x1b[0m {}", title, stats_str)
 }
 
 #[derive(Clone, Default)]
@@ -146,89 +110,82 @@ impl Stats {
         };
 
         // Calculate batch proportions
-        let restore_percent = if batch_millis > 0 {
+        let restore_per = if batch_millis > 0 {
             (self.batch_restore.as_millis() as f64 / batch_millis as f64)
                 * 100.0
         } else {
             0.0
         };
 
-        let mutator_percent = if batch_millis > 0 {
+        let mutator_per = if batch_millis > 0 {
             (self.batch_mutator.as_millis() as f64 / batch_millis as f64)
                 * 100.0
         } else {
             0.0
         };
 
-        let target_percent = if batch_millis > 0 {
+        let target_per = if batch_millis > 0 {
             (self.batch_target.as_millis() as f64 / batch_millis as f64)
                 * 100.0
         } else {
             0.0
         };
 
-        let coverage_percent = if batch_millis > 0 {
+        let coverage_per = if batch_millis > 0 {
             (self.batch_coverage.as_millis() as f64 / batch_millis as f64)
                 * 100.0
         } else {
             0.0
         };
 
-        let rq_percent = if batch_millis > 0 {
+        let rq_per = if batch_millis > 0 {
             (self.batch_redqueen.as_millis() as f64 / batch_millis as f64)
             * 100.0
         } else {
             0.0
         };
 
-        let misc_percent = if batch_millis > 0 {
-            100.0 - restore_percent - mutator_percent - target_percent
-                - coverage_percent - rq_percent
+        let misc_per = if batch_millis > 0 {
+            100.0 - restore_per - mutator_per - target_per
+                - coverage_per - rq_per
         } else {
             0.0
         };
 
-        // Line length
-        let line_length = 70;
+        // Print banner
+        println!("\n\x1b[1;35m[lucid stats (start time: {})]\x1b[0m",
+            self.start_str.clone());
 
-        // Clear terminal
-        print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
-        
-        // Print the title bar
-        let current_time = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let title = format!("lucid stats [{}]", current_time);
-        let padding = line_length - title.len(); 
-        println!("{}\x1b[1;35m{}\x1b[0m{}",
-            " ".repeat(padding / 2), title, " ".repeat(padding / 2));
-        
-        // Print Globals
-        print_top_title("globals", line_length);
-        print_entry("start", &self.start_str, line_length);
-        print_entry("uptime", format!("{days}d {hours}h {minutes}m {seconds}s"),
-            line_length);
-        print_entry("iters", iters_str, line_length);
-        print_entry("iters/s", format!("{iters_sec:.2}"), line_length);
-        print_entry("crashes", self.crashes, line_length);
+        // Format and print globals
+        let globals = [
+            ("uptime".to_string(), format!("{}d {}h {}m {}s",
+                days, hours, minutes, seconds)),
+            ("iters".to_string(), iters_str),
+            ("iters/s".to_string(), format!("{:.2}", iters_sec)),
+            ("crashes".to_string(), format!("{}", self.crashes)),
+        ];
+        println!("{}", format_group("globals", &globals));
+    
+        // Format and print coverage
+        let coverage = [
+            ("edges".to_string(), format!("{}", self.edges)),
+            ("last find".to_string(), format!("{}h {}m {}s",
+                lf_hours, lf_minutes, lf_secs)),
+            ("map".to_string(), format!("{:.2}%",
+                (self.edges as f64 / self.map_size as f64) * 100.0)),
+        ];
+        println!("{}", format_group("coverage", &coverage));
 
-        // Print Coverage
-        print_mid_title("coverage", line_length);
-        print_entry("edges", self.edges, line_length);
-        print_entry("last find", format!("{lf_hours}h {lf_minutes}m {lf_secs}s",
-            ), line_length);
-        print_entry("map", format!("{:.2}%",
-            (self.edges as f64 / self.map_size as f64) * 100.0), line_length);
-
-        // Print CPU stats
-        print_mid_title("cpu", line_length);
-        print_entry("target", format!("{target_percent:.1}%"), line_length);
-        print_entry("reset", format!("{restore_percent:.1}%"), line_length);
-        print_entry("mutator", format!("{mutator_percent:.1}%"), line_length);
-        print_entry("coverage", format!("{coverage_percent:.1}%"), line_length);
-        print_entry("redqueen", format!("{rq_percent:.1}%"), line_length);
-        print_entry("misc", format!("{misc_percent:.1}%"), line_length);
-
-        // Close the stat box
-        close_stats(line_length);
+        // Format and print CPU stats
+        let cpu = [
+            ("target".to_string(), format!("{:.1}%", target_per)),
+            ("reset".to_string(), format!("{:.1}%", restore_per)),
+            ("mutator".to_string(), format!("{:.1}%", mutator_per)),
+            ("coverage".to_string(), format!("{:.1}%", coverage_per)),
+            ("redqueen".to_string(), format!("{:.1}%", rq_per)),
+            ("misc".to_string(), format!("{:.1}%", misc_per)),
+        ];
+        println!("{}", format_group("cpu", &cpu));
 
         // Reset batch
         self.batch_iters = 0;

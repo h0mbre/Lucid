@@ -7,7 +7,7 @@ use std::collections::{VecDeque, HashSet};
 use crate::context::{LucidContext, CpuMode, reset_bochs, run_fuzzcase,
     insert_fuzzcase};
 use crate::err::LucidErr;
-use crate::mega_panic;
+use crate::{mega_panic, prompt};
 use std::collections::HashMap;
 
 // Represents the original value that was reported by Bochs
@@ -644,7 +644,7 @@ fn create_redqueen_inputs(context: &mut LucidContext) {
     remove_loops(context);
 
     // Now that we've removed loops, create a new hashmap where each entry
-    // is an operand for the key, and the value is its partner:
+    // is an operand pair
     // (0x1337, 0x4142) becomes 2 map entries
     // > 0x1337: 0x4142
     // > 0x4142: 0x1337
@@ -680,10 +680,18 @@ fn create_redqueen_inputs(context: &mut LucidContext) {
     // input
     for (k, v) in partner_map.iter() {
         let inputs = process_partners(&context.mutator.input, *k, *v);
+
+        let num_inputs = inputs.len();
         
         // Store each input in the redqueen queue
         for input in inputs {
             context.redqueen.queue.push(input);
+        }
+
+        // Notify user
+        if num_inputs > 0 {
+            prompt!("Redqueen added {} inputs to queue ({} total)",
+                num_inputs, context.redqueen.queue.len());
         }
     }
 }

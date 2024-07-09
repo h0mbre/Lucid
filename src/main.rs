@@ -108,7 +108,7 @@ fn main() {
         };
 
     prompt!("Input size in snapshot: 0x{:X}", input_size);
-    prompt!("Input buffer in snapshot: {:X?}", input_buf);
+    prompt!("Input buffer in snapshot: {:X?}...", input_buf);
 
     // Now we can fuzz
     prompt!("Starting fuzzer...");
