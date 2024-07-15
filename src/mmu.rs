@@ -1,6 +1,5 @@
-/// This file contains all of the logic necessary to manage dynamically 
+/// This file contains all of the logic necessary to manage dynamically
 /// allocated memory that Bochs asks for and uses (brk, mmap)
-
 use crate::err::LucidErr;
 
 // Duh
@@ -18,16 +17,16 @@ const DEFAULT_MMAP_SIZE: usize = MEGABYTE * 512;
 // Structure to track memory usage in Bochs
 #[derive(Clone, Default)]
 pub struct Mmu {
-    pub map_base: usize,        // Base address for entire mapping
-    pub map_length: usize,      // Total size of mapping
-    pub brk_base: usize,        // Base address of brk region, never changes
-    pub brk_size: usize,        // Size of the program break region
-    pub curr_brk: usize,        // The current program break
-    
-    pub mmap_base: usize,       // Base address of the `mmap` pool
-    pub mmap_size: usize,       // Size of the `mmap` pool
-    pub curr_mmap: usize,       // The current `mmap` page base
-    pub next_mmap: usize,       // The next allocation base address
+    pub map_base: usize,   // Base address for entire mapping
+    pub map_length: usize, // Total size of mapping
+    pub brk_base: usize,   // Base address of brk region, never changes
+    pub brk_size: usize,   // Size of the program break region
+    pub curr_brk: usize,   // The current program break
+
+    pub mmap_base: usize, // Base address of the `mmap` pool
+    pub mmap_size: usize, // Size of the `mmap` pool
+    pub curr_mmap: usize, // The current `mmap` page base
+    pub next_mmap: usize, // The next allocation base address
 }
 
 impl Mmu {
@@ -44,7 +43,7 @@ impl Mmu {
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_FIXED,
                 -1,
-                0
+                0,
             )
         };
 
@@ -69,11 +68,15 @@ impl Mmu {
     // Logic for handling a `brk` syscall
     pub fn update_brk(&mut self, addr: usize) -> Result<(), ()> {
         // If addr is NULL, just return nothing to do
-        if addr == 0 { return Ok(()); }
+        if addr == 0 {
+            return Ok(());
+        }
 
         // Check to see that the new address is in a valid range
         let limit = self.brk_base + self.brk_size;
-        if !(self.curr_brk..limit).contains(&addr) { return Err(()); }
+        if !(self.curr_brk..limit).contains(&addr) {
+            return Err(());
+        }
 
         // So we have a valid program break address, update the current break
         self.curr_brk = addr;
@@ -93,7 +96,7 @@ impl Mmu {
         prot: usize,
         flags: usize,
         fd: usize,
-        offset: usize
+        offset: usize,
     ) -> Result<(), &str> {
         // Page-align the len
         let len = (len + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
@@ -147,15 +150,14 @@ impl Mmu {
         let mut needles = Vec::new();
 
         // Determine the last index to search from
-        let last_idx = self.map_length - pattern.len();        
+        let last_idx = self.map_length - pattern.len();
 
         // Iterate through memory looking for pattern
         let mut curr = self.map_base;
         for _ in 0..last_idx {
             // Make a slice from current position
-            let curr_slice = unsafe {
-                std::slice::from_raw_parts(curr as *const u8, pattern.len())
-            };
+            let curr_slice =
+                unsafe { std::slice::from_raw_parts(curr as *const u8, pattern.len()) };
 
             // Check for match
             if curr_slice == pattern {
@@ -167,5 +169,5 @@ impl Mmu {
         }
 
         needles
-    } 
+    }
 }

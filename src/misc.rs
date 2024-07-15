@@ -1,6 +1,5 @@
-/// This file contains miscellaneous helper functions 
-
-use core::arch::x86_64::{_xgetbv, _xsave64, _fxsave64, _xrstor64, _fxrstor64};
+/// This file contains miscellaneous helper functions
+use core::arch::x86_64::{_fxrstor64, _fxsave64, _xgetbv, _xrstor64, _xsave64};
 
 #[macro_export]
 macro_rules! prompt {
@@ -26,16 +25,14 @@ macro_rules! prompt_warn {
 
 #[macro_export]
 macro_rules! fatal {
-    ($err:expr) => {
-        {
-            print!("\n\x1b[1;31mfatal:\x1b[0m ");
-            $err.display();
-            std::process::exit(-1);
-        }
-    };
+    ($err:expr) => {{
+        print!("\n\x1b[1;31mfatal:\x1b[0m ");
+        $err.display();
+        std::process::exit(-1);
+    }};
 }
 
-// Hides `unreachable!()` 
+// Hides `unreachable!()`
 #[macro_export]
 macro_rules! fault {
     ($contextp:expr, $fault:expr) => {{
@@ -46,23 +43,23 @@ macro_rules! fault {
 
 #[macro_export]
 macro_rules! green {
-    () => ({
+    () => {{
         print!("\x1b[1;32m");
-    });
+    }};
 }
 
 #[macro_export]
 macro_rules! red {
-    () => ({
+    () => {{
         print!("\x1b[1;31m");
-    });
+    }};
 }
 
 #[macro_export]
 macro_rules! clear {
-    () => ({
+    () => {{
         print!("\x1b[0m");
-    });
+    }};
 }
 
 #[macro_export]
@@ -101,69 +98,7 @@ macro_rules! mega_panic {
     }};
 }
 
-// Retrieve command line argument presence
-pub fn get_arg(arg: &str) -> bool {
-    // Retrieve envvars
-    let args: Vec<String> = std::env::args().collect();
-
-    // Check to see if we have the provided args
-    args.contains(&arg.to_string())
-}
-
-// Retrieve the value corresponding to a given command line argument
-pub fn get_arg_val(arg: &str) -> Option<String> {
-    // Retrieve envvars
-    let args: Vec<String> = std::env::args().collect();
-
-    // Check to see if we have the provided args
-    if !args.contains(&arg.to_string()) { return None; }
-
-    // Search for corresponding value
-    let mut val = None;
-    for (i, a) in args.iter().enumerate() {
-        if a == arg {
-            if i >= args.len() - 1 {
-                return None;
-            }
-            
-            val = Some(args[i + 1].clone());
-            break;
-        }
-    }
-
-    val
-}
-
-// Retrieve the u64 value corresponding to a given command line argument
-pub fn get_arg_val_u64(arg: &str) -> Option<u64> {
-    // Retrieve envvars
-    let args: Vec<String> = std::env::args().collect();
-
-    // Check to see if we have the provided args
-    if !args.contains(&arg.to_string()) {
-        return None;
-    }
-
-    // Search for corresponding value
-    for (i, a) in args.iter().enumerate() {
-        if a == arg {
-            if i >= args.len() - 1 {
-                return None;
-            }
-
-            // Attempt to parse the next argument as u64
-            if let Ok(val) = args[i + 1].parse::<u64>() {
-                return Some(val);
-            } else {
-                return None;
-            }
-        }
-    }
-
-    None
-}
-
-// Wrappers for these unsafe functions to tuck unsafes away 
+// Wrappers for these unsafe functions to tuck unsafes away
 pub fn get_xcr0() -> u64 {
     unsafe { _xgetbv(0) }
 }

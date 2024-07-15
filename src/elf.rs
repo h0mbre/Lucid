@@ -1,6 +1,5 @@
 /// This file contains all of the logic necessary for parsing a Bochs ELF and
 /// creating consumable data structures that allow Bochs to be loaded in memory
-
 use crate::err::LucidErr;
 
 // Size of a 64-bit ELF headers
@@ -39,7 +38,7 @@ pub struct ProgramHeader {
     pub paddr: u64,
     pub filesz: u64,
     pub memsz: u64,
-    pub align: u64, 
+    pub align: u64,
 }
 
 impl ProgramHeader {
@@ -67,7 +66,7 @@ pub struct SectionHeader {
 }
 
 // Attempt to parse an ELF header, pretty loose parsing here just meant to make
-// sure that our Bochs ELF is sane, not meant to the be the world's best ELF 
+// sure that our Bochs ELF is sane, not meant to the be the world's best ELF
 // parser
 fn parse_elf_header(data: &[u8]) -> Result<ElfHeader, LucidErr> {
     // Stack buffer we use to parse u64s out of the header with
@@ -79,7 +78,9 @@ fn parse_elf_header(data: &[u8]) -> Result<ElfHeader, LucidErr> {
     // Make sure we have enough bytes to parse a header
     if data.len() < ELF_HDR_SIZE {
         return Err(LucidErr::from(&format!(
-            "Bad Elf Header Size: {}", data.len())));
+            "Bad Elf Header Size: {}",
+            data.len()
+        )));
     }
 
     // Check the byte signature
@@ -94,8 +95,7 @@ fn parse_elf_header(data: &[u8]) -> Result<ElfHeader, LucidErr> {
 
     // Check the endianness of the ELF, 1 == Litte, 2 == Big
     if data[0x5] != 1 {
-        return Err(LucidErr::from(
-            "Bad Elf Header Not Little-Endian"));
+        return Err(LucidErr::from("Bad Elf Header Not Little-Endian"));
     }
 
     // Version should be 1
@@ -115,10 +115,12 @@ fn parse_elf_header(data: &[u8]) -> Result<ElfHeader, LucidErr> {
     // --static-pie, `file` actually says that our executable is a shared object
     if data[0x10] != 0x3 {
         return Err(LucidErr::from(&format!(
-            "Bad Elf Header Unrecognized Type: 0x{:x}", data[16])));
+            "Bad Elf Header Unrecognized Type: 0x{:x}",
+            data[16]
+        )));
     }
 
-    // Skip machine specification and version, we already parsed version, we 
+    // Skip machine specification and version, we already parsed version, we
     // don't care about the machine, we definitely care about the entry point
     arr64.copy_from_slice(&data[0x18..0x20]);
     let entry = u64::from_le_bytes(arr64);
@@ -128,8 +130,10 @@ fn parse_elf_header(data: &[u8]) -> Result<ElfHeader, LucidErr> {
     arr64.copy_from_slice(&data[0x20..0x28]);
     let phoff = u64::from_le_bytes(arr64);
     if phoff != ELF_HDR_SIZE as u64 {
-        return Err(LucidErr::from(
-            &format!("Bad Elf Header Bad phoff: {}", phoff)));
+        return Err(LucidErr::from(&format!(
+            "Bad Elf Header Bad phoff: {}",
+            phoff
+        )));
     }
 
     // Get the section header offset
@@ -160,8 +164,8 @@ fn parse_elf_header(data: &[u8]) -> Result<ElfHeader, LucidErr> {
 
     // Get the section header table entry index for the section names
     arr16.copy_from_slice(&data[0x3E..0x40]);
-    let shrstrndx = u16::from_le_bytes(arr16); 
-        
+    let shrstrndx = u16::from_le_bytes(arr16);
+
     Ok(ElfHeader {
         entry,
         phoff,
@@ -174,10 +178,12 @@ fn parse_elf_header(data: &[u8]) -> Result<ElfHeader, LucidErr> {
     })
 }
 
-// Try to parse the program headers 
-fn parse_program_header(elf_header: &ElfHeader, data: &[u8])
-    -> Result <Vec<ProgramHeader>, LucidErr> {
-    // Stack buffer for parsing u64 values 
+// Try to parse the program headers
+fn parse_program_header(
+    elf_header: &ElfHeader,
+    data: &[u8],
+) -> Result<Vec<ProgramHeader>, LucidErr> {
+    // Stack buffer for parsing u64 values
     let mut arr64 = [0u8; 8];
 
     // Stack buffer for parsing u32 values
@@ -188,8 +194,7 @@ fn parse_program_header(elf_header: &ElfHeader, data: &[u8])
     let remaining = data.len() - ELF_HDR_SIZE;
 
     // Safely calculate how large the program header table is supposed to be
-    let Some(table_size) = elf_header.phentsize.checked_mul(elf_header.phnum)
-        else {
+    let Some(table_size) = elf_header.phentsize.checked_mul(elf_header.phnum) else {
         return Err(LucidErr::from("Bad Program Header Size Overflow"));
     };
 
@@ -209,7 +214,7 @@ fn parse_program_header(elf_header: &ElfHeader, data: &[u8])
     // Loop over each entry and create a ProgramHeader, but we have some things
     // to check:
     // 1. Make sure there is at least one loadable header!
-    // 2. The vaddr of one of the loadable headers needs to be 0x0 
+    // 2. The vaddr of one of the loadable headers needs to be 0x0
     let mut loadable = false;
     let mut vaddr_zero = false;
     for _ in 0..elf_header.phnum {
@@ -223,8 +228,10 @@ fn parse_program_header(elf_header: &ElfHeader, data: &[u8])
         // Validate the p_type
         match typ {
             0..=7 => {
-                if typ == 1 { loadable = true; };
-            },
+                if typ == 1 {
+                    loadable = true;
+                };
+            }
             0x60000000 => (),
             0x6FFFFFFF => (),
             0x70000000 => (),
@@ -234,8 +241,10 @@ fn parse_program_header(elf_header: &ElfHeader, data: &[u8])
             0x6474E552 => (),
             0x6474E550 => (),
             _ => {
-                return Err(LucidErr::from(
-                    &format!("Bad Program Header p_type: 0x{:X}", typ)));
+                return Err(LucidErr::from(&format!(
+                    "Bad Program Header p_type: 0x{:X}",
+                    typ
+                )));
             }
         }
 
@@ -268,7 +277,7 @@ fn parse_program_header(elf_header: &ElfHeader, data: &[u8])
         arr64.copy_from_slice(&pheader_data[0x28..0x30]);
         let memsz = u64::from_le_bytes(arr64);
 
-        // Make sure that filesz is always less than memsz if it's loadable, 
+        // Make sure that filesz is always less than memsz if it's loadable,
         // because we assume this later when we memcpy
         if loadable && filesz > memsz {
             return Err(LucidErr::from("Bad Program Header filesz > memsz"));
@@ -298,21 +307,23 @@ fn parse_program_header(elf_header: &ElfHeader, data: &[u8])
     }
 
     // If we didn't find a loadable program header, bail
-    if !loadable { return Err(LucidErr::from(
-        "Bad Program Headers Nothing Loadable"));
+    if !loadable {
+        return Err(LucidErr::from("Bad Program Headers Nothing Loadable"));
     }
 
     // If we didn't find a program header with a vaddr of 0x0, bail
-    if !vaddr_zero { return Err(LucidErr::from(
-        "Bad Program Headers No Zero Vaddr"));
+    if !vaddr_zero {
+        return Err(LucidErr::from("Bad Program Headers No Zero Vaddr"));
     }
 
     Ok(program_headers)
 }
 
 // Try to parse the section headers
-fn parse_section_header(elf_header: &ElfHeader, data: &[u8])
-    -> Result<Vec<SectionHeader>, LucidErr> {
+fn parse_section_header(
+    elf_header: &ElfHeader,
+    data: &[u8],
+) -> Result<Vec<SectionHeader>, LucidErr> {
     // Stack buffer for parsing u64 values
     let mut arr64 = [0u8; 8];
 
@@ -328,8 +339,7 @@ fn parse_section_header(elf_header: &ElfHeader, data: &[u8])
     let remaining = data.len() - consumed;
 
     // Safely calculate how large the section header table is supposed to be
-    let Some(table_size) = elf_header.shentsize.checked_mul(elf_header.shnum)
-        else {
+    let Some(table_size) = elf_header.shentsize.checked_mul(elf_header.shnum) else {
         return Err(LucidErr::from("Bad Section Header Size Overflow"));
     };
 
@@ -413,7 +423,6 @@ fn parse_section_header(elf_header: &ElfHeader, data: &[u8])
 
     Ok(section_headers)
 }
-
 
 // Parse a static ELF and return our representation
 pub fn parse_elf(data: &[u8]) -> Result<Elf, LucidErr> {

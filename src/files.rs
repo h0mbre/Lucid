@@ -1,5 +1,5 @@
 /// This file contains all of the logic related to file I/O from Bochs
-use std::fs::{read, metadata, Metadata};
+use std::fs::{metadata, read, Metadata};
 use std::os::unix::fs::MetadataExt;
 
 // Maximum number of files we allow Bochs to open
@@ -10,8 +10,8 @@ const BASE_FD: i32 = 3;
 
 // This is a list of files that we know about and want to block opening for
 const FILE_DENY_LIST: [&str; 2] = [
-    "/etc/localtime",   // Not needed
-    "bochsout.txt",     // Force logging to go to stderr
+    "/etc/localtime", // Not needed
+    "bochsout.txt",   // Force logging to go to stderr
 ];
 
 #[derive(Clone, Default)]
@@ -41,8 +41,7 @@ impl FileTable {
 
     // Attempt to open a file, we also handle creating files in here, if they
     // are tmpfiles, otherwise, we don't support
-    pub fn open(&mut self, path: &str, fuzzing: bool)
-        -> Result<i32, ()> {
+    pub fn open(&mut self, path: &str, fuzzing: bool) -> Result<i32, ()> {
         // Check to see if we're creating too many files
         if self.files.len() >= NUM_FILE_MAX {
             return Err(());
@@ -53,7 +52,7 @@ impl FileTable {
             return Err(());
         }
 
-        // Create a mutable file to add to 
+        // Create a mutable file to add to
         let mut file = File::new();
 
         // Make sure the file exists, if it doesn't create it
@@ -65,16 +64,16 @@ impl FileTable {
             file.metadata = Some(meta.unwrap());
             file.contents = data.unwrap();
         }
-
         // Check for the tmpfile possibility
         else if path.contains("tmpfile") {
             // Just to be explicit, but these should be default (NOPs)
             file.metadata = None;
             file.contents = Vec::new();
         }
-
         // Rule out any weird TOCTOU cases?
-        else { return Err(()); }
+        else {
+            return Err(());
+        }
 
         // Calculate fd value
         let fd = if !self.files.is_empty() {
@@ -97,9 +96,7 @@ impl FileTable {
         file.dirty_file = fuzzing;
 
         // Create file and store it
-        self.files.push(
-            file
-        );
+        self.files.push(file);
 
         // Return fd
         Ok(fd)
@@ -123,24 +120,24 @@ impl FileTable {
         }
 
         let metadata = file.metadata.as_ref().unwrap();
-        
+
         // Zero init a whole instance bc it contains private fields
         let mut stat: libc::stat = unsafe { std::mem::zeroed() };
 
         // Initialize each field we can touch publicly
-        stat.st_dev     = metadata.dev() as libc::dev_t;
-        stat.st_ino     = metadata.ino();
-        stat.st_mode    = metadata.mode();
-        stat.st_nlink   = metadata.nlink() as libc::nlink_t;
-        stat.st_uid     = metadata.uid();
-        stat.st_gid     = metadata.gid();
-        stat.st_rdev    = metadata.rdev() as libc::dev_t;
-        stat.st_size    = metadata.len() as libc::off_t;
+        stat.st_dev = metadata.dev() as libc::dev_t;
+        stat.st_ino = metadata.ino();
+        stat.st_mode = metadata.mode();
+        stat.st_nlink = metadata.nlink() as libc::nlink_t;
+        stat.st_uid = metadata.uid();
+        stat.st_gid = metadata.gid();
+        stat.st_rdev = metadata.rdev() as libc::dev_t;
+        stat.st_size = metadata.len() as libc::off_t;
         stat.st_blksize = metadata.blksize() as libc::blksize_t;
-        stat.st_blocks  = metadata.blocks() as libc::blkcnt_t;
-        stat.st_atime   = metadata.atime() as libc::time_t;
-        stat.st_mtime   = metadata.mtime() as libc::time_t;
-        stat.st_ctime   = metadata.ctime() as libc::time_t;
+        stat.st_blocks = metadata.blocks() as libc::blkcnt_t;
+        stat.st_atime = metadata.atime() as libc::time_t;
+        stat.st_mtime = metadata.mtime() as libc::time_t;
+        stat.st_ctime = metadata.ctime() as libc::time_t;
 
         // Return struct
         Ok(stat)
@@ -149,14 +146,14 @@ impl FileTable {
 
 #[derive(Clone)]
 pub struct File {
-    pub fd: i32,            // The file-descriptor Bochs has for this file
-    pub path: String,       // The file-path for this file
+    pub fd: i32,                    // The file-descriptor Bochs has for this file
+    pub path: String,               // The file-path for this file
     pub metadata: Option<Metadata>, // The file metadata
-    pub contents: Vec<u8>,  // The actual file contents
-    pub cursor: usize,      // The current cursor in the file
-    pub dirty_file: bool,   // Created during fuzzing
-    pub dirty_cursor: bool, // The cursor was changed during fuzzing
-    pub dirty_contents: bool, // File contents were changed during fuzzing 
+    pub contents: Vec<u8>,          // The actual file contents
+    pub cursor: usize,              // The current cursor in the file
+    pub dirty_file: bool,           // Created during fuzzing
+    pub dirty_cursor: bool,         // The cursor was changed during fuzzing
+    pub dirty_contents: bool,       // File contents were changed during fuzzing
 }
 
 impl File {
@@ -175,7 +172,7 @@ impl File {
 
     pub fn set_cursor(&mut self, new: usize) {
         self.cursor = new;
-    } 
+    }
 
     pub fn get_cursor(&self) -> usize {
         self.cursor

@@ -1,16 +1,16 @@
 /// This file contains the logic for handling syscalls that Bochs attempts
-use crate::context::{LucidContext, fault_handler};
-use crate::files::File;
-use crate::{green, clear, fault};
+use crate::context::{fault_handler, LucidContext};
 use crate::err::LucidErr;
+use crate::files::File;
+use crate::{clear, fault, green};
 
 // Anytime Bochs tries to return its own pid_t it gets this
 const BOCHS_PID: i32 = 0x1337;
 
 // File constants
-const _STDIN:   libc::c_int = 0;
-const STDOUT:   libc::c_int = 1;
-const STDERR:   libc::c_int = 2;
+const _STDIN: libc::c_int = 0;
+const STDOUT: libc::c_int = 1;
+const STDERR: libc::c_int = 2;
 
 // Terminal size constants
 const WS_ROW: libc::c_ushort = 25;
@@ -18,7 +18,7 @@ const WS_COL: libc::c_ushort = 160;
 const WS_XPIXEL: libc::c_ushort = 0;
 const WS_YPIXEL: libc::c_ushort = 0;
 
-// Write out the contents of an iovec to our own STDOUT 
+// Write out the contents of an iovec to our own STDOUT
 fn write_iovec(iovec_p: *const libc::iovec, verbose: bool) -> usize {
     // Get the underlying structure
     let iovec = unsafe { &*iovec_p };
@@ -44,11 +44,12 @@ fn write_iovec(iovec_p: *const libc::iovec, verbose: bool) -> usize {
 }
 
 // Special function to handle writes to STDOUT and STDERR
-fn write_stdout_stderr(mut iovec_p: *const libc::iovec, iovcnt: i32,
-    verbose: bool) -> usize {
+fn write_stdout_stderr(mut iovec_p: *const libc::iovec, iovcnt: i32, verbose: bool) -> usize {
     // Format terminal output
-    if verbose { green!(); }
-    
+    if verbose {
+        green!();
+    }
+
     // Accumulator
     let mut bytes_written = 0;
 
@@ -61,15 +62,15 @@ fn write_stdout_stderr(mut iovec_p: *const libc::iovec, iovcnt: i32,
     }
 
     // Turn off terminal formatting
-    if verbose { clear!(); }
+    if verbose {
+        clear!();
+    }
 
     bytes_written
 }
 
 // Stand-alone function to write to a regular file baby
-fn write_regular_file(file: &mut File, iovec_p: *const libc::iovec,
-    iovcnt: i32) -> usize {
-    
+fn write_regular_file(file: &mut File, iovec_p: *const libc::iovec, iovcnt: i32) -> usize {
     // Accumulator
     let mut bytes_written = 0;
 
@@ -79,12 +80,8 @@ fn write_regular_file(file: &mut File, iovec_p: *const libc::iovec,
         let iovec = unsafe { &*iovec_p.add(i as usize) };
 
         // Create a slice of bytes from the iovec dimensions
-        let slice = unsafe { 
-            std::slice::from_raw_parts(
-                iovec.iov_base as *const u8,
-                iovec.iov_len
-            )
-        };
+        let slice =
+            unsafe { std::slice::from_raw_parts(iovec.iov_base as *const u8, iovec.iov_len) };
 
         // Calc required bytes length
         let required = file.cursor + slice.len();
@@ -104,8 +101,7 @@ fn write_regular_file(file: &mut File, iovec_p: *const libc::iovec,
         }
 
         // Copy the bytes from the iovec over
-        file.contents[file.cursor..required]
-            .copy_from_slice(slice);
+        file.contents[file.cursor..required].copy_from_slice(slice);
 
         // Update the file cursor and the bytes written
         file.cursor += slice.len();
@@ -115,10 +111,29 @@ fn write_regular_file(file: &mut File, iovec_p: *const libc::iovec,
     bytes_written
 }
 
+// Function to print syscall arguments for debugging
+#[inline]
+fn _debug_print_args(n: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize) {
+    println!("Syscall number: {}", n);
+    println!("Argument 1: {}", a1);
+    println!("Argument 2: {}", a2);
+    println!("Argument 3: {}", a3);
+    println!("Argument 4: {}", a4);
+    println!("Argument 5: {}", a5);
+    println!("Argument 6: {}", a6);
+}
+
 // This is where we process Bochs making a syscall
-pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
-    a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize)
-    -> u64 {
+pub extern "C" fn lucid_syscall(
+    contextp: *mut LucidContext,
+    n: usize,
+    a1: usize,
+    a2: usize,
+    a3: usize,
+    a4: usize,
+    a5: usize,
+    a6: usize,
+) -> u64 {
     // Get the context
     let context = LucidContext::from_ptr_mut(contextp);
 
@@ -142,15 +157,15 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
                 }
 
                 // Adjust read size if necessary
-                let length =
-                    std::cmp::min(a3, file.contents.len() - file.cursor);
+                let length = std::cmp::min(a3, file.contents.len() - file.cursor);
 
                 // Copy the contents over to the buffer
-                unsafe { 
+                unsafe {
                     std::ptr::copy_nonoverlapping(
-                        file.contents.as_ptr().add(file.cursor),    // src
-                        buf_p,                                      // dst
-                        length);                                    // len
+                        file.contents.as_ptr().add(file.cursor), // src
+                        buf_p,                                   // dst
+                        length,
+                    ); // len
                 }
 
                 // Adjust the file cursor
@@ -169,8 +184,7 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
 
             // Success
             length as u64
-
-        },
+        }
         // open
         0x2 => {
             // Get pointer to path string we're trying to open
@@ -179,7 +193,7 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
             // Make sure it's not NULL
             if path_p.is_null() {
                 fault!(contextp, LucidErr::from("NULL path value"));
-            }            
+            }
 
             // Create c_str from pointer
             let c_str = unsafe { std::ffi::CStr::from_ptr(path_p) };
@@ -204,28 +218,26 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
 
             // Success
             fd.unwrap() as u64
-        },
+        }
         // close
         0x3 => {
             // Close the file ONLY if we're not fuzzing
             if !fuzzing {
                 context.files.close(a1 as i32);
-            }
-
-            else {
+            } else {
                 fault!(contextp, LucidErr::from("Fuzzer called close"));
             }
 
             // Success
             0
-        },
+        }
         // fstat
         0x5 => {
             // Make sure we have a file for this fd
             let Some(file) = context.files.get_file(a1 as i32) else {
                 fault!(contextp, LucidErr::from("Non-existent fstat fd"));
             };
-            
+
             // Ok means that its a real file, otherwise it's tmpfile
             let Ok(stat) = context.files.do_fstat(file) else {
                 fault!(contextp, LucidErr::from("No fstat metadata"));
@@ -240,11 +252,13 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
             }
 
             // Now we just have to copy the struct over to the buf_p
-            unsafe { std::ptr::copy(&stat as *const libc::stat, buf_p, 1); }
+            unsafe {
+                std::ptr::copy(&stat as *const libc::stat, buf_p, 1);
+            }
 
             // Success
             0
-        },
+        }
         // lseek
         0x8 => {
             let new_cursor = {
@@ -261,22 +275,20 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
                     libc::SEEK_SET => {
                         // Validate that offset isn't negative
                         if offset < 0 {
-                            fault!(contextp,
-                                LucidErr::from("Negative lseek offset"));
+                            fault!(contextp, LucidErr::from("Negative lseek offset"));
                         }
 
                         // Set the cursor to the offset
                         file.set_cursor(offset as usize);
-                    },
+                    }
                     libc::SEEK_CUR => {
                         // Set the cursor to current plus offset
                         file.set_cursor((file.cursor as i64 + offset) as usize);
                     }
                     libc::SEEK_END => {
                         // Set the cursor to the end of the file plus offset
-                        file.set_cursor(
-                            (file.contents.len() as i64 + offset) as usize);
-                    },
+                        file.set_cursor((file.contents.len() as i64 + offset) as usize);
+                    }
                     _ => {
                         fault!(contextp, LucidErr::from("Unhandled lseek arg"));
                     }
@@ -321,12 +333,12 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
 
             // We have a brk pool address to mmap, which amounts to a NOP
             a1 as u64
-        },
+        }
         // munmap
         0xB => {
             // Right now, we don't re-use memory, return success
             0
-        },
+        }
         // brk
         0xC => {
             // Try to update the program break
@@ -336,20 +348,20 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
 
             // Return the program break
             context.mmu.curr_brk as u64
-        },
+        }
         // rt_sigaction
         0xD => {
             // Success
-            0 
-        },
+            0
+        }
         // rt_sigprocmask
         0xE => {
             // Success
             0
-        },
+        }
         // ioctl
         0x10 => {
-            if a1 != 1 || a2  != libc::TIOCGWINSZ as usize {
+            if a1 != 1 || a2 != libc::TIOCGWINSZ as usize {
                 return -libc::ENOTTY as u64;
             }
 
@@ -365,14 +377,14 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
             let winsize = unsafe { &mut *winsize_p };
 
             // Set to some constants
-            winsize.ws_row      = WS_ROW;
-            winsize.ws_col      = WS_COL;
-            winsize.ws_xpixel   = WS_XPIXEL;
-            winsize.ws_ypixel   = WS_YPIXEL;
+            winsize.ws_row = WS_ROW;
+            winsize.ws_col = WS_COL;
+            winsize.ws_xpixel = WS_XPIXEL;
+            winsize.ws_ypixel = WS_YPIXEL;
 
             // Return success
             0
-        },
+        }
         // readv
         0x13 => {
             // Get the fd
@@ -397,7 +409,7 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
                 return -libc::EFAULT as u64;
             }
 
-            // Iterate through the iovecs and read the file contents into the 
+            // Iterate through the iovecs and read the file contents into the
             // buffers
             for i in 0..iovcnt as usize {
                 // Get the underlying struct
@@ -417,11 +429,12 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
                 // Copy the bytes over
                 unsafe {
                     std::ptr::copy_nonoverlapping(
-                        file.contents.as_ptr().add(file.cursor),    // src
-                        base,                                       // dst
-                        length);                                    // len
+                        file.contents.as_ptr().add(file.cursor), // src
+                        base,                                    // dst
+                        length,
+                    ); // len
                 }
-                
+
                 // Update the cursor
                 file.cursor_add(length);
 
@@ -441,11 +454,11 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
 
             // Return the bytes read
             bytes_read as u64
-        },
+        }
         // writev
         0x14 => {
             // Get the fd
-            let fd = a1 as libc::c_int;    
+            let fd = a1 as libc::c_int;
 
             // Get the iovec count
             let iovcnt = a3 as libc::c_int;
@@ -460,16 +473,15 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
 
             // Special handling for STDOUT and STDERR
             let bytes_written = if fd == STDOUT || fd == STDERR {
-                    write_stdout_stderr(iovec_p, iovcnt, context.verbose)
+                write_stdout_stderr(iovec_p, iovcnt, context.verbose)
             }
-
             // This is a regular file write
             else {
                 // Get mutable access to the requested file
                 let Some(file) = context.files.get_file_mut(fd) else {
                     fault!(contextp, LucidErr::from("Non-existent writev fd"));
                 };
-                
+
                 // Handle the regular file write
                 let bytes_w = write_regular_file(file, iovec_p, iovcnt);
 
@@ -494,17 +506,17 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
 
             // Return how many bytes were written total
             bytes_written as i64 as u64
-        },
+        }
         // nanosleep
         0x23 => {
             // Success
             0
-        },
+        }
         // setitimer
         0x26 => {
             // Success
             0
-        },
+        }
         // unlink
         0x57 => {
             // Get a pointer to the path string we're trying to unlink
@@ -530,7 +542,7 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
 
             // Return success
             0
-        },
+        }
         // arch_prctl
         0x9E => {
             const ARCH_SET_FS: usize = 0x1002;
@@ -546,29 +558,27 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
                     // Deref the raw pointer
                     let fs_val = unsafe { &*fs_val_p };
 
-                    // Track the FS register value it wanted to set 
+                    // Track the FS register value it wanted to set
                     context.fs_reg = *fs_val as usize;
 
                     // Success
                     0
                 }
                 _ => {
-                    fault!(contextp,
-                        LucidErr::from("Unhandled arch_prctl code"));
+                    fault!(contextp, LucidErr::from("Unhandled arch_prctl code"));
                 }
             }
-        },
+        }
         // set_tid_address
         0xDA => {
             // Just return Boch's pid, no need to do anything
             BOCHS_PID as i64 as u64
-        },
+        }
         // clock_gettime
         0xE4 => {
             // Validate the clock id
             if a1 as i32 != libc::CLOCK_REALTIME {
-                fault!(contextp,
-                    LucidErr::from("Unhandled clock_gettime clk_id"));
+                fault!(contextp, LucidErr::from("Unhandled clock_gettime clk_id"));
             }
 
             // Make sure tp is not null
@@ -589,7 +599,7 @@ pub extern "C" fn lucid_syscall(contextp: *mut LucidContext, n: usize,
 
             // Success
             0
-        },
+        }
         // exit_group
         0xE7 => {
             fault!(contextp, LucidErr::from("Bochs exited early"));

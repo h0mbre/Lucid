@@ -3,31 +3,34 @@
 ///
 /// The calling convention we use for context switching:
 /// r15 -- Pointer to a LucidContext
+use std::arch::{asm, global_asm};
 
-use std::arch::{global_asm, asm};
-
+use crate::config::Config;
+use crate::corpus::Corpus;
+use crate::coverage::CoverageMap;
 use crate::err::LucidErr;
-use crate::syscall::lucid_syscall;
-use crate::mmu::Mmu;
 use crate::files::FileTable;
 use crate::loader::Bochs;
-use crate::snapshot::{take_snapshot, restore_snapshot, Snapshot};
-use crate::stats::Stats;
-use crate::coverage::CoverageMap;
+use crate::misc::{fxrstor64, fxsave64, get_xcr0, xrstor64, xsave64};
+use crate::mmu::Mmu;
 use crate::mutator::Mutator;
-use crate::redqueen::{Redqueen, lucid_report_cmps, redqueen_pass};
-use crate::misc::{get_xcr0, xsave64, fxsave64, xrstor64, fxrstor64, get_arg,
-    get_arg_val_u64};
-use crate::{fault, mega_panic, prompt};
+use crate::redqueen::{lucid_report_cmps, redqueen_pass, Redqueen};
+use crate::snapshot::{restore_snapshot, take_snapshot, Snapshot};
+use crate::stats::Stats;
+use crate::syscall::lucid_syscall;
+use crate::{fault, mega_panic, prompt, prompt_warn};
 
 // Duh
 const PAGE_SIZE: usize = 0x1000;
 
-// Magic number member of the LucidContext, chosen by ChatGPT 
+// Magic number member of the LucidContext, chosen by ChatGPT
 pub const CTX_MAGIC: usize = 0x74DFF25D576D6F4D;
 
 // Length of scratch stack
 const SCRATCH_STACK_LEN: usize = 0x21000;
+
+// Default timeout for instruction count in a fuzzcase
+const DEFAULT_ICOUNT_TIMEOUT: usize = 250_000_000;
 
 // This represents the reason why a VM has exited execution and is now trying
 // to context-switch for event handling
@@ -57,19 +60,19 @@ impl TryFrom<i32> for VmExit {
     }
 }
 
-// The kind of extended state saving instruction we need to use based on our 
+// The kind of extended state saving instruction we need to use based on our
 // processor
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SaveInst {
-    NoSave   = 0,
-    XSave64  = 1,
+    NoSave = 0,
+    XSave64 = 1,
     FxSave64 = 2,
 }
 
 // We get passed an i32 from Bochs, have to go through this to get a Rust enum
 impl TryFrom<i32> for SaveInst {
-    // Dummy error 
+    // Dummy error
     type Error = ();
 
     // Return value or error
@@ -106,7 +109,7 @@ impl TryFrom<i32> for ExecMode {
     }
 }
 
-// We have to abstract away and sandbox TLS access from Bochs, so when Bochs 
+// We have to abstract away and sandbox TLS access from Bochs, so when Bochs
 // asks for TLS, we give it a pointer to this struct which is an inline member
 // of LucidContext. This is modeled directly after `builtin_tls` in __init_tls.c
 //
@@ -116,11 +119,11 @@ impl TryFrom<i32> for ExecMode {
 //	void *space[16];
 //} builtin_tls[1];
 //
-// pthread_t is 200 bytes; errno is at offset 52 
+// pthread_t is 200 bytes; errno is at offset 52
 #[repr(C)]
 #[derive(Clone)]
 pub struct Tls {
-    padding0: [u8; 8], // char c
+    padding0: [u8; 8],  // char c
     padding1: [u8; 52], // Padding to offset of errno which is 52-bytes
     pub errno: i32,
     padding2: [u8; 144], // Additional padding to get to 200-bytes total
@@ -143,22 +146,22 @@ impl Tls {
 #[repr(C)]
 #[derive(Default, Clone)]
 pub struct RegisterBank {
-    pub rax:    usize,
-    rbx:        usize,
-    rcx:        usize,
-    pub rdx:    usize,
-    pub rsi:    usize,
-    pub rdi:    usize,
-    rbp:        usize,
-    rsp:        usize,
-    pub r8:     usize,
-    pub r9:     usize,
-    pub r10:    usize,
-    r11:        usize,
-    r12:        usize,
-    r13:        usize,
-    r14:        usize,
-    r15:        usize,
+    pub rax: usize,
+    rbx: usize,
+    rcx: usize,
+    pub rdx: usize,
+    pub rsi: usize,
+    pub rdi: usize,
+    rbp: usize,
+    rsp: usize,
+    pub r8: usize,
+    pub r9: usize,
+    pub r10: usize,
+    r11: usize,
+    r12: usize,
+    r13: usize,
+    r14: usize,
+    r15: usize,
 }
 
 // This determines how Bochs handles instructions when its simulating them
@@ -170,29 +173,64 @@ pub enum CpuMode {
     TraceHash = 2,
 }
 
+// Represents the different kinds of fuzzing stages we can have
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum FuzzingStage {
+    NotFuzzing,
+    DryRun,
+    Fuzzing,
+    Cmplog,
+    Colorization,
+    Redqueen,
+}
+
+impl std::fmt::Display for FuzzingStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FuzzingStage::NotFuzzing => write!(f, "Not Fuzzing"),
+            FuzzingStage::DryRun => write!(f, "Dry Run"),
+            FuzzingStage::Fuzzing => write!(f, "Fuzzing"),
+            FuzzingStage::Cmplog => write!(f, "Cmplog"),
+            FuzzingStage::Colorization => write!(f, "Colorization"),
+            FuzzingStage::Redqueen => write!(f, "Redqueen"),
+        }
+    }
+}
+
+// Represents the outcome of a fuzzing iteration
+#[derive(Debug, PartialEq)]
+pub enum FuzzingResult {
+    None,
+    Crash,
+    Timeout,
+    NewCoverage,
+}
+
 // Execution context that is passed between Lucid and Bochs that tracks
 // all of the mutable state information we need to do context-switching
 #[repr(C)]
 #[derive(Clone)]
 pub struct LucidContext {
     /* These cannot change order, context_switch depends on them */
-    pub context_switch: usize,  // Address of context_switch()
-    exec_mode: ExecMode,        // Our current mode of execution
-    lucid_regs: RegisterBank,   // Holds Lucid register state for GPRs
-    pub bochs_regs: RegisterBank,// Holds Bochs register state for GPRs
-    pub scratch_rsp: usize,     // Stack pointer for the scratch stack
-    lucid_syscall: usize,       // Address of lucid_syscall()
-    lucid_report_cmps: usize,   // Address of lucid_report_cmps()
+    pub context_switch: usize,    // Address of context_switch()
+    exec_mode: ExecMode,          // Our current mode of execution
+    lucid_regs: RegisterBank,     // Holds Lucid register state for GPRs
+    pub bochs_regs: RegisterBank, // Holds Bochs register state for GPRs
+    pub scratch_rsp: usize,       // Stack pointer for the scratch stack
+    lucid_syscall: usize,         // Address of lucid_syscall()
+    lucid_report_cmps: usize,     // Address of lucid_report_cmps()
 
     /* Defined on C side */
-    pub tls: Tls,               // Bochs' TLS instance
-    pub fs_reg: usize,          // The %fs reg value that we're faking
-    exit_reason: VmExit,        // Why we're context switching
-    coverage_map_addr: usize,   // Address of the coverage map buffer
-    coverage_map_size: usize,   // Size of the coverage map in members
-    pub trace_hash: usize,      // Hash for all PCs taken during input
-    crash: i32,                 // Did we have a crash? Set by Bochs side
-    pub cpu_mode: CpuMode,      // The current Bochs CPU mode 
+    pub tls: Tls,             // Bochs' TLS instance
+    pub fs_reg: usize,        // The %fs reg value that we're faking
+    exit_reason: VmExit,      // Why we're context switching
+    coverage_map_addr: usize, // Address of the coverage map buffer
+    coverage_map_size: usize, // Size of the coverage map in members
+    pub trace_hash: usize,    // Hash for all PCs taken during input
+    crash: i32,               // Did we have a crash? Set by Bochs side
+    timeout: i32,             // Did we have a timeout? Set by Bochs side
+    icount_timeout: usize,    // Instruction count we use as timeout barrier
+    pub cpu_mode: CpuMode,    // The current Bochs CPU mode
 
     /* Opaque members, not defined on C side */
     pub save_inst: SaveInst,    // Type of save instruction we use for exstate
@@ -215,6 +253,9 @@ pub struct LucidContext {
     pub input_buf_addr: usize,  // The memory address of the input buf variable
     pub mutator: Mutator,       // Mutator we're using
     pub redqueen: Redqueen,     // Redqueen state
+    pub config: Config,         // Configuration based on user options
+    pub corpus: Corpus,         // Inputs
+    pub fuzzing_stage: FuzzingStage, // Dictates logic for running inputs
 }
 
 impl LucidContext {
@@ -230,7 +271,7 @@ impl LucidContext {
         if context.magic != CTX_MAGIC {
             return false;
         }
-    
+
         if SaveInst::try_from(context.save_inst as i32).is_err() {
             return false;
         }
@@ -251,18 +292,13 @@ impl LucidContext {
     // Get a non-mutable context reference from a raw pointer
     #[inline]
     pub fn from_ptr(contextp: *mut LucidContext) -> &'static LucidContext {
-        unsafe {
-            &*contextp
-        }
+        unsafe { &*contextp }
     }
 
     // Get a mutable context reference from raw pointer
     #[inline]
-    pub fn from_ptr_mut(contextp: *mut LucidContext)
-        -> &'static mut LucidContext {
-        unsafe {
-            &mut *contextp
-        }
+    pub fn from_ptr_mut(contextp: *mut LucidContext) -> &'static mut LucidContext {
+        unsafe { &mut *contextp }
     }
 
     #[inline]
@@ -315,11 +351,11 @@ impl LucidContext {
         match self.save_inst {
             SaveInst::XSave64 => {
                 let xcr0 = get_xcr0();
-                xsave64(save_area as *mut u8, xcr0);       
-            },
+                xsave64(save_area as *mut u8, xcr0);
+            }
             SaveInst::FxSave64 => {
                 fxsave64(save_area as *mut u8);
-            },
+            }
             _ => unreachable!(), // NoSave
         }
     }
@@ -343,10 +379,10 @@ impl LucidContext {
             SaveInst::XSave64 => {
                 let xcr0 = get_xcr0();
                 xrstor64(save_area as *const u8, xcr0);
-            },
+            }
             SaveInst::FxSave64 => {
                 fxrstor64(save_area as *const u8);
-            },
+            }
             _ => unreachable!(), // NoSave
         }
     }
@@ -358,8 +394,8 @@ impl LucidContext {
     }
 
     // Only ever called from main.rs
-    pub fn new(bochs: Bochs) -> Result<Self, LucidErr> {
-        // Check for what kind of features are supported we check from most 
+    pub fn new(bochs: Bochs, config: &Config, corpus: Corpus) -> Result<Self, LucidErr> {
+        // Check for what kind of features are supported we check from most
         // advanced to least
         let save_inst = if std::is_x86_feature_detected!("xsave") {
             SaveInst::XSave64
@@ -383,8 +419,7 @@ impl LucidContext {
         };
 
         // Calculate the boundary of the save area
-        let initial_boundary
-            = bochs.write_base + bochs.write_length + (save_size * 2);
+        let initial_boundary = bochs.write_base + bochs.write_length + (save_size * 2);
 
         // Create an MMU
         let mmu = Mmu::new(initial_boundary)?;
@@ -401,9 +436,9 @@ impl LucidContext {
         let mut snapshot = Snapshot::default();
         snapshot.base = snapshot_base;
         snapshot.length = snapshot_length;
-        
+
         // Create scratch stack
-        let scratch_stack_base = create_scratch_stack()?; 
+        let scratch_stack_base = create_scratch_stack()?;
 
         // Set the stack pointer
         let scratch_rsp = scratch_stack_base + SCRATCH_STACK_LEN - PAGE_SIZE;
@@ -414,10 +449,19 @@ impl LucidContext {
         let coverage_map_size = coverage.curr_map.len();
 
         // Create mutator
-        let Some(max_size) = get_arg_val_u64("--input-max-size") else {
-            return Err(LucidErr::from("No '--input-max-size' provided"));
+        let mutator = Mutator::new(config.mutator_seed, config.input_max_size);
+
+        // Create a timeout
+        let icount_timeout = match config.icount_timeout {
+            None => {
+                prompt_warn!(
+                    "No icount timeout specified, defaulting to {}M instructions",
+                    DEFAULT_ICOUNT_TIMEOUT / 1_000_000
+                );
+                DEFAULT_ICOUNT_TIMEOUT
+            }
+            Some(val) => val,
         };
-        let mutator = Mutator::new(None, max_size as usize);
 
         // Build and return the execution context so we can fuzz!
         Ok(LucidContext {
@@ -441,11 +485,11 @@ impl LucidContext {
             clock_time: 0,
             files: FileTable::new(),
             err: None,
-            verbose: get_arg("--verbose"), 
+            verbose: config.verbose,
             fuzzing: false,
             dirty_files: false,
             snapshot,
-            stats: Stats::default(),
+            stats: Stats::new(config),
             coverage,
             coverage_map_addr,
             coverage_map_size,
@@ -454,8 +498,13 @@ impl LucidContext {
             input_buf_addr: 0,
             mutator,
             crash: 0,
+            timeout: 0,
+            icount_timeout,
             redqueen: Redqueen::new(),
             cpu_mode: CpuMode::Fuzzing,
+            config: config.clone(),
+            corpus,
+            fuzzing_stage: FuzzingStage::NotFuzzing,
         })
     }
 }
@@ -468,7 +517,7 @@ fn create_scratch_stack() -> Result<usize, LucidErr> {
             libc::PROT_READ | libc::PROT_WRITE,
             libc::MAP_ANONYMOUS | libc::MAP_PRIVATE,
             -1,
-            0
+            0,
         )
     };
 
@@ -479,14 +528,14 @@ fn create_scratch_stack() -> Result<usize, LucidErr> {
     Ok(result as usize)
 }
 
-// Standalone function to calculate the size of the save area for saving the 
-// extended processor state based on the current processor's features. `cpuid` 
+// Standalone function to calculate the size of the save area for saving the
+// extended processor state based on the current processor's features. `cpuid`
 // will return the save area size based on the value of the XCR0 when ECX==0
 // and EAX==0xD. The value returned to EBX is based on the current features
 // enabled in XCR0, while the value returned in ECX is the largest size it
 // could be based on CPU capabilities. So out of an abundance of caution we use
 // the ECX value. We have to preserve EBX or rustc gets angry at us. We are
-// assuming that the fuzzer and Bochs do not modify the XCR0 at any time.  
+// assuming that the fuzzer and Bochs do not modify the XCR0 at any time.
 fn calc_save_size() -> usize {
     let save: usize;
     unsafe {
@@ -509,8 +558,7 @@ fn calc_save_size() -> usize {
 // Standalone function that just maps pages for the extended state save area,
 // for both Lucid and Bochs, these are mapped contiguously with our Bochs
 // image and the Bochs stack
-fn map_save_areas(size: usize, bochs: &Bochs)
-    -> Result<(usize, usize), LucidErr> {
+fn map_save_areas(size: usize, bochs: &Bochs) -> Result<(usize, usize), LucidErr> {
     assert!(size % PAGE_SIZE == 0);
 
     // Determine where we're mapping this writable memory
@@ -527,7 +575,7 @@ fn map_save_areas(size: usize, bochs: &Bochs)
             libc::PROT_READ | libc::PROT_WRITE,
             libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_FIXED,
             -1,
-            0
+            0,
         )
     };
 
@@ -568,10 +616,10 @@ fn jump_to_bochs(contextp: *mut LucidContext) {
 // to use no_mangle here so that we can call it from the assembly blob. We need
 // to see why we've exited and dispatch to the appropriate function. This is the
 // only place thus far where we do comprehensive sanity checks on the context
-// pointer. 
+// pointer.
 #[no_mangle]
 fn switch_handler(contextp: *mut LucidContext) {
-    // We have to make sure this bad boy isn't NULL 
+    // We have to make sure this bad boy isn't NULL
     if !LucidContext::is_valid(contextp) {
         mega_panic!("Invalid context\n");
     }
@@ -582,16 +630,16 @@ fn switch_handler(contextp: *mut LucidContext) {
     // Before we do anything else, save the extended state
     context.save_xstate();
 
-    // Try to get the VmExit reason 
+    // Try to get the VmExit reason
     let exit_reason = context.exit_reason;
-    
+
     // Handle Lucid context switches here
     if context.is_lucid_mode() {
         match exit_reason {
             // Dispatch to Bochs entry point
             VmExit::StartBochs => {
                 jump_to_bochs(contextp);
-            },
+            }
             VmExit::ResumeBochs => {
                 restore_bochs_execution(contextp);
             }
@@ -600,7 +648,6 @@ fn switch_handler(contextp: *mut LucidContext) {
             }
         }
     }
-
     // Handle Bochs context switches here
     else {
         match exit_reason {
@@ -610,11 +657,11 @@ fn switch_handler(contextp: *mut LucidContext) {
 
                 // Come back to Lucid
                 restore_lucid_execution(contextp);
-            },
-            // Restore a snapshot of Bochs
+            }
+            // Complete a fuzzing iteration
             VmExit::PostFuzzHook => {
                 restore_lucid_execution(contextp);
-            },
+            }
             _ => {
                 fault!(contextp, LucidErr::from("Bad Bochs exit"));
             }
@@ -630,36 +677,33 @@ fn switch_handler(contextp: *mut LucidContext) {
 // saves the CPU flags and the GPRs and then switches to a 'scratch stack' that
 // we use during context switch higher-level logic before calling into
 // `switch_handler`.
-extern "C" { fn context_switch(); }
+extern "C" {
+    fn context_switch();
+}
 global_asm!(
     ".global context_switch",
     "context_switch:",
     // Save the CPU flags before we do any operations
     "pushfq",
-
     // Save registers we use for scratch
     "push r14",
     "push r13",
-
     // Determine what execution mode we're in
     "mov r14, r15",
-    "add r14, 0x8",     // exec_mode is at offset 0x8 from base
+    "add r14, 0x8", // exec_mode is at offset 0x8 from base
     "mov r14, [r14]",
     "cmp r14d, 0x0",
     "je save_bochs",
-
     // We're in Lucid mode so save Lucid GPRs
     "save_lucid: ",
     "mov r14, r15",
-    "add r14, 0x10",    // lucid_regs is at offset 0x10 from base
-    "jmp save_gprs",             
-
+    "add r14, 0x10", // lucid_regs is at offset 0x10 from base
+    "jmp save_gprs",
     // We're in Bochs mode so save Bochs GPRs
     "save_bochs: ",
     "mov r14, r15",
-    "add r14, 0x90",    // bochs_regs is at offset 0x90 from base
+    "add r14, 0x90", // bochs_regs is at offset 0x90 from base
     "jmp save_gprs",
-
     // Save the GPRS to memory
     "save_gprs: ",
     "mov [r14 + 0x0], rax",
@@ -669,38 +713,31 @@ global_asm!(
     "mov [r14 + 0x20], rsi",
     "mov [r14 + 0x28], rdi",
     "mov [r14 + 0x30], rbp",
-    "mov r13, rsp",             // Get the current RSP value
-    "add r13, 0x18",            // Recover original RSP after pushfq, push, push
-    "mov [r14 + 0x38], r13",    // Save original RSP value in bank
+    "mov r13, rsp",          // Get the current RSP value
+    "add r13, 0x18",         // Recover original RSP after pushfq, push, push
+    "mov [r14 + 0x38], r13", // Save original RSP value in bank
     "mov [r14 + 0x40], r8",
     "mov [r14 + 0x48], r9",
     "mov [r14 + 0x50], r10",
     "mov [r14 + 0x58], r11",
     "mov [r14 + 0x60], r12",
-    "pop r13",                  // Original R13 value now in R13
-    "mov [r14 + 0x68], r13",    // Save original R13 value
-    "pop r13",                  // Original R14 value now in R13
-    "mov [r14 + 0x70], r13",    // Save original R14 value to register bank
+    "pop r13",               // Original R13 value now in R13
+    "mov [r14 + 0x68], r13", // Save original R13 value
+    "pop r13",               // Original R14 value now in R13
+    "mov [r14 + 0x70], r13", // Save original R14 value to register bank
     "mov [r14 + 0x78], r15",
-
     // Set up the context function argument for the exit handler
     "mov rdi, r15",
-
     // Change over to the scratch stack for context switch stuff
     "mov rsp, [r15 + 0x110]",
-
     // We're ready to call a function now since we've saved all of our registers
     "call switch_handler",
-
     // Get original RSP back
     "mov rsp, [r14 + 0x38]",
-    
     // To recover pointer to cpu flags
     "sub rsp, 0x8",
-    
     // Restore the flags
     "popfq",
-
     // Restore the GPRS
     "mov rax, [r14 + 0x0]",
     "mov rbx, [r14 + 0x8]",
@@ -716,9 +753,8 @@ global_asm!(
     "mov r11, [r14 + 0x58]",
     "mov r12, [r14 + 0x60]",
     "mov r13, [r14 + 0x68]",
-    "mov r15, [r14 + 0x78]",    // Restore R15 before R14
+    "mov r15, [r14 + 0x78]", // Restore R15 before R14
     "mov r14, [r14 + 0x70]",
-
     // Return execution back to caller!
     "ret"
 );
@@ -766,7 +802,7 @@ fn restore_lucid_execution(contextp: *mut LucidContext) {
             "mov r13, [r14 + 0x68]",
             "mov r15, [r14 + 0x78]",
             "mov r14, [r14 + 0x70]",
-            "sub rsp, 0x8",             // Recover saved CPU flags 
+            "sub rsp, 0x8",             // Recover saved CPU flags
             "popfq",
             "ret",
             in(reg) lucid_regsp,
@@ -806,7 +842,7 @@ fn restore_bochs_execution(contextp: *mut LucidContext) {
             "mov r13, [r14 + 0x68]",
             "mov r15, [r14 + 0x78]",
             "mov r14, [r14 + 0x70]",
-            "sub rsp, 0x8",             // Recover saved CPU flags 
+            "sub rsp, 0x8",             // Recover saved CPU flags
             "popfq",
             "ret",
             in(reg) snap_regsp,
@@ -852,8 +888,7 @@ pub fn resume_bochs(context: &mut LucidContext) {
 }
 
 // Called from main.rs
-pub fn register_input(context: &mut LucidContext, signature: String)
-    -> Result<(), LucidErr> {
+pub fn register_input(context: &mut LucidContext, signature: String) -> Result<(), LucidErr> {
     // If it starts with 0x, trim that off
     let sig = if signature.starts_with("0x") || signature.starts_with("0X") {
         &signature[2..]
@@ -864,7 +899,9 @@ pub fn register_input(context: &mut LucidContext, signature: String)
     // Make sure its the right length for 128 bit value
     if sig.len() != 32 {
         return Err(LucidErr::from(&format!(
-            "Invalid signature string length {}, should be 32", sig.len())));
+            "Invalid signature string length {}, should be 32",
+            sig.len()
+        )));
     }
 
     // Try to convert the hex digits into bytes
@@ -876,7 +913,7 @@ pub fn register_input(context: &mut LucidContext, signature: String)
         }
 
         // Store byte
-        sig_bytes[i] = curr_byte.unwrap(); 
+        sig_bytes[i] = curr_byte.unwrap();
     }
 
     // Search for the byte pattern in the MMU
@@ -924,14 +961,19 @@ pub fn reset_bochs(context: &mut LucidContext) -> Result<(), LucidErr> {
 // Places the required input in the Mutator's input buf
 fn generate_input(context: &mut LucidContext) {
     // First try to get an entry in the Redqueen queue
-    if let Some(input) = context.redqueen.queue.pop() {
+    if let Some(input) = context.redqueen.test_queue.pop() {
         // Memcpy the input into the mutator's buffer
         context.mutator.memcpy_input(&input);
-    }
 
+        // Update the fuzzing stage
+        context.fuzzing_stage = FuzzingStage::Redqueen;
+    }
     // If it was empty, have the mutator create a new input
     else {
-        context.mutator.generate_input();
+        context.mutator.mutate_input(&context.corpus);
+
+        // Update the fuzzing stage
+        context.fuzzing_stage = FuzzingStage::Fuzzing;
     }
 }
 
@@ -949,13 +991,13 @@ pub fn insert_fuzzcase(context: &mut LucidContext) {
         core::ptr::copy_nonoverlapping(
             context.mutator.input.as_ptr(),
             context.input_buf_addr as *mut u8,
-            context.mutator.input.len()
+            context.mutator.input.len(),
         );
     }
 }
 
 // Let Bochs resume execution from the snapshot and run the current fuzzcase,
-// returns an error if Bochs hit something nasty like an unhandled syscall 
+// returns an error if Bochs hit something nasty like an unhandled syscall
 pub fn run_fuzzcase(context: &mut LucidContext) -> Result<(), LucidErr> {
     // Context switch into Bochs to resume
     resume_bochs(context);
@@ -968,44 +1010,167 @@ pub fn run_fuzzcase(context: &mut LucidContext) -> Result<(), LucidErr> {
     Ok(())
 }
 
-// Check the coverage map for new code coverage
-pub fn check_coverage(context: &mut LucidContext) -> bool {
-    let old_edge_count = context.stats.edges;
-    let (new_coverage, edge_count) = context.coverage.update();
-    if new_coverage {
-        // Save current input even if it's a crash
-        let hash = context.mutator.save_input();
+// Handle a crash that occurs
+pub fn handle_crash(context: &mut LucidContext) {
+    // Save crash
+    context.corpus.save_crash(&context.mutator.input, "crash");
 
-        // Update stats
-        context.stats.new_coverage(edge_count);
+    // Update coverage
+    context.coverage.update_coverage();
 
-        // Send message
-        prompt!("Input '{:X}' found {} new edges",
-            hash, edge_count - old_edge_count);
-    }
-
-    new_coverage
+    // Update stats
+    context.stats.crashes += 1;
+    let edges = context.coverage.get_edge_count();
+    context.stats.new_coverage(edges);
 }
 
-// Perform all the miscallaneous tasks associated with finishing a fuzzcase
-fn fuzzcase_epilogue(context: &mut LucidContext) {
-    // We've returned from a fuzzcase, Update stats
-    context.stats.update(context.crash);
+// Handle a timeout that occurs
+pub fn handle_timeout(context: &mut LucidContext) {
+    // Save timeout
+    context.corpus.save_crash(&context.mutator.input, "timeout");
 
-    // Clear crash flag if its set
+    // Update coverage
+    context.coverage.update_coverage();
+
+    // Update stats
+    context.stats.timeouts += 1;
+    let edges = context.coverage.get_edge_count();
+    context.stats.new_coverage(edges);
+}
+
+// In the event that a fuzzing input finds new coverage, handle it here
+pub fn handle_new_coverage(context: &mut LucidContext, old_edge_count: usize) -> usize {
+    context.corpus.save_input(&context.mutator.input);
+    let new_edge_count = context.coverage.get_edge_count();
+    prompt!(
+        "{} increased edge count {} -> {} (+{})",
+        context.fuzzing_stage,
+        old_edge_count,
+        new_edge_count,
+        new_edge_count - old_edge_count
+    );
+
+    // Update stats
+    context.stats.new_coverage(new_edge_count);
+
+    // Save this input into the Redqueen process queue
+    context
+        .redqueen
+        .process_queue
+        .push(context.mutator.input.clone());
+
+    // Return new edge count to caller
+    new_edge_count
+}
+
+// Time a function if we're in the fuzzing stage
+macro_rules! time_func {
+    ($context:expr, $stat_field:ident, $operation:expr) => {{
+        if matches!($context.fuzzing_stage, FuzzingStage::Fuzzing) {
+            let start = start_timer();
+            let result = $operation;
+            end_timer(&mut $context.stats.$stat_field, start);
+            result
+        } else if matches!($context.fuzzing_stage, FuzzingStage::Redqueen) {
+            let start = start_timer();
+            let result = $operation;
+            end_timer(&mut $context.stats.$stat_field, start);
+            result
+        } else {
+            $operation
+        }
+    }};
+}
+
+// Run one fuzzing iteration based on the current FuzzingStage
+pub fn fuzz_one(context: &mut LucidContext) -> Result<FuzzingResult, LucidErr> {
+    // Track fuzzing result
+    let mut fuzzing_result = FuzzingResult::None;
+
+    // Restore Bochs
+    time_func!(context, batch_reset, reset_bochs(context))?;
+
+    // Insert the fuzzcase into the target
+    insert_fuzzcase(context);
+
+    // Run the fuzzcase through
+    time_func!(context, batch_target, run_fuzzcase(context))?;
+
+    // Check for crash
     if context.crash == 1 {
+        fuzzing_result = FuzzingResult::Crash;
         context.crash = 0;
     }
-
-    // Report stats
-    if context.stats.report_ready() {
-        context.stats.report();
+    // Check for timeout
+    else if context.timeout == 1 {
+        fuzzing_result = FuzzingResult::Timeout;
+        context.timeout = 0;
     }
+    // Check for coverage increase
+    else if time_func!(context, batch_coverage, context.coverage.update_coverage()) {
+        fuzzing_result = FuzzingResult::NewCoverage;
+    }
+
+    // Return the fuzzing result to the caller for further action
+    Ok(fuzzing_result)
+}
+
+// Dry-run the seeds provided for the campaign, keep in mind that seeds may
+// cause crashes or timeouts, we handle both of those possibilities
+pub fn dry_run(context: &mut LucidContext) -> Result<(), LucidErr> {
+    // Set the context fuzzing stage to dry run
+    context.fuzzing_stage = FuzzingStage::DryRun;
+
+    // For the number of inputs in the corpus, fuzz one
+    for i in 0..context.corpus.num_inputs() {
+        // Place the seed input in the mutator buf
+        context
+            .mutator
+            .memcpy_input(context.corpus.get_input(i).unwrap());
+
+        // Run the input through
+        let result = fuzz_one(context);
+
+        // Match on the result
+        match result {
+            Ok(FuzzingResult::Crash) => {
+                prompt_warn!("Dry-run input caused crash!");
+                handle_crash(context);
+            }
+            Ok(FuzzingResult::Timeout) => {
+                prompt_warn!("Dry-run input caused timeout!");
+                handle_timeout(context);
+            }
+            Err(e) => return Err(e),
+            _ => (), // We don't care about new coverage or no result here
+        }
+    }
+
+    Ok(())
+}
+
+// Try to grab an input for Redqueen processing and perform a Redqueen pass
+fn try_redqueen(context: &mut LucidContext) -> Result<bool, LucidErr> {
+    // If the process queue is empty, we're done here
+    if context.redqueen.process_queue.is_empty() {
+        return Ok(false);
+    }
+
+    // Get the input
+    let input = context.redqueen.process_queue.pop().unwrap();
+
+    // Make sure it's set in the mutator
+    context.mutator.memcpy_input(&input);
+
+    // Send the input off for Redqueen processing
+    time_func!(context, batch_redqueen, redqueen_pass(context))?;
+
+    Ok(true)
 }
 
 pub fn fuzz_loop(context: &mut LucidContext) -> Result<(), LucidErr> {
     // Quick sleep
-    std::thread::sleep(std::time::Duration::from_secs(3));
+    std::thread::sleep(std::time::Duration::from_secs(1));
 
     // Reset screen
     println!("\x1B[2J\x1B[1;1H");
@@ -1015,40 +1180,48 @@ pub fn fuzz_loop(context: &mut LucidContext) -> Result<(), LucidErr> {
 
     // Mark that we're fuzzing now
     context.fuzzing = true;
+    context.fuzzing_stage = FuzzingStage::Fuzzing;
+
+    // Keep track of old edge count
+    let mut old_edge_count = context.coverage.get_edge_count();
 
     loop {
-        // Reset Bochs to snapshot state
-        let start = start_timer();
-        reset_bochs(context)?;
-        end_timer(&mut context.stats.batch_restore, start);
+        // Try to clear out the Redqueen process queue first
+        if try_redqueen(context)? {
+            continue;
+        }
 
-        // Get a new input loaded into the Mutators input buf
-        let start = start_timer();
-        generate_input(context);
-        end_timer(&mut context.stats.batch_mutator, start);
+        // Load a new input into the fuzzer
+        time_func!(context, batch_mutator, generate_input(context));
 
-        // Insert the fuzzcase, not timed, just falls into misc.
-        insert_fuzzcase(context);
+        // Run the input through
+        let fuzzing_result = match fuzz_one(context) {
+            Ok(result) => result,
+            Err(e) => {
+                return Err(e);
+            }
+        };
 
-        // Run the current fuzzcase
-        let start = start_timer();
-        run_fuzzcase(context)?;
-        end_timer(&mut context.stats.batch_target, start);
+        // Act on result
+        match fuzzing_result {
+            FuzzingResult::Crash => {
+                handle_crash(context);
+            }
+            FuzzingResult::Timeout => {
+                handle_timeout(context);
+            }
+            FuzzingResult::NewCoverage => {
+                old_edge_count = handle_new_coverage(context, old_edge_count);
+            }
+            _ => (),
+        }
 
-        // Check the coverage feedback, this will let us know if we need to do
-        // a redqueen pass
-        let start = start_timer();
-        let redqueen = check_coverage(context);
-        end_timer(&mut context.stats.batch_coverage, start);
+        // Update stats
+        context.stats.update();
 
-        // Execute the fuzzcase epilogue, not timed, just falls into misc.
-        fuzzcase_epilogue(context); 
-
-        // If we need to do a redqueen pass, start that now
-        if redqueen {
-            let start = start_timer();
-            redqueen_pass(context)?;
-            end_timer(&mut context.stats.batch_redqueen, start);
+        // Check stats
+        if context.stats.report_ready() {
+            context.stats.report();
         }
     }
 }

@@ -1,9 +1,8 @@
-/// This file contains all of the logic necessary to load a parsed static pie 
-/// ELF into memory as well as set up a program stack
-
-use std::fs::read;
-use crate::err::LucidErr;
 use crate::elf::{parse_elf, Elf, ELF_HDR_SIZE, PRG_HDR_SIZE};
+use crate::err::LucidErr;
+/// This file contains all of the logic necessary to load a parsed static pie
+/// ELF into memory as well as set up a program stack
+use std::fs::read;
 
 // Address we want to load Bochs at
 const LOAD_TARGET: usize = 0x10000;
@@ -28,7 +27,7 @@ const U64_SIZE: usize = std::mem::size_of::<u64>();
 // The max size our stack data can be, has to be a multiple of a page size
 const STACK_DATA_MAX: usize = 0x1000;
 
-// This is what we return to `main`, this is the information required to 
+// This is what we return to `main`, this is the information required to
 // jump to Bochs and start execution
 #[derive(Clone)]
 pub struct Bochs {
@@ -39,22 +38,22 @@ pub struct Bochs {
     pub write_base: usize,
     pub write_length: usize,
     pub entry: usize,
-    pub rsp: usize 
+    pub rsp: usize,
 }
 
 // Map all of the memory we need to hold the ELF image of Bochs but also Bochs'
-// stack in one contiguous block. We have to map this as writable so we can 
-// write to it, but we'll go back and mprotect certain page ranges later. 
+// stack in one contiguous block. We have to map this as writable so we can
+// write to it, but we'll go back and mprotect certain page ranges later.
 fn initial_mmap(size: usize) -> Result<usize, LucidErr> {
     // Call `mmap` and make sure it succeeds
     let result = unsafe {
         libc::mmap(
-            LOAD_TARGET as *mut libc::c_void,   // Alignment? It works?
+            LOAD_TARGET as *mut libc::c_void, // Alignment? It works?
             size,
             libc::PROT_WRITE,
             libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_FIXED,
             -1,
-            0
+            0,
         )
     };
 
@@ -67,23 +66,22 @@ fn initial_mmap(size: usize) -> Result<usize, LucidErr> {
 
 // Iterate through all the loadable segments and adjust their memory backing
 // according to their permissions and load the binary data
-fn load_segments(addr: usize, elf: &Elf) 
-    -> Result<(usize, usize), LucidErr> {
+fn load_segments(addr: usize, elf: &Elf) -> Result<(usize, usize), LucidErr> {
     // Extract relevant data from loadable segments
     let mut load_segments = Vec::new();
     for ph in elf.program_headers.iter() {
         if ph.is_load() {
             load_segments.push((
-                ph.flags,               // segment.0
-                ph.vaddr    as usize,   // segment.1
-                ph.memsz    as usize,   // segment.2
-                ph.offset   as usize,   // segment.3
-                ph.filesz   as usize,   // segment.4
+                ph.flags,           // segment.0
+                ph.vaddr as usize,  // segment.1
+                ph.memsz as usize,  // segment.2
+                ph.offset as usize, // segment.3
+                ph.filesz as usize, // segment.4
             ));
         }
     }
 
-    // Iterate through the loadable segments and change their perms and then 
+    // Iterate through the loadable segments and change their perms and then
     // copy the data over. For our snapshotting logic to work, all writable
     // segments must be contiguous
     let mut write_start = 0;
@@ -92,7 +90,7 @@ fn load_segments(addr: usize, elf: &Elf)
         // Copy the binary data over, the destination is where in our process
         // memory we're copying the binary data to. The source is where we copy
         // from, this is going to be an offset into the binary data in the file,
-        // len is going to be how much binary data is in the file, that's filesz 
+        // len is going to be how much binary data is in the file, that's filesz
         let len = segment.4;
         let dst = (addr + segment.1) as *mut u8;
         let src = (elf.data[segment.3..segment.3 + len]).as_ptr();
@@ -102,10 +100,9 @@ fn load_segments(addr: usize, elf: &Elf)
         }
 
         // Calculate the `mprotect` address by adding the mmap address plus the
-        // virtual address offset, we also mask off the last 0x1000 bytes so 
+        // virtual address offset, we also mask off the last 0x1000 bytes so
         // that we are always page-aligned as required by `mprotect`
-        let mprotect_addr = ((addr + segment.1) & !(PAGE_SIZE - 1))
-            as *mut libc::c_void;
+        let mprotect_addr = ((addr + segment.1) & !(PAGE_SIZE - 1)) as *mut libc::c_void;
 
         // Get the length
         let mut mprotect_len = segment.2 as libc::size_t;
@@ -119,18 +116,18 @@ fn load_segments(addr: usize, elf: &Elf)
 
         // Get the protection
         let mut mprotect_prot = 0 as libc::c_int;
-        if segment.0 & 0x1 == 0x1 { mprotect_prot |= libc::PROT_EXEC; }
-        if segment.0 & 0x2 == 0x2 { mprotect_prot |= libc::PROT_WRITE; }
-        if segment.0 & 0x4 == 0x4 { mprotect_prot |= libc::PROT_READ; }
+        if segment.0 & 0x1 == 0x1 {
+            mprotect_prot |= libc::PROT_EXEC;
+        }
+        if segment.0 & 0x2 == 0x2 {
+            mprotect_prot |= libc::PROT_WRITE;
+        }
+        if segment.0 & 0x4 == 0x4 {
+            mprotect_prot |= libc::PROT_READ;
+        }
 
         // Call `mprotect` to change the mapping perms
-        let result = unsafe {
-            libc::mprotect(
-                mprotect_addr,
-                mprotect_len,
-                mprotect_prot
-            )
-        };
+        let result = unsafe { libc::mprotect(mprotect_addr, mprotect_len, mprotect_prot) };
 
         if result < 0 {
             return Err(LucidErr::from("Failed to `mprotect` memory for Bochs"));
@@ -139,32 +136,32 @@ fn load_segments(addr: usize, elf: &Elf)
         // Do we have a writable segment?
         if mprotect_prot & libc::PROT_WRITE != 0 {
             // If we haven't encountered a writable segment, start tracking
-            if write_start == 0 { write_start = mprotect_addr as usize; }
-            
+            if write_start == 0 {
+                write_start = mprotect_addr as usize;
+            }
+
             // Update write end
             write_end = mprotect_addr as usize + mprotect_len;
         }
-
         // We don't have a writable segment, make sure we haven't had one yet
         else if write_start != 0 {
             return Err(LucidErr::from("Non-contiguous writable segments"));
         }
     }
-    
+
     Ok((write_start, write_end))
 }
 
 // Iterate through the arguments passed to the fuzzer, and determine if there
-// are any arguments meant for Bochs, the strings will be placed on the stack 
-// in reverse order so that arg[1] string is at a lower memory address than 
+// are any arguments meant for Bochs, the strings will be placed on the stack
+// in reverse order so that arg[1] string is at a lower memory address than
 // arg[2] for example
 fn parse_bochs_args() -> Vec<String> {
     let args: Vec<String> = std::env::args().collect();
 
     // Check to see if "--bochs-args" is present, if it is, capture all of the
     // args after as Bochs args
-    let mut bochs_args = if let Some(idx) = args.iter().position(
-        |arg| arg == "--bochs-args") {
+    let mut bochs_args = if let Some(idx) = args.iter().position(|arg| arg == "--bochs-args") {
         args[idx + 1..].to_vec()
     } else {
         Vec::new()
@@ -185,7 +182,7 @@ fn push_u64(stack: &mut Vec<u8>, value: u64) {
     }
 }
 
-// Pushes a NULL terminated string onto the "stack" and pads the string with 
+// Pushes a NULL terminated string onto the "stack" and pads the string with
 // NULL bytes until we achieve 8-byte alignment
 fn push_string(stack: &mut Vec<u8>, string: String) {
     // Convert the string to bytes and append it to the stack
@@ -207,10 +204,10 @@ fn push_string(stack: &mut Vec<u8>, string: String) {
     }
 }
 
-// The stack layout should look like this when we're done, thanks to 
+// The stack layout should look like this when we're done, thanks to
 // https://articles.manugarg.com/aboutelfauxiliaryvectors for reference and
 // @netspooky for their help
-// 
+//
 // ==== LOWER ====
 // RSP     -> argc
 // argv[0] -> pointer
@@ -229,13 +226,12 @@ fn push_string(stack: &mut Vec<u8>, string: String) {
 // auxv[n] -> AT_NULL vector
 //
 // padding
-// 
+//
 // argv strings
 // envvar strings
 // end marker (NULL)
 // ==== HIGHER ====
-fn create_stack_data(base: usize, stack_addr: usize, elf: &Elf) ->
-    Result<Vec<u8>, LucidErr> {
+fn create_stack_data(base: usize, stack_addr: usize, elf: &Elf) -> Result<Vec<u8>, LucidErr> {
     // Create a vector to hold all of our stack data
     let mut stack_data = Vec::new();
 
@@ -249,7 +245,7 @@ fn create_stack_data(base: usize, stack_addr: usize, elf: &Elf) ->
     // Store the length of the strings including padding
     let mut arg_lens = Vec::new();
 
-    // For each argument, push a string onto the stack and store its offset 
+    // For each argument, push a string onto the stack and store its offset
     // location
     for arg in args.iter() {
         let old_len = stack_data.len();
@@ -269,7 +265,7 @@ fn create_stack_data(base: usize, stack_addr: usize, elf: &Elf) ->
     push_u64(&mut stack_data, 0u64);
 
     // Add the AT_ENTRY key which is 9, along with the value from the Elf header
-    // for the program's entry point. We need to calculate 
+    // for the program's entry point. We need to calculate
     push_u64(&mut stack_data, elf.elf_header.entry + base as u64);
     push_u64(&mut stack_data, 9u64);
 
@@ -286,7 +282,7 @@ fn create_stack_data(base: usize, stack_addr: usize, elf: &Elf) ->
     push_u64(&mut stack_data, elf.program_headers.len() as u64);
     push_u64(&mut stack_data, 5u64);
 
-    // Add AT_RANDOM key which is 25, this is where the start routines will 
+    // Add AT_RANDOM key which is 25, this is where the start routines will
     // expect 16 bytes of random data as a seed to generate stack canaries, we
     // can just use the entry again since we don't care about security
     push_u64(&mut stack_data, elf.elf_header.entry + base as u64);
@@ -311,7 +307,7 @@ fn create_stack_data(base: usize, stack_addr: usize, elf: &Elf) ->
     // Now with the argv[] string data we've collected, and the final stack size
     // calculated, we can correctly calculate the pointers to the arguments. We
     // pushed the argument strings onto the stack such that the highest memory
-    // string location is argv[n] and we work our way up to argv[0]. We're 
+    // string location is argv[n] and we work our way up to argv[0]. We're
     // going to use a moving offset that traverses from the bottom of the stack
     // (HIGHER MEMORY ADDR) towards the top of the stack (LOWER MEMORY ADDR).
     // We'll use the offset and the collected argument lengths to calculate the
@@ -323,14 +319,14 @@ fn create_stack_data(base: usize, stack_addr: usize, elf: &Elf) ->
     // argument calculation, we have to accomdate the "end-marker" that we added
     // to the stack at the beginning. So we need to move the offset up the size
     // of the end-marker so that it will point to the end of the first string
-    curr_offset -= U64_SIZE;    
+    curr_offset -= U64_SIZE;
 
-    // Now for each argument, we just have to account for the length of each 
+    // Now for each argument, we just have to account for the length of each
     // string
     for arg_len in arg_lens.iter() {
         // Seek to the beginning of the string
         curr_offset -= arg_len;
-        
+
         // Calculate the absolute address
         let absolute_addr = (stack_addr + curr_offset) as u64;
 
@@ -345,18 +341,19 @@ fn create_stack_data(base: usize, stack_addr: usize, elf: &Elf) ->
     // If we have too much stack data, we have to bail at this point
     if stack_data.len() > STACK_DATA_MAX {
         return Err(LucidErr::from(
-            "Failed to Load Bochs, stack_data > STACK_DATA_MAX"));
+            "Failed to Load Bochs, stack_data > STACK_DATA_MAX",
+        ));
     }
 
     Ok(stack_data)
 }
 
-pub fn load_bochs(bochs_image: String) -> Result<Bochs, LucidErr> {
+pub fn load_bochs(bochs_image: &str) -> Result<Bochs, LucidErr> {
     // Read the executable file into memory
-    let data = read(bochs_image).map_err(|_| LucidErr::from(
-        "Unable to read binary data from Bochs binary"))?;
+    let data = read(bochs_image)
+        .map_err(|_| LucidErr::from("Unable to read binary data from Bochs binary"))?;
 
-    // Parse ELF 
+    // Parse ELF
     let elf = parse_elf(&data)?;
 
     // Make sure there are no interpreter program headers for -static-pie check
@@ -379,7 +376,9 @@ pub fn load_bochs(bochs_image: String) -> Result<Bochs, LucidErr> {
 
             // Calculate the end address
             let end_addr = (ph.vaddr + ph.memsz) as usize;
-            if image_size < end_addr { image_size = end_addr; }
+            if image_size < end_addr {
+                image_size = end_addr;
+            }
         }
     }
 
@@ -414,7 +413,9 @@ pub fn load_bochs(bochs_image: String) -> Result<Bochs, LucidErr> {
     let len = stack_data.len() as libc::size_t;
     let dst = rsp as *mut u8;
     let src = stack_data.as_ptr();
-    unsafe { std::ptr::copy_nonoverlapping(src, dst, len); }
+    unsafe {
+        std::ptr::copy_nonoverlapping(src, dst, len);
+    }
 
     // Change the memory protections of the stack to be readable as well
     let mprotect_prot = libc::PROT_READ | libc::PROT_WRITE;
@@ -422,7 +423,7 @@ pub fn load_bochs(bochs_image: String) -> Result<Bochs, LucidErr> {
         libc::mprotect(
             stack_addr as *mut libc::c_void,
             STACK_ALLOC_SIZE,
-            mprotect_prot
+            mprotect_prot,
         )
     };
     if result < 0 {
@@ -433,16 +434,14 @@ pub fn load_bochs(bochs_image: String) -> Result<Bochs, LucidErr> {
     let entry = mapping + elf.elf_header.entry as usize;
 
     // Return Bochs
-    Ok(
-        Bochs {
-            image_base: mapping,
-            image_length: image_size,
-            stack_base: stack_addr,
-            stack_length: STACK_ALLOC_SIZE,
-            write_base,
-            write_length,
-            entry,
-            rsp
-        }
-    )
+    Ok(Bochs {
+        image_base: mapping,
+        image_length: image_size,
+        stack_base: stack_addr,
+        stack_length: STACK_ALLOC_SIZE,
+        write_base,
+        write_length,
+        entry,
+        rsp,
+    })
 }

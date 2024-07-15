@@ -5,9 +5,9 @@ const COVERAGE_MAP_SIZE: usize = 65536;
 #[derive(Clone)]
 #[repr(C)]
 pub struct CoverageMap {
-    pub curr_map: Vec<u8>,          // The hit count map updated by Bochs
-    history_map: Vec<u8>,           // The map from the previous run
-    curr_map_addr: *const u8,       // Address of the curr_map used by Bochs
+    pub curr_map: Vec<u8>,    // The hit count map updated by Bochs
+    history_map: Vec<u8>,     // The map from the previous run
+    curr_map_addr: *const u8, // Address of the curr_map used by Bochs
 }
 
 impl CoverageMap {
@@ -42,27 +42,32 @@ impl CoverageMap {
         }
     }
 
-    // Walk the coverage map in tandem with the history map looking for new
-    // bucket thresholds for hitcounts or brand new coverage
-    //    
-    // Note: normally I like to write things as naively as possible, but we're
-    // using chained iterator BS because the compiler spits out faster code
-    pub fn update(&mut self) -> (bool, usize) {
-        let mut new_coverage = false;
+    // Walk the history map and determine the number of edges we've seen
+    pub fn get_edge_count(&mut self) -> usize {
         let mut edge_count = 0;
+        self.history_map.iter().for_each(|&hist| {
+            if hist > 0 {
+                edge_count += 1;
+            }
+        });
 
-        // Iterate over the current map that was updated by Bochs during fc
-        self.curr_map.iter_mut()                         
+        edge_count
+    }
 
+    // Check for new coverage metrics
+    pub fn update_coverage(&mut self) -> bool {
+        let mut new_coverage = false;
+
+        // Iterate over the current map and the history map together and update
+        // the history map, if we discover some new coverage, report true
+        self.curr_map
+            .iter_mut()
             // Use zip to add history map to the iterator, now we get tuple back
             .zip(self.history_map.iter_mut())
-
             // For the tuple pair
             .for_each(|(curr, hist)| {
-
                 // If we got a hitcount of at least 1
                 if *curr > 0 {
-
                     // Convert hitcount into bucket count
                     let bucket = CoverageMap::bucket(*curr);
 
@@ -75,27 +80,8 @@ impl CoverageMap {
                     // Zero out the current map for next fuzzing iteration
                     *curr = 0;
                 }
-            })
-        ;
-
-        // If we have new coverage, take the time to walk the map again and 
-        // count the number of edges we've hit
-        if new_coverage {
-            self.history_map.iter().for_each(|&hist| {
-                if hist > 0 {
-                    edge_count += 1;
-                }
             });
-        } 
 
-        (new_coverage, edge_count)
-    }
-
-    // Reset the current coverage map, usually called because we ran an input 
-    // with Cmplog mode enabled so we aren't anticipating new coverage but
-    // Bochs would be updating the coverage map because it doesn't know any
-    // better
-    pub fn reset(&mut self) {
-        self.curr_map.fill(0);
+        new_coverage
     }
 }

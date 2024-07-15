@@ -1,14 +1,17 @@
 /// This file contains all of the code for keeping stats for the current session
-
-use std::time::{Instant, Duration};
 use chrono::Local;
+use std::time::{Duration, Instant};
+
+use crate::config::Config;
+use crate::prompt_warn;
 
 // Default batch time for stat reporting in milliseconds
-const BATCH_TIME: u128 = 1_000;  // Print stats every second
+const DEFAULT_BATCH_TIME: u128 = 1_000; // Print stats every second
 
 // Helper function to format a group of stats
 fn format_group(title: &str, stats: &[(String, String)]) -> String {
-    let stats_str = stats.iter()
+    let stats_str = stats
+        .iter()
         .map(|(k, v)| format!("{}: {}", k, v))
         .collect::<Vec<_>>()
         .join(" | ");
@@ -18,26 +21,47 @@ fn format_group(title: &str, stats: &[(String, String)]) -> String {
 #[derive(Clone, Default)]
 pub struct Stats {
     // Stats for the entire campaign so far
-    pub start_str: String,                      // String repr of date start
-    pub session_iters: usize,                   // Total fuzzcases
-    session_start: Option<Instant>,             // Start time
-    last_find: Option<Instant>,                 // Last new coverage find
-    crashes: usize,                             // Number of crashes
+    pub start_str: String,          // String repr of date start
+    pub session_iters: usize,       // Total fuzzcases
+    session_start: Option<Instant>, // Start time
+    last_find: Option<Instant>,     // Last new coverage find
+    pub crashes: usize,             // Number of crashes
+    pub timeouts: usize,            // Number of timeouts
 
     // Stats for local batch reporting
-    batch_iters: usize,                         // Batch fuzzcases
-    batch_start: Option<Instant>,               // Batch start 
-    pub batch_restore: Duration,                // Batch time spent in restore
-    pub batch_mutator: Duration,                // Batch time spent in mutator
-    pub batch_target: Duration,                 // Batch time spent in target
-    pub batch_coverage: Duration,               // Batch time spent in coverage
-    pub batch_redqueen: Duration,               // Batch time spent in redqueen
+    batch_iters: usize,           // Batch fuzzcases
+    batch_start: Option<Instant>, // Batch start
+    pub batch_reset: Duration,    // Batch time spent in reset
+    pub batch_mutator: Duration,  // Batch time spent in mutator
+    pub batch_target: Duration,   // Batch time spent in target
+    pub batch_coverage: Duration, // Batch time spent in coverage
+    pub batch_redqueen: Duration, // Batch time spent in redqueen
 
-    pub edges: usize,                           // Number of edges we've hit
-    map_size: usize,                            // Size of coverage map
+    pub edges: usize,    // Number of edges we've hit
+    map_size: usize,     // Size of coverage map
+    stat_interval: u128, // How often we report stats in millis
 }
 
 impl Stats {
+    pub fn new(config: &Config) -> Self {
+        // Update the members that depend on the config
+        let stat_interval = match config.stat_interval {
+            None => {
+                prompt_warn!(
+                    "No stat interval provided, defaulting to {} secs",
+                    DEFAULT_BATCH_TIME / 1_000
+                );
+                DEFAULT_BATCH_TIME
+            }
+            Some(interval) => (interval.wrapping_mul(1_000)) as u128,
+        };
+
+        Stats {
+            stat_interval,
+            ..Default::default()
+        }
+    }
+
     // Start the timers
     #[inline]
     pub fn start_session(&mut self, map_size: usize) {
@@ -50,20 +74,16 @@ impl Stats {
 
     // Update 1 fuzzcase
     #[inline]
-    pub fn update(&mut self, crash: i32) {
+    pub fn update(&mut self) {
         self.session_iters += 1;
         self.batch_iters += 1;
-
-        if crash == 1{
-            self.crashes += 1;
-        }
     }
 
     // Check if time to report
     #[inline]
     pub fn report_ready(&self) -> bool {
         if let Some(batch_start) = self.batch_start {
-            batch_start.elapsed().as_millis() > BATCH_TIME
+            batch_start.elapsed().as_millis() > self.stat_interval
         } else {
             false
         }
@@ -72,7 +92,7 @@ impl Stats {
     pub fn new_coverage(&mut self, edges: usize) {
         self.edges = edges;
         self.last_find = Some(Instant::now());
-    } 
+    }
 
     // Report the stats
     pub fn report(&mut self) {
@@ -104,75 +124,77 @@ impl Stats {
         // Calculate total iters unit
         let iters_str = match self.session_iters {
             0..=999 => format!("{}", self.session_iters),
-            1_000..=999_999 => 
-                format!("{:.2}K", self.session_iters as f64 / 1_000.0),
+            1_000..=999_999 => format!("{:.2}K", self.session_iters as f64 / 1_000.0),
             _ => format!("{:.3}M", self.session_iters as f64 / 1_000_000.0),
         };
 
         // Calculate batch proportions
         let restore_per = if batch_millis > 0 {
-            (self.batch_restore.as_millis() as f64 / batch_millis as f64)
-                * 100.0
+            (self.batch_reset.as_millis() as f64 / batch_millis as f64) * 100.0
         } else {
             0.0
         };
 
         let mutator_per = if batch_millis > 0 {
-            (self.batch_mutator.as_millis() as f64 / batch_millis as f64)
-                * 100.0
+            (self.batch_mutator.as_millis() as f64 / batch_millis as f64) * 100.0
         } else {
             0.0
         };
 
         let target_per = if batch_millis > 0 {
-            (self.batch_target.as_millis() as f64 / batch_millis as f64)
-                * 100.0
+            (self.batch_target.as_millis() as f64 / batch_millis as f64) * 100.0
         } else {
             0.0
         };
 
         let coverage_per = if batch_millis > 0 {
-            (self.batch_coverage.as_millis() as f64 / batch_millis as f64)
-                * 100.0
+            (self.batch_coverage.as_millis() as f64 / batch_millis as f64) * 100.0
         } else {
             0.0
         };
 
         let rq_per = if batch_millis > 0 {
-            (self.batch_redqueen.as_millis() as f64 / batch_millis as f64)
-            * 100.0
+            (self.batch_redqueen.as_millis() as f64 / batch_millis as f64) * 100.0
         } else {
             0.0
         };
 
         let misc_per = if batch_millis > 0 {
-            100.0 - restore_per - mutator_per - target_per
-                - coverage_per - rq_per
+            100.0 - restore_per - mutator_per - target_per - coverage_per - rq_per
         } else {
             0.0
         };
 
         // Print banner
-        println!("\n\x1b[1;35m[lucid stats (start time: {})]\x1b[0m",
-            self.start_str.clone());
+        println!(
+            "\n\x1b[1;35m[lucid stats (start time: {})]\x1b[0m",
+            self.start_str.clone()
+        );
 
         // Format and print globals
         let globals = [
-            ("uptime".to_string(), format!("{}d {}h {}m {}s",
-                days, hours, minutes, seconds)),
+            (
+                "uptime".to_string(),
+                format!("{}d {}h {}m {}s", days, hours, minutes, seconds),
+            ),
             ("iters".to_string(), iters_str),
             ("iters/s".to_string(), format!("{:.2}", iters_sec)),
             ("crashes".to_string(), format!("{}", self.crashes)),
+            ("timeouts".to_string(), format!("{}", self.timeouts)),
         ];
         println!("{}", format_group("globals", &globals));
-    
+
         // Format and print coverage
         let coverage = [
             ("edges".to_string(), format!("{}", self.edges)),
-            ("last find".to_string(), format!("{}h {}m {}s",
-                lf_hours, lf_minutes, lf_secs)),
-            ("map".to_string(), format!("{:.2}%",
-                (self.edges as f64 / self.map_size as f64) * 100.0)),
+            (
+                "last find".to_string(),
+                format!("{}h {}m {}s", lf_hours, lf_minutes, lf_secs),
+            ),
+            (
+                "map".to_string(),
+                format!("{:.2}%", (self.edges as f64 / self.map_size as f64) * 100.0),
+            ),
         ];
         println!("{}", format_group("coverage", &coverage));
 
@@ -190,7 +212,7 @@ impl Stats {
         // Reset batch
         self.batch_iters = 0;
         self.batch_start = Some(Instant::now());
-        self.batch_restore = Duration::new(0, 0);
+        self.batch_reset = Duration::new(0, 0);
         self.batch_mutator = Duration::new(0, 0);
         self.batch_target = Duration::new(0, 0);
         self.batch_coverage = Duration::new(0, 0);
