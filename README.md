@@ -8,6 +8,9 @@ Lucid is currently in the early stages of development and can currently fuzz a L
 
 The current codebase is more current than the latest blogpost.
 
+## Current Status
+BROKEN (Musl and Bochs patches are out of date, will be rectified soon 7/15/2024)
+
 # Workflow Overview
 ### Step 1:
  Develop your environment, probably using something like QEMU system in order to do quick development cycles. For instance, if fuzzing a Linux kernel subsystem, you may develop a harness which sends user controlled input to a kernel API. Once you've confirmed your harness works in something like QEMU, you can create an `.iso` out of the kernel image (`bzImage`) which Bochs can then run. 
