@@ -1,5 +1,6 @@
-/// This file contains all of the logic necessary to perform Redqueen operations
-/// during fuzzing
+//! This file contains all of the logic necessary to perform Redqueen operations
+//! during fuzzing
+
 use std::collections::{HashSet, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
@@ -697,8 +698,6 @@ fn create_redqueen_inputs(context: &mut LucidContext) {
     for (k, v) in partner_map.iter() {
         let inputs = process_partners(&context.mutator.input, *k, *v);
 
-        let num_inputs = inputs.len();
-
         // Store each input in the redqueen queue if we haven't tried them
         // before
         for input in inputs {
@@ -724,15 +723,6 @@ fn create_redqueen_inputs(context: &mut LucidContext) {
 
             // Add input to the Redqueen test queue for testing
             context.redqueen.test_queue.push(input);
-        }
-
-        // Notify user
-        if num_inputs > 0 {
-            /*prompt!(
-                "Redqueen added {} inputs to test queue ({} total)",
-                num_inputs,
-                context.redqueen.test_queue.len()
-            );*/
         }
     }
 }

@@ -1,4 +1,4 @@
-/// This file contains all of the logic pertaining to code coverage feedback
+//! This file contains all of the logic pertaining to code coverage feedback
 
 const COVERAGE_MAP_SIZE: usize = 65536;
 

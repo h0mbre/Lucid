@@ -1,7 +1,8 @@
+//! This file contains all of the logic necessary to load a parsed static pie
+//! ELF into memory as well as set up a program stack
+
 use crate::elf::{parse_elf, Elf, ELF_HDR_SIZE, PRG_HDR_SIZE};
 use crate::err::LucidErr;
-/// This file contains all of the logic necessary to load a parsed static pie
-/// ELF into memory as well as set up a program stack
 use std::fs::read;
 
 // Address we want to load Bochs at

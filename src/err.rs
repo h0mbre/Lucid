@@ -1,5 +1,5 @@
-/// A place-holder for perhaps a more detailed/robust error reporting system in
-/// the future
+//! A place-holder for perhaps a more detailed/robust error reporting system in
+//! the future
 
 #[derive(Debug, Clone)]
 pub struct LucidErr {

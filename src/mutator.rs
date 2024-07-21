@@ -1,15 +1,19 @@
-/// This file contains all of the logic necessary to implement possibly the
-/// worst mutator of all time, there is no science here
-///
-/// We get passed a corpus in Mutator, because we need access to other inputs,
-/// Corpus should implement these two methods:
-/// - num_inputs() -> Returns the number of inputs in the Corpus
-/// - get_input() -> Returns a slice view of an input in the Corpus
-///
-/// This is inspired by: https://github.com/gamozolabs/basic_mutator, which in
-/// turn is inspired by Hongfuzz. We don't use any of the Hongfuzz derived code
-/// in here, just trying to implement our own stuff that tries to mirror what
-/// AFL++ does. Eventually we'll try to just use LibAFL's mutator?
+//! This file contains all of the logic necessary to implement possibly the
+//! worst mutator of all time, there is no science here
+//!
+//! We get passed a corpus in Mutator, because we need access to other inputs,
+//! Corpus should implement these two methods:
+//! - num_inputs() -> Returns the number of inputs in the Corpus
+//! - get_input() -> Returns a slice view of an input in the Corpus
+//!
+//! This is inspired by: https://github.com/gamozolabs/basic_mutator, which in
+//! turn is inspired by Hongfuzz. We don't use any of the Hongfuzz derived code
+//! in here, just trying to implement our own stuff that tries to mirror what
+//! AFL++ does. Eventually we'll try to just use LibAFL's mutator?
+
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use crate::corpus::Corpus;
 
 // The maximum number of stacked mutations we can apply, I *think* this is what
@@ -18,6 +22,9 @@ const MAX_STACK: usize = 6;
 
 // The % at which Magic Numbers and Splicing are considered as mutation types
 const LONGSHOT_MUTATION_RATE: usize = 5;
+
+// The % at which we generate an input from scratch instead of mutating corpus
+const GEN_SCRATCH_RATE: usize = 5;
 
 // Used as the number of bytes for byte-specific corruption routines
 const MAX_BYTE_CORRUPTION: usize = 64;
@@ -84,6 +91,17 @@ const MUTATIONS: [MutationTypes; 12] = [
     MutationTypes::Splice,
 ];
 
+// Helper function
+fn generate_seed() -> usize {
+    let mut hasher = DefaultHasher::new();
+
+    let rdtsc = unsafe { core::arch::x86_64::_rdtsc() };
+    rdtsc.hash(&mut hasher);
+
+    // Combine all sources of entropy
+    hasher.finish() as usize
+}
+
 // Some basic mutation types that AFL++ seems to do in Havoc mode
 #[derive(Clone, Debug)]
 pub enum MutationTypes {
@@ -115,7 +133,7 @@ impl Mutator {
         let rng = if let Some(seed_val) = seed {
             seed_val
         } else {
-            unsafe { core::arch::x86_64::_rdtsc() as usize }
+            generate_seed()
         };
 
         Mutator {
@@ -124,6 +142,12 @@ impl Mutator {
             max_size,
             last_mutation: Vec::with_capacity(MAX_STACK),
         }
+    }
+
+    pub fn reseed(&mut self) -> usize {
+        self.rng = generate_seed();
+
+        self.rng
     }
 
     #[inline]
@@ -600,8 +624,11 @@ impl Mutator {
         // Get the number of inputs to choose from
         let num_inputs = corpus.num_inputs();
 
+        // n% of the time, just generate a new input from scratch
+        let gen = self.rand() % 100;
+
         // If we don't have any inputs to choose from, create a random one
-        if num_inputs == 0 {
+        if num_inputs == 0 || gen < GEN_SCRATCH_RATE {
             self.generate_random_input();
             return;
         }

@@ -1,5 +1,5 @@
-/// This file contains all of the logic necessary for parsing a Bochs ELF and
-/// creating consumable data structures that allow Bochs to be loaded in memory
+//! This file contains all of the logic necessary for parsing a Bochs ELF and
+//! creating consumable data structures that allow Bochs to be loaded in memory
 use crate::err::LucidErr;
 
 // Size of a 64-bit ELF headers

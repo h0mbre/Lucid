@@ -1,8 +1,9 @@
-/// This file contains the logic necessary to perform context-switching between
-/// Lucid and Bochs
-///
-/// The calling convention we use for context switching:
-/// r15 -- Pointer to a LucidContext
+//! This file contains the logic necessary to perform context-switching between
+//! Lucid and Bochs
+//!
+//! The calling convention we use for context switching:
+//! r15 -- Pointer to a LucidContext
+
 use std::arch::{asm, global_asm};
 
 use crate::config::Config;
@@ -18,7 +19,7 @@ use crate::redqueen::{lucid_report_cmps, redqueen_pass, Redqueen};
 use crate::snapshot::{restore_snapshot, take_snapshot, Snapshot};
 use crate::stats::Stats;
 use crate::syscall::lucid_syscall;
-use crate::{fault, mega_panic, prompt, prompt_warn};
+use crate::{fault, finding, mega_panic, prompt_warn};
 
 // Duh
 const PAGE_SIZE: usize = 0x1000;
@@ -206,6 +207,13 @@ pub enum FuzzingResult {
     NewCoverage,
 }
 
+// Determines some logic based on whether or not we're multi-process
+#[derive(Clone, Copy)]
+pub enum ExecArch {
+    SingleProcess,
+    MultiProcess,
+}
+
 // Execution context that is passed between Lucid and Bochs that tracks
 // all of the mutable state information we need to do context-switching
 #[repr(C)]
@@ -256,6 +264,8 @@ pub struct LucidContext {
     pub config: Config,         // Configuration based on user options
     pub corpus: Corpus,         // Inputs
     pub fuzzing_stage: FuzzingStage, // Dictates logic for running inputs
+    pub fuzzer_id: usize,       // The id for the fuzzer process
+    pub exec_arch: ExecArch,    // The type of architecture we're using
 }
 
 impl LucidContext {
@@ -287,6 +297,25 @@ impl LucidContext {
         }
 
         true
+    }
+
+    // Determines if we're single process or not
+    pub fn is_single_process(&self) -> bool {
+        matches!(self.exec_arch, ExecArch::SingleProcess)
+    }
+
+    // Update all context fields that have an ID member
+    pub fn update_id(&mut self, id: usize) {
+        self.fuzzer_id = id;
+        self.stats.id = id;
+        self.corpus.id = id;
+
+        // Create stat file string
+        let stat_dir = &self.corpus.stats_dir;
+        let stat_file = format!("{}/fuzzer-{}.stats", stat_dir, id);
+
+        // Update this in stats
+        self.stats.stat_file = Some(stat_file);
     }
 
     // Get a non-mutable context reference from a raw pointer
@@ -463,6 +492,13 @@ impl LucidContext {
             Some(val) => val,
         };
 
+        // Determine execution architecture
+        let exec_arch = if config.num_fuzzers == 1 {
+            ExecArch::SingleProcess
+        } else {
+            ExecArch::MultiProcess
+        };
+
         // Build and return the execution context so we can fuzz!
         Ok(LucidContext {
             context_switch: context_switch as usize,
@@ -505,6 +541,8 @@ impl LucidContext {
             config: config.clone(),
             corpus,
             fuzzing_stage: FuzzingStage::NotFuzzing,
+            fuzzer_id: 0,
+            exec_arch,
         })
     }
 }
@@ -1042,7 +1080,8 @@ pub fn handle_timeout(context: &mut LucidContext) {
 pub fn handle_new_coverage(context: &mut LucidContext, old_edge_count: usize) -> usize {
     context.corpus.save_input(&context.mutator.input);
     let new_edge_count = context.coverage.get_edge_count();
-    prompt!(
+    finding!(
+        context.fuzzer_id,
         "{} increased edge count {} -> {} (+{})",
         context.fuzzing_stage,
         old_edge_count,
@@ -1172,9 +1211,6 @@ pub fn fuzz_loop(context: &mut LucidContext) -> Result<(), LucidErr> {
     // Quick sleep
     std::thread::sleep(std::time::Duration::from_secs(1));
 
-    // Reset screen
-    println!("\x1B[2J\x1B[1;1H");
-
     // Start time-keeping
     context.stats.start_session(context.coverage.curr_map.len());
 
@@ -1184,6 +1220,15 @@ pub fn fuzz_loop(context: &mut LucidContext) -> Result<(), LucidErr> {
 
     // Keep track of old edge count
     let mut old_edge_count = context.coverage.get_edge_count();
+
+    // If we're fuzzing multi-process style re-seed the prng
+    if context.fuzzer_id != 0 {
+        finding!(
+            context.fuzzer_id,
+            "Re-seeded pRNG to: 0x{:X}",
+            context.mutator.reseed()
+        );
+    }
 
     loop {
         // Try to clear out the Redqueen process queue first
@@ -1221,7 +1266,10 @@ pub fn fuzz_loop(context: &mut LucidContext) -> Result<(), LucidErr> {
 
         // Check stats
         if context.stats.report_ready() {
-            context.stats.report();
+            context.stats.report()?;
         }
+
+        // Check to see if we should sync the corpus
+        context.corpus.sync();
     }
 }

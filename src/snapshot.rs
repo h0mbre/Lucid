@@ -1,5 +1,6 @@
-/// This file contains all of the logic related to capturing Bochs snapshots
-/// and restoring them
+//! This file contains all of the logic related to capturing Bochs snapshots
+//! and restoring them
+
 use crate::context::{fault_handler, LucidContext, RegisterBank};
 use crate::err::LucidErr;
 use crate::files::FileTable;

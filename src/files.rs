@@ -1,4 +1,5 @@
-/// This file contains all of the logic related to file I/O from Bochs
+//! This file contains all of the logic related to file I/O from Bochs
+
 use std::fs::{metadata, read, Metadata};
 use std::os::unix::fs::MetadataExt;
 

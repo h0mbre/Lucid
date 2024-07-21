@@ -1,5 +1,8 @@
-/// This file contains miscellaneous helper functions
+//! This file contains miscellaneous helper functions
+
 use core::arch::x86_64::{_fxrstor64, _fxsave64, _xgetbv, _xrstor64, _xsave64};
+
+use crate::err::LucidErr;
 
 #[macro_export]
 macro_rules! prompt {
@@ -19,6 +22,28 @@ macro_rules! prompt_warn {
     });
     ($($arg:tt)*) => ({
         print!("\x1b[1;33m[lucid]\x1b[0m ");
+        println!($($arg)*);
+    });
+}
+
+#[macro_export]
+macro_rules! finding {
+    ($id:expr) => ({
+        print!("\x1b[1;37mfuzzer-{}:\x1b[0m\n", $id);
+    });
+    ($id:expr, $($arg:tt)*) => ({
+        print!("\x1b[1;37mfuzzer-{}:\x1b[0m ", $id);
+        println!($($arg)*);
+    });
+}
+
+#[macro_export]
+macro_rules! finding_warn {
+    ($id:expr) => ({
+        print!("\x1b[1;37mfuzzer-{}:\x1b[0m\n", $id);
+    });
+    ($id:expr, $($arg:tt)*) => ({
+        print!("\x1b[1;37mfuzzer-{}:\x1b[0m ", $id);
         println!($($arg)*);
     });
 }
@@ -117,4 +142,56 @@ pub fn xrstor64(save_area: *const u8, xcr0: u64) {
 
 pub fn fxrstor64(save_area: *const u8) {
     unsafe { _fxrstor64(save_area) }
+}
+
+// Pin a process to a specific CPU core
+pub fn pin_core(core: usize) {
+    unsafe {
+        let mut cpuset: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_ZERO(&mut cpuset);
+        libc::CPU_SET(core, &mut cpuset);
+
+        let result = libc::sched_setaffinity(
+            0, // 0 means current process
+            std::mem::size_of::<libc::cpu_set_t>(),
+            &cpuset,
+        );
+
+        if result != 0 {
+            fatal!(LucidErr::from("Failed to pin fuzzer to core"));
+        }
+    }
+}
+
+// Waitpid for non-blocking
+pub fn non_block_waitpid(pid: i32, status: &mut i32) -> i32 {
+    unsafe { libc::waitpid(pid, status, libc::WNOHANG) }
+}
+
+// Handle waitpid result
+pub fn handle_wait_result(result: i32, status: &i32) -> Result <(), ()> {
+    match result {
+        1.. => {
+            if libc::WIFEXITED(*status) {
+                let exit = libc::WEXITSTATUS(*status);
+                prompt_warn!("Child fuzzer exited with status: {}", exit);
+                return Err(());
+            } else if libc::WIFSIGNALED(*status) {
+                let signal = libc::WTERMSIG(*status);
+                prompt_warn!("Child fuzzer was signaled with: {}", signal);
+                return Err(());
+            }
+
+            // Unknown cause?
+            prompt_warn!("Child fuzzer was stopped, we don't know why");
+            return Err(());
+        }
+        -1 => {
+            prompt_warn!("Error from calling waitpid on child fuzzer");
+            return Err(());
+        }
+        _ => (), // No change, good!
+    }
+
+    Ok(())
 }

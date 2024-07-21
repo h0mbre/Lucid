@@ -1,9 +1,13 @@
-/// This file contains all of the logic necessary to formulate a coherent
-/// Config data structure that we'll pass around with the LucidContext so that
-/// we can parse args appropriately. We use the `clap` crate and parse args here
+//! This file contains all of the logic necessary to formulate a coherent
+//! Config data structure that we'll pass around with the LucidContext so that
+//! we can parse args appropriately. We use the `clap` crate and parse args here
+
 use clap::{Arg, ArgAction, Command};
 
 use crate::err::LucidErr;
+use crate::prompt_warn;
+
+const DEFAULT_SYNC_INTERVAL: usize = 3_600; // 1 Hour
 
 // Struct that contains all of the configurable information we need to pass
 // around in the LucidContext
@@ -20,7 +24,9 @@ pub struct Config {
     pub output_dir: String,
     pub findings_limit: Option<usize>,
     pub stat_interval: Option<usize>,
+    pub sync_interval: usize,
     pub icount_timeout: Option<usize>,
+    pub num_fuzzers: usize,
 }
 
 pub fn parse_args() -> Result<Config, LucidErr> {
@@ -63,10 +69,18 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         .long("findings-limit")
         .value_name("LIMIT")
         .help("Number of megabytes we can save to disk for findings (100 default)"))
+    .arg(Arg::new("fuzzers")
+        .long("fuzzers")
+        .value_name("COUNT")
+        .help("Number of fuzzers we spawn (1 default)"))
     .arg(Arg::new("stat-interval")
         .long("stat-interval")
         .value_name("INTERVAL")
         .help("Number of seconds we wait in between stat reports (1 default)"))
+    .arg(Arg::new("sync-interval")
+        .long("sync-interval")
+        .value_name("INTERVAL")
+        .help("Number of seconds in between corpus syncs between fuzzers"))
     .arg(Arg::new("icount-timeout")
         .long("icount-timeout")
         .value_name("INSTRUCTION_COUNT")
@@ -153,6 +167,24 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         }
     };
 
+    // See if a corpus sync interval was provided
+    let interval_str = matches.get_one::<String>("sync-interval");
+    let sync_interval = match interval_str {
+        None => {
+            prompt_warn!("No sync interval specified, defaulting to: {} secs",
+                DEFAULT_SYNC_INTERVAL);
+
+            DEFAULT_SYNC_INTERVAL
+        },
+        Some(str_repr) => {
+            let Ok(interval) = str_repr.parse::<usize>() else {
+                return Err(LucidErr::from("Invalid --sync-interval"));
+            };
+
+            interval
+        }
+    };
+
     // See if a timeout threshold was provided
     let timeout_str = matches.get_one::<String>("icount-timeout");
     let icount_timeout = match timeout_str {
@@ -163,6 +195,34 @@ pub fn parse_args() -> Result<Config, LucidErr> {
             };
 
             Some(timeout.wrapping_mul(1_000_000))
+        }
+    };
+
+    // Convert the number of fuzzers
+    let num_fuzzers_str = matches.get_one::<String>("fuzzers");
+    let num_fuzzers = match num_fuzzers_str {
+        None => 1,
+        Some(str_repr) => {
+            let Ok(mut fuzzers) = str_repr.parse::<usize>() else {
+                return Err(LucidErr::from("Invalid --fuzzers"));
+            };
+
+            // Get the number of CPUs
+            let num_cpus = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) };
+            if num_cpus <= 0 {
+                return Err(LucidErr::from("Failed to get number of CPUs"));
+            }
+
+            // Change number and warn if necessary
+            if fuzzers > num_cpus as usize {
+                prompt_warn!(
+                    "More fuzzers than CPUs, only spawning {} fuzzers!",
+                    num_cpus
+                );
+                fuzzers = num_cpus as usize;
+            }
+
+            fuzzers
         }
     };
 
@@ -179,6 +239,8 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         output_dir,
         findings_limit,
         stat_interval,
+        sync_interval,
         icount_timeout,
+        num_fuzzers,
     })
 }

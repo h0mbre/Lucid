@@ -1,5 +1,6 @@
-/// This file contains the `main` program logic which right now parses a Bochs
-/// image, loads that image into memory, and starts executing it
+//! This file contains the `main` program logic which right now parses a Bochs
+//! image, loads that image into memory, and starts executing it
+
 mod config;
 mod context;
 mod corpus;
@@ -19,7 +20,9 @@ mod syscall;
 use config::parse_args;
 use context::{dry_run, fuzz_loop, register_input, start_bochs, LucidContext};
 use corpus::Corpus;
+use err::LucidErr;
 use loader::load_bochs;
+use misc::{handle_wait_result, non_block_waitpid, pin_core};
 
 fn main() {
     // Parse arguments and retrieve config
@@ -153,14 +156,113 @@ fn main() {
         );
     }
 
-    /* FORK */
+    // Pin ourselves to core 0
+    pin_core(lucid_context.fuzzer_id);
 
-    // Now we can fuzz
-    prompt!("Starting fuzzer...");
-    fuzz_loop(&mut lucid_context).unwrap_or_else(|error| {
-        fatal!(error);
-    });
+    // Single-process arch
+    if lucid_context.is_single_process() {
+        // Now we can fuzz
+        prompt!("Starting fuzzer...");
+        fuzz_loop(&mut lucid_context).unwrap_or_else(|error| {
+            fatal!(error);
+        });
+    }
+    // Multi-process arch:
+    // - The original process becomes a simple stat reporter and waits to reap
+    //      dead spawned children
+    // - This means we'll share a CPU with fuzzer-id 0 which is fine since the
+    //      original process is mostly not scheduled just reading stats and
+    //      printing
+    else {
+        // Track children pids
+        let mut child_pids = Vec::new();
 
-    // Campaign over
-    prompt!("Campaign suspended");
+        // Fork fuzzers off
+        prompt!("Spawning fuzzers...");
+        for i in 0..lucid_context.config.num_fuzzers {
+            let fork_result = unsafe { libc::fork() };
+
+            if fork_result == -1 {
+                fatal!(LucidErr::from("Fork failed to spawn fuzzer"));
+            }
+
+            // Child
+            if fork_result == 0 {
+                // Update our context id
+                lucid_context.update_id(i);
+                lucid_context.fuzzer_id = i;
+                lucid_context.stats.id = i;
+
+                // Turn off verbosity if enabled, we don't want to muddle the
+                // terminal with Bochs prints
+                lucid_context.verbose = false;
+
+                // Pin ourselves to core
+                pin_core(lucid_context.fuzzer_id);
+
+                // Sleep some
+                std::thread::sleep(std::time::Duration::from_secs(
+                    lucid_context.fuzzer_id as u64,
+                ));
+
+                // Start fuzzing!
+                fuzz_loop(&mut lucid_context).unwrap_or_else(|error| {
+                    fatal!(error);
+                });
+
+                // Not reachable
+                unreachable!();
+            }
+            // Parent
+            else {
+                // Store pid
+                child_pids.push(fork_result);
+            }
+        }
+
+        // Make parent sleep until the fuzzers are off and running
+        std::thread::sleep(std::time::Duration::from_secs(
+            lucid_context.config.num_fuzzers as u64,
+        ));
+
+        // Parent is done forking, printing stats
+        loop {
+            // Sleep for the stat reporting interval
+            std::thread::sleep(std::time::Duration::from_millis(
+                lucid_context.stats.stat_interval as u64,
+            ));
+
+            // Print statistics
+            lucid_context.stats.report_global(
+                &lucid_context.config.output_dir,
+                lucid_context.coverage.curr_map.len(),
+            );
+
+            // Try to reap any dead fuzzers and exit
+            let mut child_exit = false;
+            for pid in child_pids.iter() {
+                let mut status: libc::c_int = 0;
+                let wait_result = non_block_waitpid(*pid, &mut status);
+                if handle_wait_result(wait_result, &status).is_err() {
+                    child_exit = true;
+                    break;
+                }
+            }
+
+            // If we had a child exit, shut everything down
+            if child_exit {
+                prompt_warn!("Shutting down child process fuzzers...");
+                for pid in child_pids.iter() {
+                    // Send killing signal
+                    unsafe { libc::kill(*pid, 9); }
+
+                    // Status we don't check or care about
+                    let mut status: libc::c_int = 0;
+                    unsafe { libc::waitpid(*pid, &mut status, 0); }
+                }
+
+                fatal!(LucidErr::from("Exiting due to early child exit"));
+            }
+        }
+    }
 }

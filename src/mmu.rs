@@ -1,5 +1,6 @@
-/// This file contains all of the logic necessary to manage dynamically
-/// allocated memory that Bochs asks for and uses (brk, mmap)
+//! This file contains all of the logic necessary to manage dynamically
+//! allocated memory that Bochs asks for and uses (brk, mmap)
+
 use crate::err::LucidErr;
 
 // Duh

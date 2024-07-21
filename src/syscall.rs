@@ -1,4 +1,5 @@
-/// This file contains the logic for handling syscalls that Bochs attempts
+//! This file contains the logic for handling syscalls that Bochs attempts
+
 use crate::context::{fault_handler, LucidContext};
 use crate::err::LucidErr;
 use crate::files::File;
