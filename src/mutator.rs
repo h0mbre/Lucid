@@ -16,27 +16,36 @@ use std::hash::{Hash, Hasher};
 
 use crate::corpus::Corpus;
 
-// The maximum number of stacked mutations we can apply, I *think* this is what
-// AFL++ does
+/// The maximum amount of mutation rounds we can apply to an input, I *think*
+/// this is what AFL++ does?
 const MAX_STACK: usize = 6;
 
-// The % at which Magic Numbers and Splicing are considered as mutation types
+/// We categorize input splicing and magic number insertion mutation strategies
+/// as "longshots"; so this is an adjustable rate at which they will be applied
+/// to an input. The default right now is 5% of the time. 
 const LONGSHOT_MUTATION_RATE: usize = 5;
 
-// The % at which we generate an input from scratch instead of mutating corpus
-const GEN_SCRATCH_RATE: usize = 5;
+/// This percentage is the rate at which we will create a new input from scratch
+/// rather than pull one from the corpus to mutate
+const GEN_SCRATCH_RATE: usize = 1;
 
-// Used as the number of bytes for byte-specific corruption routines
+/// When mutation strategies rely on mutating a number of bytes, this figure 
+/// provides the ceiling for how many bytes they are allowed to corrupt. Keep
+/// in mind that inputs may pass through multiple rounds of mutation. 
 const MAX_BYTE_CORRUPTION: usize = 64;
 
-// Used as the maximum block size for block-specific corruption routines
+/// When mutation strategies rely on mutating a block of memory, this figure
+/// provides the ceiling for the dimensions of the block. Keep in mind that 
+/// inputs may pass through multiple rounds of mutation.
 const MAX_BLOCK_CORRUPTION: usize = 512;
 
-// Used as the maximum number of bits we can corrupt
+/// When mutation strategies rely on mutating bits, this figure provides the
+/// ceiling for the number of bits that can be affected. Keep in mind that inputs
+/// may pass through multiple rounds of mutation.
 const MAX_BIT_CORRUPTION: usize = 64;
 
-// List of magic numbers I thought might be interesting, we mutate these in
-// some ways as well as we perform byte translations
+/// Hacky list of magic numbers to try and mutate and insert into random positions
+/// in the input buffer
 const MAGIC_NUMBERS: &[u64] = &[
     0,        // Hmmm
     u64::MAX, // All max values
@@ -75,7 +84,7 @@ const MAGIC_NUMBERS: &[u64] = &[
     16384,
 ];
 
-// Mutation type list
+/// A list of all the different mutation strategies
 const MUTATIONS: [MutationTypes; 12] = [
     MutationTypes::ByteInsert,
     MutationTypes::ByteOverwrite,
@@ -91,7 +100,8 @@ const MUTATIONS: [MutationTypes; 12] = [
     MutationTypes::Splice,
 ];
 
-// Helper function
+/// Generates a random seed for the mutator by executing rdtsc() and then 
+/// hashing the result
 fn generate_seed() -> usize {
     let mut hasher = DefaultHasher::new();
 
@@ -102,7 +112,7 @@ fn generate_seed() -> usize {
     hasher.finish() as usize
 }
 
-// Some basic mutation types that AFL++ seems to do in Havoc mode
+/// Represents some of the mutation strategies that AFL++ seems to do in "Havoc"
 #[derive(Clone, Debug)]
 pub enum MutationTypes {
     ByteInsert,
@@ -119,15 +129,18 @@ pub enum MutationTypes {
     Splice,
 }
 
+/// A structure that holds all the state for the Mutator
 #[derive(Clone, Default)]
 pub struct Mutator {
-    pub rng: usize,
-    pub input: Vec<u8>,
-    pub max_size: usize,
-    pub last_mutation: Vec<MutationTypes>,
+    pub rng: usize,                         // The RNG we use for random
+    pub input: Vec<u8>,                     // Our current input buffer
+    pub max_size: usize,                    // Largest size an input can be
+    pub last_mutation: Vec<MutationTypes>,  // The last mutation round summary
 }
 
 impl Mutator {
+    /// Generates a new Mutator instance with a random seed if one is not 
+    /// provided
     pub fn new(seed: Option<usize>, max_size: usize) -> Self {
         // If pRNG seed not provided, make our own
         let rng = if let Some(seed_val) = seed {
@@ -144,12 +157,13 @@ impl Mutator {
         }
     }
 
+    /// Picks a new random seed to use for the RNG
     pub fn reseed(&mut self) -> usize {
         self.rng = generate_seed();
-
         self.rng
     }
 
+    /// Xorshift pseudo-random function based on Brandon Falk's streams
     #[inline]
     fn rand(&mut self) -> usize {
         // Save off current value
@@ -164,7 +178,7 @@ impl Mutator {
         curr
     }
 
-    // Insert bytes into the input randomly
+    /// Insert bytes into the input randomly
     fn byte_insert(&mut self) {
         // Defaults to global max, but can be hand tuned
         const MAX_INSERTS: usize = MAX_BYTE_CORRUPTION;
@@ -196,7 +210,7 @@ impl Mutator {
         }
     }
 
-    // Overwrite bytes randomly
+    /// Overwrite bytes in the input randomly
     fn byte_overwrite(&mut self) {
         // Defaults to global max, but can be hand tuned
         const MAX_OVERWRITES: usize = MAX_BYTE_CORRUPTION;
@@ -220,7 +234,7 @@ impl Mutator {
         }
     }
 
-    // Delete bytes randomly
+    /// Delete bytes in the input randomly
     fn byte_delete(&mut self) {
         // Defaults to global max, but can be hand tuned
         const MAX_DELETES: usize = MAX_BYTE_CORRUPTION;
@@ -246,7 +260,7 @@ impl Mutator {
         }
     }
 
-    // Grab a block from the input, and insert it randomly somewhere
+    /// Grabs a block from the input, and insert it randomly somewhere else 
     fn block_insert(&mut self) {
         // Defaults to global max, but can be hand tuned
         const MAX_BLOCK_SIZE: usize = MAX_BLOCK_CORRUPTION;
@@ -289,7 +303,7 @@ impl Mutator {
         }
     }
 
-    // Grab a block from the input and overwrite the contents somewhere with it
+    /// Grabs a block from the input and copy it over to another location
     fn block_overwrite(&mut self) {
         // Defaults to global max, but can be hand tuned
         const MAX_BLOCK_SIZE: usize = MAX_BLOCK_CORRUPTION;
@@ -319,7 +333,7 @@ impl Mutator {
             .copy_from_slice(&block[..block_size]);
     }
 
-    // Remove a random block from the input
+    /// Removes a random block from the input buffer
     fn block_delete(&mut self) {
         // Defaults to global max, but can be hand tuned
         const MAX_BLOCK_SIZE: usize = MAX_BLOCK_CORRUPTION;
@@ -345,7 +359,7 @@ impl Mutator {
         self.input.drain(block_start..block_start + block_size);
     }
 
-    // Generate a random input
+    /// Generates a random input from scratch, not likely to be a great strategy
     fn generate_random_input(&mut self) {
         // Pick a size for the input
         let input_size = (self.rand() % self.max_size) + 1;
@@ -359,7 +373,7 @@ impl Mutator {
         }
     }
 
-    // Randomly flip bits in the input
+    /// Randomly flips bits in the input buffer
     fn bit_flip(&mut self) {
         // Determine the number of bits in the input
         let num_bits = self.input.len() * 8;
@@ -386,7 +400,7 @@ impl Mutator {
         }
     }
 
-    // Randomly insert random byte block into input
+    /// Inserts a random byte block into the input buffer
     fn grow(&mut self) {
         // Determine maximum size to grow
         let slack = self.max_size - self.input.len();
@@ -409,7 +423,8 @@ impl Mutator {
         }
     }
 
-    // Randomly truncate the input, always leave at least 1 byte
+    /// Truncates the input a random amount of bytes but always leaves at least
+    /// one byte
     fn truncate(&mut self) {
         // Determine how much we can shrink
         let slack = self.input.len() - 1;
@@ -424,7 +439,7 @@ impl Mutator {
         self.input.truncate(idx);
     }
 
-    // Randomly mutate a magic number
+    /// Takes a magic number value and mutates it 
     fn mutate_magic(&mut self, magic: u64) -> Vec<u8> {
         // Mutate the magic value
         let magic = match self.rand() % 14 {
@@ -473,7 +488,8 @@ impl Mutator {
         }
     }
 
-    // Randomly insert magic bytes into the input
+    /// Inserts magic bytes into the input buffer after optionally mutating
+    /// the bytes
     fn magic_byte_insert(&mut self) {
         // Defaults to global max, but can be hand tuned
         const MAX_INSERTS: usize = MAX_BYTE_CORRUPTION;
@@ -517,7 +533,8 @@ impl Mutator {
         }
     }
 
-    // Randomly overwrite bytes in the input with magic bytes
+    /// Overwrites randomly selected input buffer data with magic bytes that are
+    /// optionally mutated
     fn magic_byte_overwrite(&mut self) {
         // If the input isn't at least 8 bytes, just NOP
         if self.input.len() < 8 {
@@ -561,7 +578,8 @@ impl Mutator {
         }
     }
 
-    // Splice two inputs together
+    /// Splices two inputs together if possible, this strategy depends on 
+    /// having access to the corpus in order to select a 2nd input
     fn splice(&mut self, corpus: &Corpus) {
         // Take a block of the current input
         let old_block_start = self.rand() % self.input.len();
@@ -616,6 +634,11 @@ impl Mutator {
         }
     }
 
+    /// The main mutation function which will:
+    /// 1. Clear the current input buffer
+    /// 2. Randomly select an input from the corpus or generate one from scratch
+    /// 3. Select the number of mutation rounds (stack)
+    /// 4. Randomly select mutation strategies and apply them for n rounds
     pub fn mutate_input(&mut self, corpus: &Corpus) {
         // Clear current input
         self.input.clear();
@@ -719,8 +742,8 @@ impl Mutator {
         assert!(self.input.len() <= self.max_size);
     }
 
-    // Take a slice from someone and copy into our input buffer, used by
-    // Redqueen right now to test traces
+    /// Clears the current mutator input buffer and copies a passed in slice
+    /// into the input buffer
     pub fn memcpy_input(&mut self, slice: &[u8]) {
         // Clear the current input
         self.input.clear();

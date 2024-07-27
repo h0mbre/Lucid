@@ -3,25 +3,26 @@
 use std::fs::{metadata, read, Metadata};
 use std::os::unix::fs::MetadataExt;
 
-// Maximum number of files we allow Bochs to open
+/// Maximum number of files we allow Bochs to open at once
 const NUM_FILE_MAX: usize = 15;
 
-// The base FD number accounting for 0, 1, 2 being reserved
+/// The base FD number accounting for 0, 1, 2 being reserved
 const BASE_FD: i32 = 3;
 
-// This is a list of files that we know about and want to block opening for
+/// List of files we don't allow Bochs to open
 const FILE_DENY_LIST: [&str; 2] = [
     "/etc/localtime", // Not needed
     "bochsout.txt",   // Force logging to go to stderr
 ];
 
+/// Our way of managing all of Bochs' files
 #[derive(Clone, Default)]
 pub struct FileTable {
     pub files: Vec<File>,
 }
 
 impl FileTable {
-    // We will attempt to open and read all of our required files ahead of time
+    /// Create a new FileTable structure to hold files Bochs opens
     pub fn new() -> Self {
         // Return an empty file table
         FileTable {
@@ -29,7 +30,7 @@ impl FileTable {
         }
     }
 
-    // Attempt to close a file by fd
+    /// Closing a file to us means taking the file out of the FileTable
     pub fn close(&mut self, fd: i32) {
         for i in 0..self.files.len() {
             let file = &self.files[i];
@@ -40,8 +41,7 @@ impl FileTable {
         }
     }
 
-    // Attempt to open a file, we also handle creating files in here, if they
-    // are tmpfiles, otherwise, we don't support
+    /// Attempt to open a file for Bochs and place it in the FileTable
     pub fn open(&mut self, path: &str, fuzzing: bool) -> Result<i32, ()> {
         // Check to see if we're creating too many files
         if self.files.len() >= NUM_FILE_MAX {
@@ -103,17 +103,17 @@ impl FileTable {
         Ok(fd)
     }
 
-    // Look a file up by fd and then return a mutable reference to it
+    /// Look a file up by fd in the FileTable and return a mutable reference
     pub fn get_file_mut(&mut self, fd: i32) -> Option<&mut File> {
         self.files.iter_mut().find(|file| file.fd == fd)
     }
 
-    // Look up a file by fd and then return a read-only reference to it
+    /// Look up a file by fd in the FileTable and return a read-only reference
     pub fn get_file(&self, fd: i32) -> Option<&File> {
         self.files.iter().find(|file| file.fd == fd)
     }
 
-    // Return an fstat struct if we can
+    /// Return an fstat struct if we can
     pub fn do_fstat(&self, file: &File) -> Result<libc::stat, ()> {
         // If we don't have metadata, return error
         if file.metadata.is_none() {
@@ -145,6 +145,12 @@ impl FileTable {
     }
 }
 
+/// This struct is how we represent files that Bochs does I/O on during execution
+/// Files are kept as in-memory objects only, there is no disk I/O associated
+/// with them, all of the traditional file I/O syscalls are sandboxed and
+/// emulated here. The "dirty" members are for marking files as "dirty" if they
+/// are touched during a fuzzing iteration. We have visibility into when the
+/// context is in fuzzing mode by checking LucidContext->fuzzing boolean
 #[derive(Clone)]
 pub struct File {
     pub fd: i32,                    // The file-descriptor Bochs has for this file
@@ -158,6 +164,7 @@ pub struct File {
 }
 
 impl File {
+    /// Create a new File struct
     fn new() -> Self {
         File {
             fd: 0,
@@ -171,30 +178,38 @@ impl File {
         }
     }
 
+    /// Set the File's cursor position
     pub fn set_cursor(&mut self, new: usize) {
         self.cursor = new;
     }
 
+    /// Retrieve the File's cursor position
     pub fn get_cursor(&self) -> usize {
         self.cursor
     }
 
+    /// Move the File's cursor in a positive direction. Notably we do not handle
+    /// overflows or anything here, or even check for EOF? 
     pub fn cursor_add(&mut self, length: usize) {
         self.cursor += length;
     }
 
+    /// Checks to see if the File's cursor has been manipulated during fuzzing
     pub fn has_dirty_cursor(&self) -> bool {
         self.dirty_cursor
     }
 
+    /// Mark a File's cursor as dirty
     pub fn set_dirty_cursor(&mut self) {
         self.dirty_cursor = true;
     }
 
+    /// Checks to see if the File's memory backing has been dirtied
     pub fn has_dirty_contents(&self) -> bool {
         self.dirty_contents
     }
 
+    /// Mark a File's memory backing as dirty
     pub fn set_dirty_contents(&mut self) {
         self.dirty_contents = true;
     }

@@ -1,50 +1,50 @@
 //! This file contains all of the logic necessary to load a parsed static pie
 //! ELF into memory as well as set up a program stack
 
-use crate::elf::{parse_elf, Elf, ELF_HDR_SIZE, PRG_HDR_SIZE};
-use crate::err::LucidErr;
 use std::fs::read;
 
-// Address we want to load Bochs at
+use crate::elf::{parse_elf, Elf, ELF_HDR_SIZE, PRG_HDR_SIZE};
+use crate::config::Config;
+use crate::err::LucidErr;
+use crate::misc::PAGE_SIZE;
+
+/// Address we want to load Bochs at
 const LOAD_TARGET: usize = 0x10000;
 
-// Duh
-const PAGE_SIZE: usize = 0x1000;
+/// A megabtye of memory in powers of 2
+const MEGABYTE: usize = 1_048_576;
 
-// A MEG of memory
-const MEGABYTE: usize = 1_003_520;
-
-// Size of the actual Read/Write stack allocation
+/// Size of the actual Read/Write stack allocation
 const STACK_ALLOC_SIZE: usize = MEGABYTE;
 
-// Size of a void *, this should always just be 8 for now, no planned support
-// for anything else
-const POINTER_SIZE: usize = std::mem::size_of::<*const u8>();
+/// Size of a void *, this should always just be 8 for now, no planned support
+/// for anything else
+const POINTER_SIZE: usize = 8;
 
-// Size of a u64, this should always be 8. Just doing this to differentiate
-// from a pointer, but same purpose
-const U64_SIZE: usize = std::mem::size_of::<u64>();
+/// Size of a u64, this should always be 8. Just doing this to differentiate
+/// from a pointer, but same purpose
+const U64_SIZE: usize = 8;
 
-// The max size our stack data can be, has to be a multiple of a page size
+/// The max size our stack data can be, has to be a multiple of a page size
 const STACK_DATA_MAX: usize = 0x1000;
 
-// This is what we return to `main`, this is the information required to
-// jump to Bochs and start execution
+/// This represent all of the data we need about Bochs' ELF image and stack to 
+/// load and jump to for execution 
 #[derive(Clone)]
 pub struct Bochs {
-    pub image_base: usize,
-    pub image_length: usize,
-    pub stack_base: usize,
-    pub stack_length: usize,
-    pub write_base: usize,
-    pub write_length: usize,
-    pub entry: usize,
-    pub rsp: usize,
+    pub image_base: usize,      // The address of the ELF in memory
+    pub image_length: usize,    // Length of the ELF image in memory
+    pub stack_base: usize,      // Address of Bochs' stack
+    pub stack_length: usize,    // Length of Bochs' stack
+    pub write_base: usize,      // Where contiguous writable memory starts
+    pub write_length: usize,    // Length of contiguous writable memory
+    pub entry: usize,           // Address of ELF entry point
+    pub rsp: usize,             // The stack pointer we should use for execution
 }
 
-// Map all of the memory we need to hold the ELF image of Bochs but also Bochs'
-// stack in one contiguous block. We have to map this as writable so we can
-// write to it, but we'll go back and mprotect certain page ranges later.
+/// Map all of the memory we need to hold the ELF image of Bochs but also Bochs'
+/// stack in one contiguous block. We have to map this as writable so we can
+/// write to it, but we'll go back and mprotect certain page ranges later.
 fn initial_mmap(size: usize) -> Result<usize, LucidErr> {
     // Call `mmap` and make sure it succeeds
     let result = unsafe {
@@ -65,8 +65,8 @@ fn initial_mmap(size: usize) -> Result<usize, LucidErr> {
     Ok(result as usize)
 }
 
-// Iterate through all the loadable segments and adjust their memory backing
-// according to their permissions and load the binary data
+/// Iterate through all the loadable segments and adjust their memory backing
+/// according to their permissions and load the binary data
 fn load_segments(addr: usize, elf: &Elf) -> Result<(usize, usize), LucidErr> {
     // Extract relevant data from loadable segments
     let mut load_segments = Vec::new();
@@ -87,26 +87,24 @@ fn load_segments(addr: usize, elf: &Elf) -> Result<(usize, usize), LucidErr> {
     // segments must be contiguous
     let mut write_start = 0;
     let mut write_end = 0;
-    for segment in load_segments.iter() {
+    for (flags, vaddr, memsz, offset, filesz) in load_segments.iter() {
         // Copy the binary data over, the destination is where in our process
         // memory we're copying the binary data to. The source is where we copy
         // from, this is going to be an offset into the binary data in the file,
         // len is going to be how much binary data is in the file, that's filesz
-        let len = segment.4;
-        let dst = (addr + segment.1) as *mut u8;
-        let src = (elf.data[segment.3..segment.3 + len]).as_ptr();
-
+        let dst = (addr + vaddr) as *mut u8;
+        let src = (elf.data[*offset..*offset + filesz]).as_ptr();
         unsafe {
-            std::ptr::copy_nonoverlapping(src, dst, len);
+            std::ptr::copy_nonoverlapping(src, dst, *filesz);
         }
 
         // Calculate the `mprotect` address by adding the mmap address plus the
         // virtual address offset, we also mask off the last 0x1000 bytes so
         // that we are always page-aligned as required by `mprotect`
-        let mprotect_addr = ((addr + segment.1) & !(PAGE_SIZE - 1)) as *mut libc::c_void;
+        let mprotect_addr = ((addr + vaddr) & !(PAGE_SIZE - 1)) as *mut libc::c_void;
 
         // Get the length
-        let mut mprotect_len = segment.2 as libc::size_t;
+        let mut mprotect_len = *memsz;
 
         // Adjust the length to round up to nearest page if necessary
         if mprotect_len % PAGE_SIZE != 0 {
@@ -117,19 +115,18 @@ fn load_segments(addr: usize, elf: &Elf) -> Result<(usize, usize), LucidErr> {
 
         // Get the protection
         let mut mprotect_prot = 0 as libc::c_int;
-        if segment.0 & 0x1 == 0x1 {
+        if flags & 0x1 == 0x1 {
             mprotect_prot |= libc::PROT_EXEC;
         }
-        if segment.0 & 0x2 == 0x2 {
+        if flags & 0x2 == 0x2 {
             mprotect_prot |= libc::PROT_WRITE;
         }
-        if segment.0 & 0x4 == 0x4 {
+        if flags & 0x4 == 0x4 {
             mprotect_prot |= libc::PROT_READ;
         }
 
         // Call `mprotect` to change the mapping perms
         let result = unsafe { libc::mprotect(mprotect_addr, mprotect_len, mprotect_prot) };
-
         if result < 0 {
             return Err(LucidErr::from("Failed to `mprotect` memory for Bochs"));
         }
@@ -140,7 +137,6 @@ fn load_segments(addr: usize, elf: &Elf) -> Result<(usize, usize), LucidErr> {
             if write_start == 0 {
                 write_start = mprotect_addr as usize;
             }
-
             // Update write end
             write_end = mprotect_addr as usize + mprotect_len;
         }
@@ -153,29 +149,7 @@ fn load_segments(addr: usize, elf: &Elf) -> Result<(usize, usize), LucidErr> {
     Ok((write_start, write_end))
 }
 
-// Iterate through the arguments passed to the fuzzer, and determine if there
-// are any arguments meant for Bochs, the strings will be placed on the stack
-// in reverse order so that arg[1] string is at a lower memory address than
-// arg[2] for example
-fn parse_bochs_args() -> Vec<String> {
-    let args: Vec<String> = std::env::args().collect();
-
-    // Check to see if "--bochs-args" is present, if it is, capture all of the
-    // args after as Bochs args
-    let mut bochs_args = if let Some(idx) = args.iter().position(|arg| arg == "--bochs-args") {
-        args[idx + 1..].to_vec()
-    } else {
-        Vec::new()
-    };
-
-    // Add in argv[0]
-    bochs_args.insert(0, String::from("./bochs"));
-
-    // Reverse the order of arguments
-    bochs_args.into_iter().rev().collect()
-}
-
-// Pushes a u64 onto the stack
+/// Pushes a u64 onto the stack in little-endian order
 fn push_u64(stack: &mut Vec<u8>, value: u64) {
     let bytes = value.to_le_bytes();
     for &byte in bytes.iter().rev() {
@@ -183,8 +157,8 @@ fn push_u64(stack: &mut Vec<u8>, value: u64) {
     }
 }
 
-// Pushes a NULL terminated string onto the "stack" and pads the string with
-// NULL bytes until we achieve 8-byte alignment
+/// Pushes a NULL terminated string onto the "stack" and pads the string with
+/// NULL bytes until we achieve 8-byte alignment
 fn push_string(stack: &mut Vec<u8>, string: String) {
     // Convert the string to bytes and append it to the stack
     let mut bytes = string.as_bytes().to_vec();
@@ -205,43 +179,43 @@ fn push_string(stack: &mut Vec<u8>, string: String) {
     }
 }
 
-// The stack layout should look like this when we're done, thanks to
-// https://articles.manugarg.com/aboutelfauxiliaryvectors for reference and
-// @netspooky for their help
-//
-// ==== LOWER ====
-// RSP     -> argc
-// argv[0] -> pointer
-// argv[1] -> pointer
-// ..
-// argv[n] -> NULL
-//
-// envp[0] -> pointer
-// envp[1] -> pointer
-// ..
-// envp[n] -> NULL
-//
-// auxv[0] -> pointer
-// auxv[1] -> pointer
-// ..
-// auxv[n] -> AT_NULL vector
-//
-// padding
-//
-// argv strings
-// envvar strings
-// end marker (NULL)
-// ==== HIGHER ====
-fn create_stack_data(base: usize, stack_addr: usize, elf: &Elf) -> Result<Vec<u8>, LucidErr> {
+/// Create the actual content/data that we'll place onto the stack that we 
+/// provide to Bochs when we jump to it to start executing
+///
+/// The stack layout should look like this when we're done, thanks to
+/// https://articles.manugarg.com/aboutelfauxiliaryvectors for reference and
+/// @netspooky for their help
+///
+/// ==== LOWER ====
+/// RSP     -> argc
+/// argv[0] -> pointer
+/// argv[1] -> pointer
+/// ..
+/// argv[n] -> NULL
+///
+/// envp[0] -> pointer
+/// envp[1] -> pointer
+/// ..
+/// envp[n] -> NULL
+///
+/// auxv[0] -> pointer
+/// auxv[1] -> pointer
+/// ..
+/// auxv[n] -> AT_NULL vector
+///
+/// padding
+///
+/// argv strings
+/// envvar strings
+/// end marker (NULL)
+/// ==== HIGHER ====
+fn create_stack_data(base: usize, stack_addr: usize, elf: &Elf, args: Vec<String>) -> Result<Vec<u8>, LucidErr> {
     // Create a vector to hold all of our stack data
     let mut stack_data = Vec::new();
 
     // Add the "end-marker" NULL, we're skipping adding any envvar strings for
     // now
     push_u64(&mut stack_data, 0u64);
-
-    // Parse the argv entries for Bochs
-    let args = parse_bochs_args();
 
     // Store the length of the strings including padding
     let mut arg_lens = Vec::new();
@@ -349,7 +323,15 @@ fn create_stack_data(base: usize, stack_addr: usize, elf: &Elf) -> Result<Vec<u8
     Ok(stack_data)
 }
 
-pub fn load_bochs(bochs_image: &str) -> Result<Bochs, LucidErr> {
+/// Loads Bochs ELF image into memory so that we can execute it. Ensures that 
+/// all writable memory is contiguous and comes at the end of the ELF with
+/// regards to headers. We will also create and prepare a stack here. This 
+/// returns all of the necessary information to jump to Bochs and start 
+/// executing
+pub fn load_bochs(config: &Config) -> Result<Bochs, LucidErr> {
+    // Get the bochs image 
+    let bochs_image = &config.bochs_image;
+
     // Read the executable file into memory
     let data = read(bochs_image)
         .map_err(|_| LucidErr::from("Unable to read binary data from Bochs binary"))?;
@@ -408,7 +390,8 @@ pub fn load_bochs(bochs_image: &str) -> Result<Bochs, LucidErr> {
     let rsp = stack_addr + STACK_ALLOC_SIZE - STACK_DATA_MAX;
 
     // Create stack data
-    let stack_data = create_stack_data(mapping, rsp, &elf)?;
+    let args = config.bochs_args.clone();
+    let stack_data = create_stack_data(mapping, rsp, &elf, args)?;
 
     // Copy the stack data over to the stack
     let len = stack_data.len() as libc::size_t;

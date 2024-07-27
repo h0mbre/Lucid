@@ -7,12 +7,8 @@ use std::time::{Duration, Instant};
 
 use crate::config::Config;
 use crate::err::LucidErr;
-use crate::prompt_warn;
 
-// Default batch time for stat reporting in milliseconds
-const DEFAULT_BATCH_TIME: u128 = 2_000; // Print stats every 2 seconds
-
-// Helper function to format a group of stats
+/// Helper function to format a group of stats for printing to the terminal
 fn format_group(title: &str, stats: &[(String, String)]) -> String {
     let stats_str = stats
         .iter()
@@ -22,20 +18,17 @@ fn format_group(title: &str, stats: &[(String, String)]) -> String {
     format!("\x1b[1;32m{}:\x1b[0m {}", title, stats_str)
 }
 
-// What kind of mode are fuzzing in
-#[derive(Clone)]
+/// What kind of mode are fuzzing in determines how stats are processed and
+/// collected
+#[derive(Clone, Default)]
 enum ReportMode {
+    #[default]
     Single,
     Multi,
 }
 
-impl Default for ReportMode {
-    fn default() -> Self {
-        ReportMode::Single
-    }
-}
-
-// Stats that we serialize to disk in multi-process mode
+/// Represents the statistics that fuzzers need to serialize to disk if fuzzing
+/// is multi-process
 #[derive(Clone, Copy, Default, Debug)]
 #[repr(C, packed)]
 struct SerialStats {
@@ -54,6 +47,7 @@ struct SerialStats {
 }
 
 impl SerialStats {
+    /// Creates a serialized statistics structure from an existing Stats structure
     pub fn from_stats(stats: &Stats) -> Self {
         // Calculate total time
         let total_time = if let Some(start) = stats.session_start {
@@ -78,6 +72,9 @@ impl SerialStats {
         }
     }
 
+    /// Creates a diff between an old SerialStats structure and the current
+    /// structure, this is used to simulate the concept of a "batch" that exists
+    /// when fuzzing single-process
     pub fn diff(&self, old: SerialStats) -> Self {
         SerialStats {
             report: self.report,
@@ -96,7 +93,8 @@ impl SerialStats {
     }
 }
 
-// Formatted stats for printing
+/// A data structure for statistics that have already been formatted and can
+/// be displayed (printed to terminal)
 struct FormattedStats {
     uptime: String,
     fuzzers: usize,
@@ -115,6 +113,7 @@ struct FormattedStats {
     cpu_misc: f64,
 }
 
+/// Statistics that help end-users make sense of the current fuzzing setup
 #[derive(Clone, Default)]
 pub struct Stats {
     // Stats for the entire campaign so far
@@ -149,19 +148,8 @@ pub struct Stats {
 }
 
 impl Stats {
+    /// Creates a new Stats structure based on the provided Config
     pub fn new(config: &Config) -> Self {
-        // Update the members that depend on the config
-        let stat_interval = match config.stat_interval {
-            None => {
-                prompt_warn!(
-                    "No stat interval provided, defaulting to {} secs",
-                    DEFAULT_BATCH_TIME / 1_000
-                );
-                DEFAULT_BATCH_TIME
-            }
-            Some(interval) => (interval.wrapping_mul(1_000)) as u128,
-        };
-
         // Determine mode bruh
         let report_mode = match config.num_fuzzers {
             1 => ReportMode::Single,
@@ -169,7 +157,7 @@ impl Stats {
         };
 
         Stats {
-            stat_interval,
+            stat_interval: config.stat_interval,
             fuzzers: config.num_fuzzers,
             report_mode,
             id: 0,
@@ -177,6 +165,8 @@ impl Stats {
         }
     }
 
+    /// Converts a Stats structure to a FormattedStats structure so that the
+    /// statistics can be printed to the terminal
     fn generate_formatted_stats(&self) -> FormattedStats {
         let total_elapsed = self.session_start.unwrap().elapsed();
         let total_seconds = total_elapsed.as_secs();
@@ -238,6 +228,7 @@ impl Stats {
         }
     }
 
+    /// Prints stats to the terminal
     pub fn print_stats(&self) {
         let formatted_stats = self.generate_formatted_stats();
 
@@ -298,7 +289,8 @@ impl Stats {
         println!("{}", format_group("cpu", &cpu));
     }
 
-    // Start the timers
+    /// Initializes global stat values such as the start time of the fuzzing 
+    /// campaign
     #[inline]
     pub fn start_session(&mut self, map_size: usize) {
         self.start_str = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -308,13 +300,15 @@ impl Stats {
         self.map_size = map_size;
     }
 
-    // Update 1 fuzzcase
+    /// Update stats after a single fuzzcase
     #[inline]
     pub fn update(&mut self) {
         self.session_iters += 1;
         self.batch_iters += 1;
     }
 
+    /// Check to see if enough time has elapsed to print the current batch of
+    /// statistics when fuzzing in single-process mode
     fn report_ready_single(&self) -> bool {
         if let Some(batch_start) = self.batch_start {
             batch_start.elapsed().as_millis() > self.stat_interval
@@ -323,6 +317,8 @@ impl Stats {
         }
     }
 
+    /// Check to see if enough time has elapsed to print the current batch
+    /// of statistics when fuzzing in multi-process mode
     fn report_ready_multi(&mut self) -> bool {
         if let Some(batch_start) = self.batch_start {
             if batch_start.elapsed().as_millis() > self.stat_interval {
@@ -337,7 +333,7 @@ impl Stats {
         }
     }
 
-    // Check if time to report
+    /// Check to see if it's time to report statistics for the current batch
     pub fn report_ready(&mut self) -> bool {
         if matches!(self.report_mode, ReportMode::Single) {
             self.report_ready_single()
@@ -346,12 +342,13 @@ impl Stats {
         }
     }
 
+    /// Update stats when new coverage has been detected
     pub fn new_coverage(&mut self, edges: usize) {
         self.edges = edges;
         self.last_find = Some(Instant::now());
     }
 
-    // How a single-process fuzzer reports
+    /// Report stats in single-process fuzzing
     fn report_single(&mut self) -> Result<(), LucidErr> {
         // Print our stats
         self.print_stats();
@@ -368,6 +365,10 @@ impl Stats {
         Ok(())
     }
 
+    /// Report stats in multi-process fuzzing. Each fuzzer has its own file 
+    /// in the output directory where it serializes its statistics to disk and
+    /// the main stat reporting thread will synthesize all of the statistics
+    /// for each fuzzer into a single report
     pub fn report_multi(&self) -> Result<(), LucidErr> {
         // Make sure we have a stat file
         let stat_file = self
@@ -400,7 +401,7 @@ impl Stats {
         Ok(())
     }
 
-    // Report the stats
+    /// Display stats 
     pub fn report(&mut self) -> Result<(), LucidErr> {
         // Annotate report number
         self.report += 1;
@@ -413,7 +414,8 @@ impl Stats {
         }
     }
 
-    // Read a serial stats file for a specific fuzzer id
+    /// Used by main stat reporting process in multi-process fuzzing mode to 
+    /// read the SerialStats for a specific fuzzer from its stat file
     fn read_stat_file(&self, output_dir: &str, id: usize) -> Result<SerialStats, LucidErr> {
         // Create stat file
         let stat_file = format!("{}/stats/fuzzer-{}.stats", output_dir, id);
@@ -446,7 +448,8 @@ impl Stats {
         }
     }
 
-    // Initialize the vector to hold all of the fuzzer stats
+    /// Initializes the containers for stats structures that are used by the
+    /// main stat reporting process during multi-process fuzzing 
     fn init_multi_stats(&mut self, map_size: usize) {
         self.multi_batch_stats = vec![SerialStats::default(); self.fuzzers];
 
@@ -457,7 +460,8 @@ impl Stats {
         self.map_size = map_size;
     }
 
-    // Diff two stat structs to create batch statistics
+    /// Diffs two SerializedStats structures to create a 'batch' for statistics
+    /// reporting when in multi-process mode
     fn create_batch(&mut self, idx: usize, new: SerialStats) -> SerialStats {
         // Grab the old stats
         let old = self.multi_batch_stats[idx];
@@ -466,7 +470,8 @@ impl Stats {
         new.diff(old)
     }
 
-    // Report global stats
+    /// Formats and synthesizes all of the statistics gathered from each
+    /// individual fuzzer's stat file to print the statistics
     pub fn report_global(&mut self, output_dir: &str, map_size: usize) {
         // If the vector is empty, populate it by starting campaign stats
         if self.multi_batch_stats.is_empty() {

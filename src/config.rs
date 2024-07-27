@@ -5,12 +5,26 @@
 use clap::{Arg, ArgAction, Command};
 
 use crate::err::LucidErr;
-use crate::prompt_warn;
+use crate::{prompt, prompt_warn};
 
+/// How often the fuzzers in multi-process sync their in memory corpus with disk
+/// to capture findings of the other fuzzers
 const DEFAULT_SYNC_INTERVAL: usize = 3_600; // 1 Hour
 
-// Struct that contains all of the configurable information we need to pass
-// around in the LucidContext
+/// Default timeout for instruction count in a fuzzcase, Bochs can do around 250
+/// million instructions per second in testing
+const DEFAULT_ICOUNT_TIMEOUT: usize = 250_000_000;
+
+/// The default maximum amount of findings we can use in disk space which
+/// includes inputs and crashes
+const DEFAULT_FINDINGS_MAX: usize = 1_000_000_000;
+const MEG: usize = 1_000_000;
+
+/// Default batch time for stat reporting in milliseconds
+const DEFAULT_BATCH_TIME: u128 = 2_000;
+
+/// Struct that contains all of the configurable information we need to pass
+/// around in the LucidContext
 #[derive(Clone)]
 pub struct Config {
     pub input_max_size: usize,
@@ -22,13 +36,15 @@ pub struct Config {
     pub mutator_seed: Option<usize>,
     pub seeds_dir: Option<String>,
     pub output_dir: String,
-    pub findings_limit: Option<usize>,
-    pub stat_interval: Option<usize>,
+    pub findings_limit: usize,
+    pub stat_interval: u128,
     pub sync_interval: usize,
-    pub icount_timeout: Option<usize>,
+    pub icount_timeout: usize,
     pub num_fuzzers: usize,
 }
 
+/// Parses the command line arguments and creates a Config which is used to
+/// configure the LucidContext in most cases for the duration of the campaign
 pub fn parse_args() -> Result<Config, LucidErr> {
     let matches = Command::new("lucid")
     .version("0.0.1")
@@ -90,7 +106,7 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         .value_name("IMAGE")
         .help("File path for the Bochs binary compatible with Lucid")
         .required(true))
-        .arg(Arg::new("bochs-args")
+    .arg(Arg::new("bochs-args")
         .long("bochs-args")
         .value_name("ARGS")
         .help("Arguments to pass to Bochs once it's loaded")
@@ -118,11 +134,17 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         .get_one::<String>("bochs-image")
         .unwrap()
         .to_string();
-    let bochs_args = matches
+    let mut bochs_args = matches
         .get_many::<String>("bochs-args")
         .unwrap()
         .cloned()
-        .collect();
+        .collect::<Vec<String>>();
+
+    // Add argv[0]
+    bochs_args.insert(0, "./lucid_bochs".to_string());
+
+    // Reverse args
+    let bochs_args = bochs_args.into_iter().rev().collect();
 
     // See if a mutator seed was provided
     let seed_str = matches.get_one::<String>("mutator-seed");
@@ -144,26 +166,42 @@ pub fn parse_args() -> Result<Config, LucidErr> {
     // See if a findings limit was provided
     let limit_str = matches.get_one::<String>("findings-limit");
     let findings_limit = match limit_str {
-        None => None,
+        None => {
+            prompt!(
+                "No findings limit specified, defaulting to {}MB",
+                DEFAULT_FINDINGS_MAX / MEG
+            );
+            DEFAULT_FINDINGS_MAX
+        }
         Some(str_repr) => {
             let Ok(limit) = str_repr.parse::<usize>() else {
                 return Err(LucidErr::from("Invalid --findings_limit"));
             };
 
-            Some(limit)
+            // Multiply the passed in limit by a megabyte
+            let limit = limit.wrapping_mul(MEG);
+            prompt!("Findings limit set to {}MB", limit / MEG);
+
+            limit
         }
     };
 
     // See if a stat batch reporting interval was provided
     let interval_str = matches.get_one::<String>("stat-interval");
     let stat_interval = match interval_str {
-        None => None,
+        None => {
+            prompt_warn!(
+                "No stat interval provided, defaulting to {} secs",
+                DEFAULT_BATCH_TIME / 1_000
+            );
+            DEFAULT_BATCH_TIME
+        }
         Some(str_repr) => {
             let Ok(interval) = str_repr.parse::<usize>() else {
                 return Err(LucidErr::from("Invalid --stat-interval"));
             };
 
-            Some(interval)
+            interval.wrapping_mul(1_000) as u128
         }
     };
 
@@ -171,11 +209,13 @@ pub fn parse_args() -> Result<Config, LucidErr> {
     let interval_str = matches.get_one::<String>("sync-interval");
     let sync_interval = match interval_str {
         None => {
-            prompt_warn!("No sync interval specified, defaulting to: {} secs",
-                DEFAULT_SYNC_INTERVAL);
+            prompt_warn!(
+                "No sync interval specified, defaulting to: {} secs",
+                DEFAULT_SYNC_INTERVAL
+            );
 
             DEFAULT_SYNC_INTERVAL
-        },
+        }
         Some(str_repr) => {
             let Ok(interval) = str_repr.parse::<usize>() else {
                 return Err(LucidErr::from("Invalid --sync-interval"));
@@ -188,13 +228,19 @@ pub fn parse_args() -> Result<Config, LucidErr> {
     // See if a timeout threshold was provided
     let timeout_str = matches.get_one::<String>("icount-timeout");
     let icount_timeout = match timeout_str {
-        None => None,
+        None => {
+            prompt_warn!(
+                "No icount timeout specified, defaulting to {}M instructions",
+                DEFAULT_ICOUNT_TIMEOUT / 1_000_000
+            );
+            DEFAULT_ICOUNT_TIMEOUT
+        }
         Some(str_repr) => {
             let Ok(timeout) = str_repr.parse::<usize>() else {
                 return Err(LucidErr::from("Invalid --icount-timeout"));
             };
 
-            Some(timeout.wrapping_mul(1_000_000))
+            timeout.wrapping_mul(1_000_000)
         }
     };
 

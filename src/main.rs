@@ -24,6 +24,16 @@ use err::LucidErr;
 use loader::load_bochs;
 use misc::{handle_wait_result, non_block_waitpid, pin_core};
 
+/// Main function steps:
+/// 1. Parses configuration
+/// 2. Creates a corpus
+/// 3. Loads Bochs into memory
+/// 4. Creates a LucidContext object which is how the entire fuzzer works
+/// 5. Runs Bochs up to the snapshot instruction
+/// 6. Creates a snapshot
+/// 7. Registers fuzzing input dimensions so we can insert fuzzcases
+/// 8. Dry-runs all seed inputs to normalize code-coverage
+/// 9. Launches fuzzer(s)
 fn main() {
     // Parse arguments and retrieve config
     prompt!("Parsing config options...");
@@ -44,7 +54,7 @@ fn main() {
         "Loading Bochs with Bochs image path: '{}'...",
         config.bochs_image
     );
-    let bochs = load_bochs(&config.bochs_image).unwrap_or_else(|error| {
+    let bochs = load_bochs(&config).unwrap_or_else(|error| {
         fatal!(error);
     });
 
@@ -157,13 +167,13 @@ fn main() {
     }
 
     // Pin ourselves to core 0
-    pin_core(lucid_context.fuzzer_id);
+    pin_core(0);
 
     // Single-process arch
     if lucid_context.is_single_process() {
         // Now we can fuzz
         prompt!("Starting fuzzer...");
-        fuzz_loop(&mut lucid_context).unwrap_or_else(|error| {
+        fuzz_loop(&mut lucid_context, None).unwrap_or_else(|error| {
             fatal!(error);
         });
     }
@@ -188,25 +198,18 @@ fn main() {
 
             // Child
             if fork_result == 0 {
-                // Update our context id
-                lucid_context.update_id(i);
-                lucid_context.fuzzer_id = i;
-                lucid_context.stats.id = i;
-
                 // Turn off verbosity if enabled, we don't want to muddle the
                 // terminal with Bochs prints
                 lucid_context.verbose = false;
 
                 // Pin ourselves to core
-                pin_core(lucid_context.fuzzer_id);
+                pin_core(i);
 
                 // Sleep some
-                std::thread::sleep(std::time::Duration::from_secs(
-                    lucid_context.fuzzer_id as u64,
-                ));
+                std::thread::sleep(std::time::Duration::from_secs(i as u64));
 
                 // Start fuzzing!
-                fuzz_loop(&mut lucid_context).unwrap_or_else(|error| {
+                fuzz_loop(&mut lucid_context, Some(i)).unwrap_or_else(|error| {
                     fatal!(error);
                 });
 
@@ -254,11 +257,15 @@ fn main() {
                 prompt_warn!("Shutting down child process fuzzers...");
                 for pid in child_pids.iter() {
                     // Send killing signal
-                    unsafe { libc::kill(*pid, 9); }
+                    unsafe {
+                        libc::kill(*pid, 9);
+                    }
 
                     // Status we don't check or care about
                     let mut status: libc::c_int = 0;
-                    unsafe { libc::waitpid(*pid, &mut status, 0); }
+                    unsafe {
+                        libc::waitpid(*pid, &mut status, 0);
+                    }
                 }
 
                 fatal!(LucidErr::from("Exiting due to early child exit"));

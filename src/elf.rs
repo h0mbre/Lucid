@@ -2,12 +2,13 @@
 //! creating consumable data structures that allow Bochs to be loaded in memory
 use crate::err::LucidErr;
 
-// Size of a 64-bit ELF headers
+/// Size of a 64-bit ELF headers
 pub const ELF_HDR_SIZE: usize = 0x40;
 pub const PRG_HDR_SIZE: usize = 0x38;
 const SEC_HDR_SIZE: usize = 0x40;
 
-// Our representation of an ELF
+/// Our representation of an ELF which gives us all of the information we need
+/// to load the ELF in memory
 #[derive(Debug)]
 pub struct Elf {
     pub elf_header: ElfHeader,
@@ -16,7 +17,7 @@ pub struct Elf {
     pub data: Vec<u8>,
 }
 
-// Constituent parts of the Elf
+/// Our representation of an ELF header
 #[derive(Debug)]
 pub struct ElfHeader {
     pub entry: u64,
@@ -29,6 +30,7 @@ pub struct ElfHeader {
     pub shrstrndx: u16,
 }
 
+/// Our representation of a program header
 #[derive(Debug)]
 pub struct ProgramHeader {
     pub typ: u32,
@@ -42,15 +44,18 @@ pub struct ProgramHeader {
 }
 
 impl ProgramHeader {
+    /// Small wrapper to determine if a program header is PT_LOAD
     pub fn is_load(&self) -> bool {
         self.typ == 1
     }
 
+    /// Small wrapper to determine if a program header is PT_INTERP 
     pub fn is_interp(&self) -> bool {
         self.typ == 3
     }
 }
 
+/// Our representation of a section header
 #[derive(Debug)]
 pub struct SectionHeader {
     pub name: u32,
@@ -65,9 +70,9 @@ pub struct SectionHeader {
     pub entsize: u64,
 }
 
-// Attempt to parse an ELF header, pretty loose parsing here just meant to make
-// sure that our Bochs ELF is sane, not meant to the be the world's best ELF
-// parser
+/// Attempt to parse an ELF header, pretty loose parsing here just meant to make
+/// sure that our Bochs ELF is sane, not meant to the be the world's best ELF
+/// parser
 fn parse_elf_header(data: &[u8]) -> Result<ElfHeader, LucidErr> {
     // Stack buffer we use to parse u64s out of the header with
     let mut arr64 = [0u8; 8];
@@ -178,7 +183,9 @@ fn parse_elf_header(data: &[u8]) -> Result<ElfHeader, LucidErr> {
     })
 }
 
-// Try to parse the program headers
+/// Try to parse the program headers from the raw data using the passed in 
+/// elf_header as our guide. Returns a vector full of fully formed ProgamHeaders
+/// if successful
 fn parse_program_header(
     elf_header: &ElfHeader,
     data: &[u8],
@@ -319,7 +326,9 @@ fn parse_program_header(
     Ok(program_headers)
 }
 
-// Try to parse the section headers
+/// Try to parse the section headers from the raw data using the passed in 
+/// elf_header as our guide. Returns a vector full of fully formed SectionHeaders
+/// if successful
 fn parse_section_header(
     elf_header: &ElfHeader,
     data: &[u8],
@@ -424,7 +433,7 @@ fn parse_section_header(
     Ok(section_headers)
 }
 
-// Parse a static ELF and return our representation
+/// Parse a -static-pie ELF and return a fully formed Elf struct
 pub fn parse_elf(data: &[u8]) -> Result<Elf, LucidErr> {
     // Create ELF header struct from the data
     let elf_header = parse_elf_header(data)?;

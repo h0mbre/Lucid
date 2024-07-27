@@ -9,27 +9,27 @@ use std::time::Instant;
 
 use crate::config::Config;
 use crate::err::LucidErr;
-use crate::{finding, finding_warn, prompt, prompt_warn};
+use crate::misc::MEG;
+use crate::{finding, finding_warn, prompt_warn};
 
-// The default maximum amount of findings we can use in disk space
-const DEFAULT_FINDINGS_MAX: usize = 1_000_000_000;
-const MEG: usize = 1_000_000;
-
+/// Holds all of the information and statistics we need in order to manage a
+/// database of inputs, timeouts, and crashes.
 #[derive(Clone)]
 pub struct Corpus {
-    pub inputs_dir: String,
-    pub crash_dir: String,
-    pub stats_dir: String,
-    pub inputs: Vec<Vec<u8>>,
-    input_hashes: HashSet<u64>,
-    findings_limit: usize,
-    pub id: usize,
-    last_sync: Instant,
-    sync_interval: u64,
-    corpus_size: usize,
+    pub inputs_dir: String,     // Where inputs are written to on disk
+    pub crash_dir: String,      // Where crashes are written to on disk
+    pub stats_dir: String,      // Where statistics are written to on disk
+    pub inputs: Vec<Vec<u8>>,   // In memory input database
+    input_hashes: HashSet<u64>, // Database of unique input hashes
+    findings_limit: usize,      // The limit in megabytes of what we can save
+    pub id: usize,              // Inherited from the LucidContext
+    last_sync: Instant,         // The last time we synced from disk to memory
+    sync_interval: u64,         // How often we sync the in-memory corpus with the disk
+    corpus_size: usize,         // The number of bytes in the corpus
 }
 
 impl Corpus {
+    /// Create a new Corpus based on configuration data
     pub fn new(config: &Config) -> Result<Self, LucidErr> {
         let mut inputs = Vec::new();
         let mut corpus_size = 0;
@@ -75,7 +75,8 @@ impl Corpus {
         let crash_dir = format!("{}/crashes", config.output_dir);
         let stats_dir = format!("{}/stats", config.output_dir);
 
-        // Try to create directories
+        // Try to create directories for inputs, crashes (including timeouts),
+        // and statistics
         if std::path::Path::new(&inputs_dir).exists() {
             prompt_warn!("Inputs directory '{}' already exists!", inputs_dir);
         } else {
@@ -145,19 +146,6 @@ impl Corpus {
             }
         }
 
-        // Check to see if there was a limit specified
-        let findings_limit = if config.findings_limit.is_some() {
-            let limit = config.findings_limit.unwrap().wrapping_mul(MEG);
-            prompt!("Findings limit set to {}MB", limit / MEG);
-            limit
-        } else {
-            prompt_warn!(
-                "No findings limit specified, defaulting to {}MB",
-                DEFAULT_FINDINGS_MAX / MEG
-            );
-            DEFAULT_FINDINGS_MAX
-        };
-
         // Count this now as our last sync
         let last_sync = Instant::now();
 
@@ -167,7 +155,7 @@ impl Corpus {
             stats_dir,
             inputs,
             input_hashes: HashSet::new(),
-            findings_limit,
+            findings_limit: config.findings_limit,
             id: 0,
             last_sync,
             sync_interval: config.sync_interval as u64,
@@ -175,12 +163,13 @@ impl Corpus {
         })
     }
 
-    // Used by mutator to get an index to pick an input to use
+    /// Return the number of inputs currently in the corpus in memory
     pub fn num_inputs(&self) -> usize {
         self.inputs.len()
     }
 
-    // Used by mutator to get an input
+    /// Retrieves a reference to an input in the corpus or None if the corpus is
+    /// empty
     pub fn get_input(&self, idx: usize) -> Option<&[u8]> {
         if idx < self.inputs.len() {
             return Some(&self.inputs[idx]);
@@ -189,7 +178,13 @@ impl Corpus {
         None
     }
 
-    // Used to save a new input
+    /// Save an input to the corpus
+    /// - Hash the input so we can focus on saving only unique inputs
+    /// - Attempt to write the input to disk, but fail and warn the user if
+    /// we have already reached our findings limit
+    ///
+    /// It's important to note that if we fail to write the input to disk because
+    /// of the findings limit, then we also don't save the input to memory
     pub fn save_input(&mut self, input: &Vec<u8>) -> u64 {
         // Create a hash for the input data
         let mut hasher = DefaultHasher::new();
@@ -237,7 +232,10 @@ impl Corpus {
         hash
     }
 
-    // Used to save a crashing input
+    /// Save a crash
+    /// - Hash the crash so we don't duplicate crashes on disk
+    /// - Attempt to write the crash to disk, but fail and warn the user if
+    /// we have already reached our findings limit
     pub fn save_crash(&mut self, input: &Vec<u8>, filetype: &str) -> u64 {
         // Create a hash for the input data
         let mut hasher = DefaultHasher::new();
@@ -293,7 +291,8 @@ impl Corpus {
         hash
     }
 
-    // Add a synced file to the corpus
+    /// Part of the corpus-syncing process, we add a new input that we found
+    /// during the sync to the in-memory corpus and update our hash set accordingly
     fn add_new_input(&mut self, hash: u64, content: Vec<u8>) {
         self.inputs.push(content.clone());
         self.corpus_size += content.len();
@@ -304,10 +303,12 @@ impl Corpus {
             "Corpus sync netted new input {:016X} (Corpus: {} inputs, {:.2}MB)",
             hash,
             self.inputs.len(),
-            self.corpus_size as f64 / MEG as f64)
+            self.corpus_size as f64 / MEG as f64
+        )
     }
 
-    // Process a single input file to retrieve its contents
+    /// Part of the corpus-syncing process, attempt to read the content of a
+    /// file in the corpus
     fn process_input_file(&mut self, hash: u64, path: &std::path::Path) {
         if self.input_hashes.contains(&hash) {
             return;
@@ -319,21 +320,22 @@ impl Corpus {
         }
     }
 
-    // Helper to retrieve a file hash from the input file name itself, cool!
+    /// Part of the corpus-syncing process, take the file name from the on-disk
+    /// corpus file and extract the hash portion, example filename:
+    /// 8B5BB66137A8AA15.input
     fn extract_hash_from_filename(&self, path: &std::path::Path) -> Option<u64> {
         path.file_stem()
             .and_then(|stem| stem.to_str())
             .and_then(|stem| u64::from_str_radix(stem, 16).ok())
     }
 
-    // Helper to determine if file in inputs dir is from us and valid
+    /// Shouldn't be necessary, but check to make sure it's a somewhat sane
+    /// file before we try ingesting it during the corpus-syncing process
     fn is_valid_input_file(&self, path: &std::path::Path) -> bool {
         path.is_file() && path.extension().map_or(false, |ext| ext == "input")
     }
 
-    // Process a single directory entry, make sure its a valid path/file, extract
-    // the hash for the file from the file name and then send it off for
-    // further processing
+    /// Process a single directory entry during the corpus-syncing process
     fn process_directory_entry(&mut self, entry: std::io::Result<std::fs::DirEntry>) {
         let entry = match entry {
             Ok(entry) => entry,
@@ -353,12 +355,15 @@ impl Corpus {
         }
     }
 
-    // Tiny helper to read a directory for entries
+    /// Thin wrapper around reading the corpus directory entries during the
+    /// corpus-syncing process
     fn read_input_directory(&self) -> std::io::Result<std::fs::ReadDir> {
         std::fs::read_dir(&self.inputs_dir)
     }
 
-    // Get the entries from the inputs dir and send each one off for processing
+    /// During the corpus-syncing process, scan the corpus directory for new
+    /// inputs that we don't have in our in-memory corpus that the other fuzzers
+    /// have found and saved, then ingest them into our in-memory corpus
     fn sync_inputs_from_disk(&mut self) {
         let entries = match self.read_input_directory() {
             Ok(entries) => entries,
@@ -373,7 +378,11 @@ impl Corpus {
         }
     }
 
-    // Sync with the corpus on disk if it's time
+    /// All fuzzers independently save their discovered inputs to the corpus
+    /// directory for inputs. Each fuzzer will then have less inputs in their
+    /// in-memory corpus than what exists on disk. Every sync_interval, the
+    /// fuzzers will all scan the corpus directory for new inputs that they
+    /// don't have in their in-memory corpus and ingest them
     pub fn sync(&mut self) {
         // Check to see if we've reached re-sync time
         if self.last_sync.elapsed().as_secs() < self.sync_interval {

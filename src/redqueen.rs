@@ -13,11 +13,13 @@ use crate::err::LucidErr;
 use crate::mega_panic;
 use std::collections::HashMap;
 
-// The number of input entries we keep track of deduplication purposes, keep in
-// mind that this number gets allocated twice, one for a VecDeque and a HashSet
+/// This is the number of unique Redqueen inputs we keep historical record of
+/// at once. This represents the last 10k unique inputs we've tried. This helps
+/// us make sure we deduplicate inputs and don't waste cycles on frequently 
+/// created inputs
 const HASH_SET_SIZE: usize = 10_000;
 
-// Represents the original value that was reported by Bochs
+/// Representation of an operand that was reported by Bochs 
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug)]
 enum Operand {
     U8(u8),
@@ -26,7 +28,7 @@ enum Operand {
     U64(u64),
 }
 
-// Represents the encoding scheme used to encode the operand values
+/// Various encoding schemes that are used to encode operand values 
 #[derive(Clone, Copy, Debug)]
 enum Encoding {
     ZeroExtend8(u8),
@@ -59,6 +61,7 @@ enum Encoding {
 }
 
 impl Encoding {
+    /// Transforms an encoded operand value to a vector of bytes 
     pub fn to_bytes(self) -> Vec<u8> {
         match self {
             Encoding::ZeroExtend8(val) => val.to_ne_bytes().to_vec(),
@@ -92,12 +95,13 @@ impl Encoding {
     }
 }
 
-// Alias these types for readability to make clippy happy
+/// Type aliases for readability
 type BytePair = (Vec<u8>, Vec<u8>);
 type BytePairList = Vec<BytePair>;
 
-// This represents the mutable state of several data structures that enable us
-// to do Redqueen operations
+/// Redqueen manages all of the mutable state required to track operands 
+/// reported by Bochs, create inputs based on the operand values, and 
+/// deduplicates generated inputs
 #[derive(Clone)]
 pub struct Redqueen {
     // A hashmap that contains the RIP for the compare instruction along with
@@ -117,6 +121,7 @@ pub struct Redqueen {
 }
 
 impl Redqueen {
+    /// Creates as new instance of a Redqueen struct
     pub fn new() -> Self {
         Redqueen {
             cmp_operand_map: HashMap::new(),
@@ -127,8 +132,9 @@ impl Redqueen {
         }
     }
 
-    // Helper function to convert an arbitrarily sized operand to its
-    // byte representation in a vec<u8>
+    /// Converts an operand value to a vector of bytes, operands are cast to a 
+    /// usize but also callers pass in the operand size to get an appopriately
+    /// sized vector returned
     fn usize_to_vec(value: usize, size: usize) -> Vec<u8> {
         let num_bytes = size / 8;
         let mut vec = Vec::new();
@@ -140,7 +146,10 @@ impl Redqueen {
         vec
     }
 
-    // Stash this set of operands in the cmp_operand_map
+    /// Updates Redqueen's operand hashmap with a new entry where RIP is the 
+    /// entry key of where the compare operation took place, op1 and op2 are
+    /// the operands in the comparison, and size is the size of the operands
+    /// in bytes
     pub fn update_operands(&mut self, rip: usize, op1: usize, op2: usize, size: usize) {
         // Create byte reprs for the operands
         let op1 = Self::usize_to_vec(op1, size);
@@ -154,9 +163,8 @@ impl Redqueen {
     }
 }
 
-// External function we expose to Bochs so that it can use its compare
-// instrumentation to extract compare operands and send them to us for RQ
-// passes
+/// Called by Bochs when executing with Redqueen CpuMode, this function will
+/// update the Redqueen operand map with information about a compare operation
 pub extern "C" fn lucid_report_cmps(
     contextp: *mut LucidContext,
     op1: usize,
@@ -176,7 +184,7 @@ pub extern "C" fn lucid_report_cmps(
     context.redqueen.update_operands(rip, op1, op2, op_size);
 }
 
-// Little helper function for rng stuff, should not re-use here but whatever
+/// Gives pRNG functionality to Redqueen for colorization of the input
 #[inline]
 fn random(seed: &mut usize) -> usize {
     // Save off current value
@@ -191,7 +199,9 @@ fn random(seed: &mut usize) -> usize {
     curr
 }
 
-// Re-run the current input and retrieve its execution trace hash
+/// Changes the Bochs CpuMode to TraceHash which will force Bochs to hash 
+/// all of the PCs that are executed for the current input. This function is 
+/// used to determine if changes to the input affect the execution paths
 fn input_trace_hash(context: &mut LucidContext) -> Result<(usize, FuzzingResult), LucidErr> {
     // Change Bochs' CPU mode to hash trace mode
     let backup_cpu = context.cpu_mode;
@@ -212,8 +222,15 @@ fn input_trace_hash(context: &mut LucidContext) -> Result<(usize, FuzzingResult)
     Ok((hash, fuzzing_result))
 }
 
-// Randomly add bytes to an input until we get the same trace as we had in the
-// original fuzzcase
+/// Colorization seeks to increase the amount of randomness in an input so that
+/// we can better identify where operand values in compare operations might 
+/// be sourced from in the input. If an input contained almost all zeros for
+/// example, it would be difficult to pinpoint where exactly a 0u64 operand 
+/// value was sourced from in the input. This algorithm randomizes bytes in
+/// the input, checks to see if the execution path was affected, if it was
+/// affected, it then reduces the amount of randomness and tries again until
+/// we've introduced as much randomness as possible without affecting the
+/// execution path
 fn colorize_input(context: &mut LucidContext, orig_hash: usize) -> Result<(), LucidErr> {
     // Track our colorized input
     let mut colorized = context.mutator.input.clone();
@@ -315,7 +332,9 @@ fn colorize_input(context: &mut LucidContext, orig_hash: usize) -> Result<(), Lu
     Ok(())
 }
 
-// Turn the Bochs CPU into Cmplog mode so we can collect operand values
+/// Changes the CpuMode for the LucidContext to Cmplog which will force Bochs 
+/// to report all compare operations it simulates as it's simulating them and
+/// update the Redqueen operand map
 fn cmplog_pass(context: &mut LucidContext) -> Result<(), LucidErr> {
     // Backup the stage
     let backup_stage = context.fuzzing_stage;
@@ -337,7 +356,7 @@ fn cmplog_pass(context: &mut LucidContext) -> Result<(), LucidErr> {
     Ok(())
 }
 
-// Helpers for bytes -> int conversions
+/// Converts a vector of bytes to a u8
 fn convert_to_u8(bytes: &[u8]) -> u8 {
     let mut buf = [0u8; 1];
     let len = 1;
@@ -345,7 +364,7 @@ fn convert_to_u8(bytes: &[u8]) -> u8 {
     u8::from_ne_bytes(buf)
 }
 
-// Helpers for bytes -> int conversions
+/// Converts a vector of bytes to a u16
 fn convert_to_u16(bytes: &[u8]) -> u16 {
     let mut buf = [0u8; 2];
     let len = 2;
@@ -353,7 +372,7 @@ fn convert_to_u16(bytes: &[u8]) -> u16 {
     u16::from_ne_bytes(buf)
 }
 
-// Helpers for bytes -> int conversions
+/// Converts a vector of bytes to a u32
 fn convert_to_u32(bytes: &[u8]) -> u32 {
     let mut buf = [0u8; 4];
     let len = 4;
@@ -361,7 +380,7 @@ fn convert_to_u32(bytes: &[u8]) -> u32 {
     u32::from_ne_bytes(buf)
 }
 
-// Helpers for bytes -> int conversions
+/// Converts a vector of bytes to a u64
 fn convert_to_u64(bytes: &[u8]) -> u64 {
     let mut buf = [0u8; 8];
     let len = 8;
@@ -369,7 +388,8 @@ fn convert_to_u64(bytes: &[u8]) -> u64 {
     u64::from_ne_bytes(buf)
 }
 
-// Function to determine the appropriate conversion based on operand size
+/// Converts a vector of bytes to its appropriately sized unsigned integer
+/// representation
 fn convert_operand(bytes: &[u8]) -> u64 {
     match bytes.len() {
         1 => convert_to_u8(bytes) as u64,
@@ -380,8 +400,8 @@ fn convert_operand(bytes: &[u8]) -> u64 {
     }
 }
 
-// Remove loops from the operand map by testing to see if lhs_0 + n == lhs_n
-// and same applies for rhs
+/// A heuristic for eliminating compare operations from consideration which are
+/// likely to be comparisons for a loop counter
 fn remove_loops(context: &mut LucidContext) {
     // Store loop keys here
     let mut loop_keys = Vec::new();
@@ -418,7 +438,8 @@ fn remove_loops(context: &mut LucidContext) {
     }
 }
 
-// Generate all encodings for an operand type
+/// Generates all of the possible encodings we want to consider for a specific
+/// size of compare operand
 fn get_encodings(operand: Operand) -> Vec<Encoding> {
     let mut encodings = Vec::new();
 
@@ -496,7 +517,8 @@ fn get_encodings(operand: Operand) -> Vec<Encoding> {
     encodings
 }
 
-// Search the input for the byte pattern, return vector of offsets
+/// Searches the current input for value passed in the `bytes` slice and returns
+/// a vector of offsets in the current input where those values are found
 fn pattern_search(input: &[u8], bytes: &[u8]) -> Vec<usize> {
     input
         .windows(bytes.len())
@@ -505,7 +527,9 @@ fn pattern_search(input: &[u8], bytes: &[u8]) -> Vec<usize> {
         .collect()
 }
 
-// Return variants for a partner
+/// Creates variant values for a partner operand by adding and subtracting 1 
+/// from the variant to ensure that all possible compare operation flag setting
+/// outcomes are covered
 fn get_partner_variants(value: Operand) -> (Operand, Operand, Operand) {
     // Match on the operand type and create encodings for the variant values
     let (val1, val2, val3) = match value {
@@ -534,6 +558,8 @@ fn get_partner_variants(value: Operand) -> (Operand, Operand, Operand) {
     (val1, val2, val3)
 }
 
+/// Returns an encoded operand value based on the operand value's size and 
+/// the requested encoding scheme passed in `encoding`
 fn get_single_encoding(encoding: Encoding, value: Operand) -> Encoding {
     // Extract the raw value
     let raw_val = match value {
@@ -579,6 +605,8 @@ fn get_single_encoding(encoding: Encoding, value: Operand) -> Encoding {
     }
 }
 
+/// Generates three variant values for the partner operand (value, value + 1,
+/// value - 1) and then applies the partner's encoding scheme to each variant
 fn get_partner_encodings(encoding: Encoding, value: Operand) -> Vec<Encoding> {
     let mut encodings = Vec::new();
 
@@ -593,7 +621,7 @@ fn get_partner_encodings(encoding: Encoding, value: Operand) -> Vec<Encoding> {
     encodings
 }
 
-// Fix up an input with a patch
+/// Replaces the bytes in an input with the patch value at offset
 fn patch_input(input: &[u8], offset: usize, patch: &[u8]) -> Vec<u8> {
     let mut new_input = input.to_owned();
 
@@ -606,7 +634,10 @@ fn patch_input(input: &[u8], offset: usize, patch: &[u8]) -> Vec<u8> {
     new_input
 }
 
-// Process a partner pair and return a collection of new inputs to test
+/// Searches for a compare operand (and its encoded values) in the input,
+/// if found, it generates the equivalent encoding value for its partner 
+/// operand (and variants +1, -1) and patches the input so that it can try
+/// to solve the comparison 
 fn process_partners(input: &[u8], k: Operand, v: Operand) -> Vec<Vec<u8>> {
     let mut new_inputs = Vec::new();
 
@@ -647,15 +678,17 @@ fn process_partners(input: &[u8], k: Operand, v: Operand) -> Vec<Vec<u8>> {
     new_inputs
 }
 
-// Hash an input with the default hasher
+/// Hash an input with the default hasher
 fn hash_input(input: &Vec<u8>) -> u64 {
     let mut hasher = DefaultHasher::new();
     input.hash(&mut hasher);
     hasher.finish()
 }
 
-// Use our logged compare operands to create new inputs to test by inserting
-// them into the redqueen queue
+/// Attempts to create a collection of new inputs to try based on the Redqueen
+/// algorithm of finding operand values (and their encoded equivalents) in the
+/// input space and patching the input with its equivalent partner value to
+/// solve the comparison
 fn create_redqueen_inputs(context: &mut LucidContext) {
     // Remove loops from the operand map
     remove_loops(context);
@@ -727,7 +760,13 @@ fn create_redqueen_inputs(context: &mut LucidContext) {
     }
 }
 
-// Perform a Redqueen pass in an effort to improve coverage of a new input
+/// Obtains an execution trace of the current input then colorizes the input 
+/// by introducing as much randomness to the input as possible without affecting
+/// the execution trace. Once colorized, pass the input again to Bochs but have
+/// Bochs log all compare operand values by changing the CpuMode to Cmplog. Once
+/// compare operand values have been obtained, apply standard Redqueen 
+/// algorithm to patch input operand value candidate positions with its partner
+/// value (and variants)
 pub fn redqueen_pass(context: &mut LucidContext) -> Result<(), LucidErr> {
     // Obtain the trace hash for the current input
     let (trace_hash, _fuzzing_result) = input_trace_hash(context)?;

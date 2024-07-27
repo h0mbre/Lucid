@@ -4,6 +4,9 @@ use core::arch::x86_64::{_fxrstor64, _fxsave64, _xgetbv, _xrstor64, _xsave64};
 
 use crate::err::LucidErr;
 
+pub const PAGE_SIZE: usize = 0x1000;
+pub const MEG: usize = 1_000_000;
+
 #[macro_export]
 macro_rules! prompt {
     () => ({
@@ -87,6 +90,8 @@ macro_rules! clear {
     }};
 }
 
+/// A way to display an error message and bypass all of the Rust runtime exit
+/// code before exiting 
 #[macro_export]
 macro_rules! mega_panic {
     ($msg:expr) => {{
@@ -123,28 +128,36 @@ macro_rules! mega_panic {
     }};
 }
 
-// Wrappers for these unsafe functions to tuck unsafes away
+/// Thin wrapper to hide an unsafe function call to retrieve the value of xcr0
 pub fn get_xcr0() -> u64 {
     unsafe { _xgetbv(0) }
 }
 
+/// Thin wrapper to hide an unsafe function call to save the CPU extended state
+/// information to a pre-determined save area using the xsave64 instruction
 pub fn xsave64(save_area: *mut u8, xcr0: u64) {
     unsafe { _xsave64(save_area, xcr0) }
 }
 
+/// Thin wrapper to hide an unsafe function call to save the x87 FPU and SSE
+/// state using the fxsave64 instruction
 pub fn fxsave64(save_area: *mut u8) {
     unsafe { _fxsave64(save_area) }
 }
 
+/// Thin wrapper to hide an unsafe function call to restore the CPU extended
+/// state information from a pre-determined save area using the xrstor64 instruction
 pub fn xrstor64(save_area: *const u8, xcr0: u64) {
     unsafe { _xrstor64(save_area, xcr0) }
 }
 
+/// Thin wrapper to hide an unsafe function call to restore the x87 FPU and SSE
+/// state using the fxrstor64 instruction
 pub fn fxrstor64(save_area: *const u8) {
     unsafe { _fxrstor64(save_area) }
 }
 
-// Pin a process to a specific CPU core
+/// Pin a process to a specific CPU core
 pub fn pin_core(core: usize) {
     unsafe {
         let mut cpuset: libc::cpu_set_t = std::mem::zeroed();
@@ -163,13 +176,14 @@ pub fn pin_core(core: usize) {
     }
 }
 
-// Waitpid for non-blocking
+/// Perform a non-blocking waitpid 
 pub fn non_block_waitpid(pid: i32, status: &mut i32) -> i32 {
     unsafe { libc::waitpid(pid, status, libc::WNOHANG) }
 }
 
-// Handle waitpid result
-pub fn handle_wait_result(result: i32, status: &i32) -> Result <(), ()> {
+/// Check a waitpid result and return an error if the pid has exited or was
+/// signaled terminally
+pub fn handle_wait_result(result: i32, status: &i32) -> Result<(), ()> {
     match result {
         1.. => {
             if libc::WIFEXITED(*status) {

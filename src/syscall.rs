@@ -5,21 +5,22 @@ use crate::err::LucidErr;
 use crate::files::File;
 use crate::{clear, fault, green};
 
-// Anytime Bochs tries to return its own pid_t it gets this
+/// Returned value when Bochs asks for its pid value
 const BOCHS_PID: i32 = 0x1337;
 
-// File constants
+/// Standard file constants on Linux
 const _STDIN: libc::c_int = 0;
 const STDOUT: libc::c_int = 1;
 const STDERR: libc::c_int = 2;
 
-// Terminal size constants
+/// Terminal size constants that ensure that the `verbose` configuration option
+/// displays text correctly when Bochs prints
 const WS_ROW: libc::c_ushort = 25;
 const WS_COL: libc::c_ushort = 160;
 const WS_XPIXEL: libc::c_ushort = 0;
 const WS_YPIXEL: libc::c_ushort = 0;
 
-// Write out the contents of an iovec to our own STDOUT
+/// Writes the contents of an iovec to our own STDOUT
 fn write_iovec(iovec_p: *const libc::iovec, verbose: bool) -> usize {
     // Get the underlying structure
     let iovec = unsafe { &*iovec_p };
@@ -44,7 +45,7 @@ fn write_iovec(iovec_p: *const libc::iovec, verbose: bool) -> usize {
     len
 }
 
-// Special function to handle writes to STDOUT and STDERR
+/// Special function to handle writes to STDOUT and STDERR
 fn write_stdout_stderr(mut iovec_p: *const libc::iovec, iovcnt: i32, verbose: bool) -> usize {
     // Format terminal output
     if verbose {
@@ -70,7 +71,7 @@ fn write_stdout_stderr(mut iovec_p: *const libc::iovec, iovcnt: i32, verbose: bo
     bytes_written
 }
 
-// Stand-alone function to write to a regular file baby
+/// Writes to a regular file that is not STDOUT, STDERR
 fn write_regular_file(file: &mut File, iovec_p: *const libc::iovec, iovcnt: i32) -> usize {
     // Accumulator
     let mut bytes_written = 0;
@@ -112,7 +113,7 @@ fn write_regular_file(file: &mut File, iovec_p: *const libc::iovec, iovcnt: i32)
     bytes_written
 }
 
-// Function to print syscall arguments for debugging
+/// Prints syscall arguments for debugging
 #[inline]
 fn _debug_print_args(n: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize) {
     println!("Syscall number: {}", n);
@@ -124,7 +125,16 @@ fn _debug_print_args(n: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: u
     println!("Argument 6: {}", a6);
 }
 
-// This is where we process Bochs making a syscall
+/// Syscall handing function that is called into by Bochs based on changes we
+/// made to Musl to intercept and sandbox all libc functions that typically emit
+/// syscall instructions. The LucidContext that is passed is checked to make
+/// sure it is valid and then we handle the syscall by emulating it. Unhandled
+/// syscalls will cause an early Bochs exit which will suspend the campaign. All
+/// file I/O syscalls that take place on non-standard (STDOUT, STDERR) files 
+/// during fuzzing will mark the LucidContext FileTable as having dirtied files
+/// which will need to be restored during snapshot restoration; however, as of
+/// now we do not handle this case as no File I/O during fuzzing has been
+/// observed yet
 pub extern "C" fn lucid_syscall(
     contextp: *mut LucidContext,
     n: usize,
@@ -185,6 +195,35 @@ pub extern "C" fn lucid_syscall(
 
             // Success
             length as u64
+        }
+        // write
+        0x1 => {
+            // Get the fd
+            let fd = a1 as libc::c_int;
+            if fd != STDOUT && fd != STDERR {
+                fault!(contextp, LucidErr::from("write() to non-standard file"));
+            }
+
+            // Get the buffer to read from
+            let buf_p = a2 as *const libc::c_void;
+
+            // Make sure it's not NULL
+            if buf_p.is_null() {
+                fault!(contextp, LucidErr::from("NULL write buffer"));
+            }
+
+            // If we're not in verbose mode, just return number of bytes
+            if !context.verbose {
+                return a3 as u64;
+            }
+
+            // Verbose mode, do a raw write
+            green!();
+            let result = unsafe { libc::write(fd, buf_p, a3) };
+            clear!();
+
+            // Success
+            result as u64
         }
         // open
         0x2 => {
@@ -606,7 +645,10 @@ pub extern "C" fn lucid_syscall(
             fault!(contextp, LucidErr::from("Bochs exited early"));
         }
         _ => {
-            fault!(contextp, LucidErr::from("Unhandled syscall number"));
+            fault!(
+                contextp,
+                LucidErr::from(&format!("Unhandled syscall number: 0x{:X}", n))
+            );
         }
     }
 }

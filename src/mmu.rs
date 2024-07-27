@@ -2,20 +2,22 @@
 //! allocated memory that Bochs asks for and uses (brk, mmap)
 
 use crate::err::LucidErr;
+use crate::misc::PAGE_SIZE;
 
-// Duh
-const PAGE_SIZE: usize = 0x1000;
+/// A megabyte of memory as a power of 2
+const MEGABYTE: usize = 1_048_576;
 
-// A MEG of memory
-const MEGABYTE: usize = 1_003_520;
-
-// The default size the MMU mmaps for brk pool
+/// The default size the MMU mmaps for brk pool
 const DEFAULT_BRK_SIZE: usize = MEGABYTE;
 
-// The default size the MMU mmaps for mmap pool
+/// The default size the MMU mmaps for mmap pool, this will be very dependent
+/// on how much memory the Bochs guest has. This will need to be manually 
+/// adjusted if the Bochs guest has more memory than this. 
 const DEFAULT_MMAP_SIZE: usize = MEGABYTE * 512;
 
-// Structure to track memory usage in Bochs
+/// Our data structure to track dynamic memory usage in Bochs. We just pre-allocate
+/// a large block of memory to use and keep bumping the current allocation towards
+/// the boundary. As of now, we don't do any freeing or re-using of memory
 #[derive(Clone, Default)]
 pub struct Mmu {
     pub map_base: usize,   // Base address for entire mapping
@@ -31,6 +33,7 @@ pub struct Mmu {
 }
 
 impl Mmu {
+    /// Create a new Mmu data structure
     pub fn new(map_address: usize) -> Result<Self, LucidErr> {
         // Straight-forward
         let length = (DEFAULT_BRK_SIZE + DEFAULT_MMAP_SIZE) as libc::size_t;
@@ -66,7 +69,7 @@ impl Mmu {
         })
     }
 
-    // Logic for handling a `brk` syscall
+    /// `brk` syscalls are handled here
     pub fn update_brk(&mut self, addr: usize) -> Result<(), ()> {
         // If addr is NULL, just return nothing to do
         if addr == 0 {
@@ -85,12 +88,12 @@ impl Mmu {
         Ok(())
     }
 
-    // Check to see if a given address is in the program break
+    /// Check to see if a given address is in the program break
     pub fn in_brk(&self, addr: usize) -> bool {
         (self.brk_base..self.curr_brk).contains(&addr)
     }
 
-    // Logic for handling a `mmap` syscall with no fixed address support
+    /// Logic for handling a `mmap` syscall with no fixed address support
     pub fn do_mmap(
         &mut self,
         len: usize,
@@ -132,7 +135,7 @@ impl Mmu {
         Ok(())
     }
 
-    // Copy the contents of an existing MMU, used for snapshot restore
+    /// Copy the contents of an existing MMU, used for snapshot restore
     pub fn restore(&mut self, mmu: &Mmu) {
         self.map_base = mmu.map_base;
         self.map_length = mmu.map_length;
@@ -145,7 +148,7 @@ impl Mmu {
         self.next_mmap = mmu.next_mmap;
     }
 
-    // Search MMU memory for pattern
+    /// Search MMU memory for pattern
     pub fn search_memory(&self, pattern: &[u8]) -> Vec<usize> {
         assert!(self.map_length > pattern.len());
         let mut needles = Vec::new();
