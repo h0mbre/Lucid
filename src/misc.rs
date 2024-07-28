@@ -91,7 +91,7 @@ macro_rules! clear {
 }
 
 /// A way to display an error message and bypass all of the Rust runtime exit
-/// code before exiting 
+/// code before exiting
 #[macro_export]
 macro_rules! mega_panic {
     ($msg:expr) => {{
@@ -176,7 +176,7 @@ pub fn pin_core(core: usize) {
     }
 }
 
-/// Perform a non-blocking waitpid 
+/// Perform a non-blocking waitpid
 pub fn non_block_waitpid(pid: i32, status: &mut i32) -> i32 {
     unsafe { libc::waitpid(pid, status, libc::WNOHANG) }
 }

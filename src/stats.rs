@@ -289,7 +289,7 @@ impl Stats {
         println!("{}", format_group("cpu", &cpu));
     }
 
-    /// Initializes global stat values such as the start time of the fuzzing 
+    /// Initializes global stat values such as the start time of the fuzzing
     /// campaign
     #[inline]
     pub fn start_session(&mut self, map_size: usize) {
@@ -365,7 +365,7 @@ impl Stats {
         Ok(())
     }
 
-    /// Report stats in multi-process fuzzing. Each fuzzer has its own file 
+    /// Report stats in multi-process fuzzing. Each fuzzer has its own file
     /// in the output directory where it serializes its statistics to disk and
     /// the main stat reporting thread will synthesize all of the statistics
     /// for each fuzzer into a single report
@@ -401,7 +401,7 @@ impl Stats {
         Ok(())
     }
 
-    /// Display stats 
+    /// Display stats
     pub fn report(&mut self) -> Result<(), LucidErr> {
         // Annotate report number
         self.report += 1;
@@ -414,7 +414,7 @@ impl Stats {
         }
     }
 
-    /// Used by main stat reporting process in multi-process fuzzing mode to 
+    /// Used by main stat reporting process in multi-process fuzzing mode to
     /// read the SerialStats for a specific fuzzer from its stat file
     fn read_stat_file(&self, output_dir: &str, id: usize) -> Result<SerialStats, LucidErr> {
         // Create stat file
@@ -449,7 +449,7 @@ impl Stats {
     }
 
     /// Initializes the containers for stats structures that are used by the
-    /// main stat reporting process during multi-process fuzzing 
+    /// main stat reporting process during multi-process fuzzing
     fn init_multi_stats(&mut self, map_size: usize) {
         self.multi_batch_stats = vec![SerialStats::default(); self.fuzzers];
 

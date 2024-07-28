@@ -49,7 +49,7 @@ impl ProgramHeader {
         self.typ == 1
     }
 
-    /// Small wrapper to determine if a program header is PT_INTERP 
+    /// Small wrapper to determine if a program header is PT_INTERP
     pub fn is_interp(&self) -> bool {
         self.typ == 3
     }
@@ -183,7 +183,7 @@ fn parse_elf_header(data: &[u8]) -> Result<ElfHeader, LucidErr> {
     })
 }
 
-/// Try to parse the program headers from the raw data using the passed in 
+/// Try to parse the program headers from the raw data using the passed in
 /// elf_header as our guide. Returns a vector full of fully formed ProgamHeaders
 /// if successful
 fn parse_program_header(
@@ -326,7 +326,7 @@ fn parse_program_header(
     Ok(program_headers)
 }
 
-/// Try to parse the section headers from the raw data using the passed in 
+/// Try to parse the section headers from the raw data using the passed in
 /// elf_header as our guide. Returns a vector full of fully formed SectionHeaders
 /// if successful
 fn parse_section_header(

@@ -22,20 +22,20 @@ const MAX_STACK: usize = 6;
 
 /// We categorize input splicing and magic number insertion mutation strategies
 /// as "longshots"; so this is an adjustable rate at which they will be applied
-/// to an input. The default right now is 5% of the time. 
+/// to an input. The default right now is 5% of the time.
 const LONGSHOT_MUTATION_RATE: usize = 5;
 
 /// This percentage is the rate at which we will create a new input from scratch
 /// rather than pull one from the corpus to mutate
 const GEN_SCRATCH_RATE: usize = 1;
 
-/// When mutation strategies rely on mutating a number of bytes, this figure 
+/// When mutation strategies rely on mutating a number of bytes, this figure
 /// provides the ceiling for how many bytes they are allowed to corrupt. Keep
-/// in mind that inputs may pass through multiple rounds of mutation. 
+/// in mind that inputs may pass through multiple rounds of mutation.
 const MAX_BYTE_CORRUPTION: usize = 64;
 
 /// When mutation strategies rely on mutating a block of memory, this figure
-/// provides the ceiling for the dimensions of the block. Keep in mind that 
+/// provides the ceiling for the dimensions of the block. Keep in mind that
 /// inputs may pass through multiple rounds of mutation.
 const MAX_BLOCK_CORRUPTION: usize = 512;
 
@@ -100,7 +100,7 @@ const MUTATIONS: [MutationTypes; 12] = [
     MutationTypes::Splice,
 ];
 
-/// Generates a random seed for the mutator by executing rdtsc() and then 
+/// Generates a random seed for the mutator by executing rdtsc() and then
 /// hashing the result
 fn generate_seed() -> usize {
     let mut hasher = DefaultHasher::new();
@@ -132,14 +132,14 @@ pub enum MutationTypes {
 /// A structure that holds all the state for the Mutator
 #[derive(Clone, Default)]
 pub struct Mutator {
-    pub rng: usize,                         // The RNG we use for random
-    pub input: Vec<u8>,                     // Our current input buffer
-    pub max_size: usize,                    // Largest size an input can be
-    pub last_mutation: Vec<MutationTypes>,  // The last mutation round summary
+    pub rng: usize,                        // The RNG we use for random
+    pub input: Vec<u8>,                    // Our current input buffer
+    pub max_size: usize,                   // Largest size an input can be
+    pub last_mutation: Vec<MutationTypes>, // The last mutation round summary
 }
 
 impl Mutator {
-    /// Generates a new Mutator instance with a random seed if one is not 
+    /// Generates a new Mutator instance with a random seed if one is not
     /// provided
     pub fn new(seed: Option<usize>, max_size: usize) -> Self {
         // If pRNG seed not provided, make our own
@@ -260,7 +260,7 @@ impl Mutator {
         }
     }
 
-    /// Grabs a block from the input, and insert it randomly somewhere else 
+    /// Grabs a block from the input, and insert it randomly somewhere else
     fn block_insert(&mut self) {
         // Defaults to global max, but can be hand tuned
         const MAX_BLOCK_SIZE: usize = MAX_BLOCK_CORRUPTION;
@@ -439,7 +439,7 @@ impl Mutator {
         self.input.truncate(idx);
     }
 
-    /// Takes a magic number value and mutates it 
+    /// Takes a magic number value and mutates it
     fn mutate_magic(&mut self, magic: u64) -> Vec<u8> {
         // Mutate the magic value
         let magic = match self.rand() % 14 {
@@ -578,7 +578,7 @@ impl Mutator {
         }
     }
 
-    /// Splices two inputs together if possible, this strategy depends on 
+    /// Splices two inputs together if possible, this strategy depends on
     /// having access to the corpus in order to select a 2nd input
     fn splice(&mut self, corpus: &Corpus) {
         // Take a block of the current input

@@ -3,8 +3,8 @@
 
 use std::fs::read;
 
-use crate::elf::{parse_elf, Elf, ELF_HDR_SIZE, PRG_HDR_SIZE};
 use crate::config::Config;
+use crate::elf::{parse_elf, Elf, ELF_HDR_SIZE, PRG_HDR_SIZE};
 use crate::err::LucidErr;
 use crate::misc::PAGE_SIZE;
 
@@ -28,18 +28,18 @@ const U64_SIZE: usize = 8;
 /// The max size our stack data can be, has to be a multiple of a page size
 const STACK_DATA_MAX: usize = 0x1000;
 
-/// This represent all of the data we need about Bochs' ELF image and stack to 
-/// load and jump to for execution 
+/// This represent all of the data we need about Bochs' ELF image and stack to
+/// load and jump to for execution
 #[derive(Clone)]
 pub struct Bochs {
-    pub image_base: usize,      // The address of the ELF in memory
-    pub image_length: usize,    // Length of the ELF image in memory
-    pub stack_base: usize,      // Address of Bochs' stack
-    pub stack_length: usize,    // Length of Bochs' stack
-    pub write_base: usize,      // Where contiguous writable memory starts
-    pub write_length: usize,    // Length of contiguous writable memory
-    pub entry: usize,           // Address of ELF entry point
-    pub rsp: usize,             // The stack pointer we should use for execution
+    pub image_base: usize,   // The address of the ELF in memory
+    pub image_length: usize, // Length of the ELF image in memory
+    pub stack_base: usize,   // Address of Bochs' stack
+    pub stack_length: usize, // Length of Bochs' stack
+    pub write_base: usize,   // Where contiguous writable memory starts
+    pub write_length: usize, // Length of contiguous writable memory
+    pub entry: usize,        // Address of ELF entry point
+    pub rsp: usize,          // The stack pointer we should use for execution
 }
 
 /// Map all of the memory we need to hold the ELF image of Bochs but also Bochs'
@@ -179,7 +179,7 @@ fn push_string(stack: &mut Vec<u8>, string: String) {
     }
 }
 
-/// Create the actual content/data that we'll place onto the stack that we 
+/// Create the actual content/data that we'll place onto the stack that we
 /// provide to Bochs when we jump to it to start executing
 ///
 /// The stack layout should look like this when we're done, thanks to
@@ -209,7 +209,12 @@ fn push_string(stack: &mut Vec<u8>, string: String) {
 /// envvar strings
 /// end marker (NULL)
 /// ==== HIGHER ====
-fn create_stack_data(base: usize, stack_addr: usize, elf: &Elf, args: Vec<String>) -> Result<Vec<u8>, LucidErr> {
+fn create_stack_data(
+    base: usize,
+    stack_addr: usize,
+    elf: &Elf,
+    args: Vec<String>,
+) -> Result<Vec<u8>, LucidErr> {
     // Create a vector to hold all of our stack data
     let mut stack_data = Vec::new();
 
@@ -323,13 +328,13 @@ fn create_stack_data(base: usize, stack_addr: usize, elf: &Elf, args: Vec<String
     Ok(stack_data)
 }
 
-/// Loads Bochs ELF image into memory so that we can execute it. Ensures that 
+/// Loads Bochs ELF image into memory so that we can execute it. Ensures that
 /// all writable memory is contiguous and comes at the end of the ELF with
-/// regards to headers. We will also create and prepare a stack here. This 
-/// returns all of the necessary information to jump to Bochs and start 
+/// regards to headers. We will also create and prepare a stack here. This
+/// returns all of the necessary information to jump to Bochs and start
 /// executing
 pub fn load_bochs(config: &Config) -> Result<Bochs, LucidErr> {
-    // Get the bochs image 
+    // Get the bochs image
     let bochs_image = &config.bochs_image;
 
     // Read the executable file into memory

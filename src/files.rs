@@ -189,7 +189,7 @@ impl File {
     }
 
     /// Move the File's cursor in a positive direction. Notably we do not handle
-    /// overflows or anything here, or even check for EOF? 
+    /// overflows or anything here, or even check for EOF?
     pub fn cursor_add(&mut self, length: usize) {
         self.cursor += length;
     }

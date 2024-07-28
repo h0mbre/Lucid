@@ -11,8 +11,8 @@ const MEGABYTE: usize = 1_048_576;
 const DEFAULT_BRK_SIZE: usize = MEGABYTE;
 
 /// The default size the MMU mmaps for mmap pool, this will be very dependent
-/// on how much memory the Bochs guest has. This will need to be manually 
-/// adjusted if the Bochs guest has more memory than this. 
+/// on how much memory the Bochs guest has. This will need to be manually
+/// adjusted if the Bochs guest has more memory than this.
 const DEFAULT_MMAP_SIZE: usize = MEGABYTE * 512;
 
 /// Our data structure to track dynamic memory usage in Bochs. We just pre-allocate

@@ -39,6 +39,10 @@ pub struct Snapshot {
     dirty_reset_list: Vec<(usize, usize)>, // List of ranges to reset (addr, len)
     reset_io_vecs: Vec<ResetIoVec>,        // List of memcpy operations
 
+    // Statistics
+    num_dirty_pages: usize, // The number of dirty pages observed
+    num_memcpys: usize,     // Number of memcpy operations we do
+
     // For resetting memory
     data: usize, // Location in memory of saved snapshot data
 }
@@ -72,6 +76,8 @@ impl Snapshot {
             dirty_reset_list: Vec::new(),
             data: usize::default(),
             reset_io_vecs: Vec::new(),
+            num_dirty_pages: usize::default(),
+            num_memcpys: usize::default(),
         }
     }
 }
@@ -223,7 +229,7 @@ fn walk_dirty_page_map(snapshot: &mut Snapshot) -> Vec<usize> {
 /// Merges all ranges of dirty pages. For example if a previous range was
 /// 0x0 - 0x3000 and a fuzzing iteration then dirtied page 0x3000 - 0x4000,
 /// we would merge the range to be 0x0 - 0x4000. This function continuously
-/// merges until there is no more possible merging. 
+/// merges until there is no more possible merging.
 fn merge_ranges(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
     if ranges.is_empty() {
         return ranges;
@@ -332,7 +338,7 @@ fn adjust_reset_ranges(
 
 /// Adjusts the existing list of ResetIoVecs which are used to perform the actual
 /// memcpy operations that copy snapshot data back over dirtied data by incorporating
-/// the latest ranges of dirty pages discovered during fuzzing 
+/// the latest ranges of dirty pages discovered during fuzzing
 fn adjust_io_vecs(snapshot: &Snapshot) -> Vec<ResetIoVec> {
     // Collect io vecs as we create them
     let mut new = Vec::new();
@@ -383,6 +389,9 @@ pub fn restore_snapshot(contextp: *mut LucidContext) -> Result<(), LucidErr> {
     if context.new_dirty_page == 1 {
         let dirty_pages = walk_dirty_page_map(&mut context.snapshot);
 
+        // Update statistics
+        context.snapshot.num_dirty_pages += dirty_pages.len();
+
         // Get a copy of the reset list
         let reset_list = context.snapshot.dirty_reset_list.clone();
 
@@ -391,6 +400,9 @@ pub fn restore_snapshot(contextp: *mut LucidContext) -> Result<(), LucidErr> {
 
         // Adjust the iovec list
         context.snapshot.reset_io_vecs = adjust_io_vecs(&context.snapshot);
+
+        // Update statistics
+        context.snapshot.num_memcpys = context.snapshot.reset_io_vecs.len();
 
         // Reset the dirty page flag
         context.new_dirty_page = 0;

@@ -130,7 +130,7 @@ fn _debug_print_args(n: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: u
 /// syscall instructions. The LucidContext that is passed is checked to make
 /// sure it is valid and then we handle the syscall by emulating it. Unhandled
 /// syscalls will cause an early Bochs exit which will suspend the campaign. All
-/// file I/O syscalls that take place on non-standard (STDOUT, STDERR) files 
+/// file I/O syscalls that take place on non-standard (STDOUT, STDERR) files
 /// during fuzzing will mark the LucidContext FileTable as having dirtied files
 /// which will need to be restored during snapshot restoration; however, as of
 /// now we do not handle this case as no File I/O during fuzzing has been
