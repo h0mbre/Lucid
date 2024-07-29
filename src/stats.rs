@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::Config;
 use crate::err::LucidErr;
+use crate::misc::MEG;
 
 /// Helper function to format a group of stats for printing to the terminal
 fn format_group(title: &str, stats: &[(String, String)]) -> String {
@@ -27,12 +28,32 @@ enum ReportMode {
     Multi,
 }
 
+/// Represents statistics from the Snapshot structure that we're interested in
+/// keeping track of, we want to know about the dirty page metrics since these
+/// will vary wildly amongst targets and we might eventually optionally want to
+/// set a threshold for dirty pages when we switch strategies
+#[derive(Clone, Copy)]
+pub struct SnapshotStats {
+    pub dirty_pages: usize,
+    pub memcpys: usize,
+}
+
+/// Represents the stastistics from the Corpus structure that we're interested in
+/// keeping track of
+#[derive(Clone, Copy)]
+pub struct CorpusStats {
+    pub entries: usize,
+    pub size: usize,
+    pub max_input: usize,
+}
+
 /// Represents the statistics that fuzzers need to serialize to disk if fuzzing
-/// is multi-process
+/// is multi-process. The report number is written first and last as a cheap
+/// file lock so the reader knows that if those are mismatched to re-read
 #[derive(Clone, Copy, Default, Debug)]
 #[repr(C, packed)]
 struct SerialStats {
-    report: usize,
+    report: usize, // Has to be the first member
     iters: usize,
     crashes: usize,
     timeouts: usize,
@@ -43,7 +64,11 @@ struct SerialStats {
     target_time: u64,
     coverage_time: u64,
     redqueen_time: u64,
-    report_checksum: usize,
+    dirty_pages: usize,
+    memcpys: usize,
+    corpus_entries: usize,
+    corpus_size: usize,
+    report_checksum: usize, // Has to be the last member
 }
 
 impl SerialStats {
@@ -68,6 +93,10 @@ impl SerialStats {
             target_time: stats.batch_target.as_millis() as u64,
             coverage_time: stats.batch_coverage.as_millis() as u64,
             redqueen_time: stats.batch_redqueen.as_millis() as u64,
+            dirty_pages: stats.dirty_pages,
+            memcpys: stats.memcpys,
+            corpus_entries: stats.corpus_entries,
+            corpus_size: stats.corpus_size,
             report_checksum: stats.report,
         }
     }
@@ -88,6 +117,10 @@ impl SerialStats {
             target_time: self.target_time - old.target_time,
             coverage_time: self.coverage_time - old.coverage_time,
             redqueen_time: self.redqueen_time - old.redqueen_time,
+            dirty_pages: self.dirty_pages,
+            memcpys: self.memcpys,
+            corpus_entries: self.corpus_entries,
+            corpus_size: self.corpus_size,
             report_checksum: self.report,
         }
     }
@@ -111,6 +144,12 @@ struct FormattedStats {
     cpu_coverage: f64,
     cpu_redqueen: f64,
     cpu_misc: f64,
+    dirty_pages: usize,
+    dirty_percent: f64,
+    memcpys: usize,
+    corpus_entries: usize,
+    corpus_size: f64,
+    max_input: usize,
 }
 
 /// Statistics that help end-users make sense of the current fuzzing setup
@@ -128,6 +167,16 @@ pub struct Stats {
     report_mode: ReportMode,        // Type of reporting to do as fuzzer
     pub id: usize,                  // Fuzzer id
     pub stat_file: Option<String>,  // Path to stat file if we need one
+
+    // Snapshot related metrics
+    pub dirty_pages: usize,    // Number of dirty pages we're restoring
+    dirty_block_length: usize, // Length of the dirty page range
+    pub memcpys: usize,        // Number of memcpys we're doing for resets
+
+    // Corpus related metrics
+    corpus_entries: usize, // Number of inputs
+    corpus_size: usize,    // Size of all the inputs in bytes
+    max_input: usize,      // The configuration for max input allowed
 
     // Stats for local batch reporting
     batch_iters: usize,           // Batch fuzzcases
@@ -149,8 +198,8 @@ pub struct Stats {
 
 impl Stats {
     /// Creates a new Stats structure based on the provided Config
-    pub fn new(config: &Config) -> Self {
-        // Determine mode bruh
+    pub fn new(config: &Config, dirty_block_length: usize, input_max_size: usize) -> Self {
+        // Determine mode
         let report_mode = match config.num_fuzzers {
             1 => ReportMode::Single,
             _ => ReportMode::Multi,
@@ -161,6 +210,8 @@ impl Stats {
             fuzzers: config.num_fuzzers,
             report_mode,
             id: 0,
+            dirty_block_length,
+            max_input: input_max_size,
             ..Default::default()
         }
     }
@@ -168,6 +219,7 @@ impl Stats {
     /// Converts a Stats structure to a FormattedStats structure so that the
     /// statistics can be printed to the terminal
     fn generate_formatted_stats(&self) -> FormattedStats {
+        // Format the Global values
         let total_elapsed = self.session_start.unwrap().elapsed();
         let total_seconds = total_elapsed.as_secs();
         let days = total_seconds / 86400;
@@ -196,12 +248,14 @@ impl Stats {
             self.batch_iters as f64 / oldest_seconds
         };
 
+        // Generate the dynamic iters/s string value to print
         let iters_str = match self.session_iters {
             0..=999 => format!("{}", self.session_iters),
             1_000..=999_999 => format!("{:.2}K", self.session_iters as f64 / 1_000.0),
             _ => format!("{:.3}M", self.session_iters as f64 / 1_000_000.0),
         };
 
+        // Generate the batch's CPU time spent where values
         let cpu_target = (self.batch_target.as_millis() as f64 / batch_millis) * 100.0;
         let cpu_reset = (self.batch_reset.as_millis() as f64 / batch_millis) * 100.0;
         let cpu_mutator = (self.batch_mutator.as_millis() as f64 / batch_millis) * 100.0;
@@ -209,6 +263,15 @@ impl Stats {
         let cpu_redqueen = (self.batch_redqueen.as_millis() as f64 / batch_millis) * 100.0;
         let cpu_misc = 100.0 - (cpu_target + cpu_reset + cpu_mutator + cpu_coverage + cpu_redqueen);
 
+        // Calculate snapshot dirty page metrics
+        let dirty_pages = self.dirty_pages;
+        let dirty_percent = (self.dirty_pages as f64 / self.dirty_block_length as f64) * 100.0;
+        let memcpys = self.memcpys;
+
+        // Calculate corpus metrics
+        let corpus_size = self.corpus_size as f64 / MEG as f64;
+
+        // Create FormattedStats structure for printing
         FormattedStats {
             uptime: format!("{}d {}h {}m {}s", days, hours, minutes, seconds),
             fuzzers: self.fuzzers,
@@ -225,18 +288,27 @@ impl Stats {
             cpu_coverage,
             cpu_redqueen,
             cpu_misc,
+            dirty_pages,
+            dirty_percent,
+            memcpys,
+            corpus_entries: self.corpus_entries,
+            corpus_size,
+            max_input: self.max_input,
         }
     }
 
     /// Prints stats to the terminal
     pub fn print_stats(&self) {
+        // Format the stats into a FormattedStats struct for easy printing
         let formatted_stats = self.generate_formatted_stats();
 
+        // Print banner
         println!(
             "\n\x1b[1;35m[lucid stats (start time: {})]\x1b[0m",
             self.start_str
         );
 
+        // Print all the global statistics
         let globals = [
             ("uptime".to_string(), formatted_stats.uptime),
             ("fuzzers".to_string(), formatted_stats.fuzzers.to_string()),
@@ -250,6 +322,7 @@ impl Stats {
         ];
         println!("{}", format_group("globals", &globals));
 
+        // Print coverage metrics
         let coverage = [
             ("edges".to_string(), formatted_stats.edges.to_string()),
             ("last find".to_string(), formatted_stats.last_find),
@@ -260,6 +333,7 @@ impl Stats {
         ];
         println!("{}", format_group("coverage", &coverage));
 
+        // Print where we're spending our CPU time
         let cpu = [
             (
                 "target".to_string(),
@@ -287,24 +361,75 @@ impl Stats {
             ),
         ];
         println!("{}", format_group("cpu", &cpu));
+
+        // Print the dirty memory snapshot metrics
+        let snapshot = [
+            (
+                "dirty pages".to_string(),
+                format!("{}", formatted_stats.dirty_pages),
+            ),
+            (
+                "dirty / total".to_string(),
+                format!("{:.5}%", formatted_stats.dirty_percent),
+            ),
+            (
+                "reset memcpys".to_string(),
+                format!("{}", formatted_stats.memcpys),
+            ),
+        ];
+        println!("{}", format_group("snapshot", &snapshot));
+
+        // Print the corpus metrics
+        let corpus = [
+            (
+                "inputs".to_string(),
+                format!("{}", formatted_stats.corpus_entries),
+            ),
+            (
+                "corpus size (MB)".to_string(),
+                format!("{:.3}", formatted_stats.corpus_size),
+            ),
+            (
+                "max input".to_string(),
+                format!("0x{:X}", formatted_stats.max_input),
+            ),
+        ];
+        println!("{}", format_group("corpus", &corpus));
     }
 
     /// Initializes global stat values such as the start time of the fuzzing
     /// campaign
     #[inline]
-    pub fn start_session(&mut self, map_size: usize) {
+    pub fn start_session(
+        &mut self,
+        map_size: usize,
+        dirty_block_length: usize,
+        input_max_size: usize,
+    ) {
         self.start_str = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         self.session_start = Some(Instant::now());
         self.batch_start = Some(Instant::now());
         self.last_find = Some(Instant::now());
         self.map_size = map_size;
+        self.dirty_block_length = dirty_block_length;
+        self.max_input = input_max_size;
     }
 
     /// Update stats after a single fuzzcase
     #[inline]
-    pub fn update(&mut self) {
+    pub fn update(&mut self, snapshot: SnapshotStats, corpus: CorpusStats) {
+        // We just completed a single fuzzcase
         self.session_iters += 1;
         self.batch_iters += 1;
+
+        // Update the snapshot statistics
+        self.dirty_pages = snapshot.dirty_pages;
+        self.memcpys = snapshot.memcpys;
+
+        // Update the corpus statistics
+        self.corpus_entries = corpus.entries;
+        self.corpus_size = corpus.size;
+        self.max_input = corpus.max_input;
     }
 
     /// Check to see if enough time has elapsed to print the current batch of
@@ -450,7 +575,12 @@ impl Stats {
 
     /// Initializes the containers for stats structures that are used by the
     /// main stat reporting process during multi-process fuzzing
-    fn init_multi_stats(&mut self, map_size: usize) {
+    fn init_multi_stats(
+        &mut self,
+        map_size: usize,
+        dirty_block_length: usize,
+        max_input_size: usize,
+    ) {
         self.multi_batch_stats = vec![SerialStats::default(); self.fuzzers];
 
         self.start_str = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -458,6 +588,8 @@ impl Stats {
         self.batch_start = None;
         self.last_find = Some(Instant::now());
         self.map_size = map_size;
+        self.dirty_block_length = dirty_block_length;
+        self.max_input = max_input_size;
     }
 
     /// Diffs two SerializedStats structures to create a 'batch' for statistics
@@ -472,10 +604,16 @@ impl Stats {
 
     /// Formats and synthesizes all of the statistics gathered from each
     /// individual fuzzer's stat file to print the statistics
-    pub fn report_global(&mut self, output_dir: &str, map_size: usize) {
+    pub fn report_global(
+        &mut self,
+        output_dir: &str,
+        map_size: usize,
+        dirty_block_length: usize,
+        input_max_size: usize,
+    ) {
         // If the vector is empty, populate it by starting campaign stats
         if self.multi_batch_stats.is_empty() {
-            self.init_multi_stats(map_size);
+            self.init_multi_stats(map_size, dirty_block_length, input_max_size);
         }
 
         // Totals and absolutes
@@ -484,6 +622,10 @@ impl Stats {
         let mut crashes = 0;
         let mut timeouts = 0;
         let mut edges = 0;
+        let mut dirty_pages = 0;
+        let mut memcpys = 0;
+        let mut corpus_entries = 0;
+        let mut corpus_size = 0;
 
         // Batch stats
         let mut batch_total_time = Duration::new(0, 0);
@@ -506,6 +648,10 @@ impl Stats {
             crashes += stats.crashes;
             timeouts += stats.timeouts;
             edges = edges.max(stats.edges);
+            dirty_pages = dirty_pages.max(stats.dirty_pages);
+            memcpys = memcpys.max(stats.memcpys);
+            corpus_entries += stats.corpus_entries;
+            corpus_size += stats.corpus_size;
 
             // Create a batch for this fuzzer
             let batch = self.create_batch(i, stats);
@@ -537,6 +683,10 @@ impl Stats {
             self.edges = edges;
             self.last_find = Some(Instant::now());
         }
+        self.dirty_pages = dirty_pages;
+        self.memcpys = memcpys;
+        self.corpus_entries = corpus_entries;
+        self.corpus_size = corpus_size;
 
         // Update our batch stats
         self.batch_start = Some(Instant::now() - batch_total_time);

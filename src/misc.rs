@@ -10,10 +10,10 @@ pub const MEG: usize = 1_000_000;
 #[macro_export]
 macro_rules! prompt {
     () => ({
-        print!("\x1b[1;35m[lucid]\x1b[0m\n");
+        print!("\x1b[1;35mlucid::\x1b[0m\n");
     });
     ($($arg:tt)*) => ({
-        print!("\x1b[1;35m[lucid]\x1b[0m ");
+        print!("\x1b[1;35mlucid::\x1b[0m ");
         println!($($arg)*);
     });
 }
@@ -21,10 +21,10 @@ macro_rules! prompt {
 #[macro_export]
 macro_rules! prompt_warn {
     () => ({
-        print!("\x1b[1;33m[lucid]\x1b[0m\n");
+        print!("\x1b[1;33mlucid::\x1b[0m\n");
     });
     ($($arg:tt)*) => ({
-        print!("\x1b[1;33m[lucid]\x1b[0m ");
+        print!("\x1b[1;33mlucid::\x1b[0m ");
         println!($($arg)*);
     });
 }

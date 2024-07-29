@@ -18,7 +18,7 @@ use crate::mmu::Mmu;
 use crate::mutator::Mutator;
 use crate::redqueen::{lucid_report_cmps, redqueen_pass, Redqueen};
 use crate::snapshot::{restore_snapshot, take_snapshot, Snapshot};
-use crate::stats::Stats;
+use crate::stats::{CorpusStats, SnapshotStats, Stats};
 use crate::syscall::lucid_syscall;
 use crate::{fault, finding, mega_panic, prompt_warn};
 
@@ -534,7 +534,7 @@ impl LucidContext {
             verbose: config.verbose,
             fuzzing: false,
             dirty_files: false,
-            stats: Stats::new(config),
+            stats: Stats::new(config, snapshot.dirty_block_length, config.input_max_size),
             coverage,
             coverage_map_addr,
             coverage_map_size,
@@ -1250,6 +1250,26 @@ fn try_redqueen(context: &mut LucidContext) -> Result<bool, LucidErr> {
     Ok(true)
 }
 
+/// Generates the statistics necessary to update our stats structure using
+/// new statistics from the snapshot process, and the corpus
+fn generate_stats_update(context: &LucidContext) -> (SnapshotStats, CorpusStats) {
+    // Get the snapshot stats
+    let snapshot_stats = SnapshotStats {
+        dirty_pages: context.snapshot.num_dirty_pages,
+        memcpys: context.snapshot.num_memcpys,
+    };
+
+    // Get the corpus stats
+    let corpus_stats = CorpusStats {
+        entries: context.corpus.num_inputs(),
+        size: context.corpus.corpus_size,
+        max_input: context.config.input_max_size,
+    };
+
+    // Return to update stats
+    (snapshot_stats, corpus_stats)
+}
+
 /// The core fuzzing logic is found here. We initialize the statistics, set the
 /// the context fuzzing flag so that other parts of the code base know that we
 /// are fuzzing (such as the syscall handlers), and re-seed any fuzzers that
@@ -1273,7 +1293,11 @@ pub fn fuzz_loop(context: &mut LucidContext, id: Option<usize>) -> Result<(), Lu
     }
 
     // Start time-keeping
-    context.stats.start_session(context.coverage.curr_map.len());
+    context.stats.start_session(
+        context.coverage.curr_map.len(),
+        context.snapshot.dirty_block_length,
+        context.config.input_max_size,
+    );
 
     // Mark that we're fuzzing now
     context.fuzzing = true;
@@ -1323,7 +1347,8 @@ pub fn fuzz_loop(context: &mut LucidContext, id: Option<usize>) -> Result<(), Lu
         }
 
         // Update stats
-        context.stats.update();
+        let (snapshot_stats, corpus_stats) = generate_stats_update(context);
+        context.stats.update(snapshot_stats, corpus_stats);
 
         // Check stats
         if context.stats.report_ready() {

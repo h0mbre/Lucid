@@ -25,7 +25,7 @@ pub struct Corpus {
     pub id: usize,              // Inherited from the LucidContext
     last_sync: Instant,         // The last time we synced from disk to memory
     sync_interval: u64,         // How often we sync the in-memory corpus with the disk
-    corpus_size: usize,         // The number of bytes in the corpus
+    pub corpus_size: usize,     // The number of bytes in the corpus
 }
 
 impl Corpus {
@@ -213,13 +213,6 @@ impl Corpus {
                 // Copy the input bytes over in memory only if successfully saved to disk
                 self.inputs.push(input.clone());
                 self.corpus_size += input.len();
-                finding!(
-                    self.id,
-                    "Saved new input: {:016X} (Corpus: {} inputs, {:.2}MB)",
-                    hash,
-                    self.inputs.len(),
-                    self.corpus_size as f64 / MEG as f64,
-                );
 
                 // Add the hash to the database
                 self.input_hashes.insert(hash);

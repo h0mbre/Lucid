@@ -40,8 +40,8 @@ pub struct Snapshot {
     reset_io_vecs: Vec<ResetIoVec>,        // List of memcpy operations
 
     // Statistics
-    num_dirty_pages: usize, // The number of dirty pages observed
-    num_memcpys: usize,     // Number of memcpy operations we do
+    pub num_dirty_pages: usize, // The number of dirty pages observed
+    pub num_memcpys: usize,     // Number of memcpy operations we do
 
     // For resetting memory
     data: usize, // Location in memory of saved snapshot data

@@ -239,6 +239,8 @@ fn main() {
             lucid_context.stats.report_global(
                 &lucid_context.config.output_dir,
                 lucid_context.coverage.curr_map.len(),
+                lucid_context.snapshot.dirty_block_length,
+                lucid_context.config.input_max_size,
             );
 
             // Try to reap any dead fuzzers and exit
