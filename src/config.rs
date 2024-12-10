@@ -269,7 +269,7 @@ pub fn parse_args() -> Result<Config, LucidErr> {
             }
 
             // Make sure we have at least one
-            if fuzzers <= 0 {
+            if fuzzers == 0 {
                 prompt_warn!(
                     "Bumping number of fuzzers up to 1",
                 );
