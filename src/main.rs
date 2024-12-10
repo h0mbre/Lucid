@@ -177,6 +177,7 @@ fn main() {
             fatal!(error);
         });
     }
+    
     // Multi-process arch:
     // - The original process becomes a simple stat reporter and waits to reap
     //      dead spawned children
@@ -188,7 +189,7 @@ fn main() {
         let mut child_pids = Vec::new();
 
         // Fork fuzzers off
-        prompt!("Spawning fuzzers...");
+        prompt!("Starting fuzzers...");
         for i in 0..lucid_context.config.num_fuzzers {
             let fork_result = unsafe { libc::fork() };
 
@@ -205,9 +206,6 @@ fn main() {
                 // Pin ourselves to core
                 pin_core(i);
 
-                // Sleep some
-                std::thread::sleep(std::time::Duration::from_secs(i as u64));
-
                 // Start fuzzing!
                 fuzz_loop(&mut lucid_context, Some(i)).unwrap_or_else(|error| {
                     fatal!(error);
@@ -223,16 +221,11 @@ fn main() {
             }
         }
 
-        // Make parent sleep until the fuzzers are off and running
-        std::thread::sleep(std::time::Duration::from_secs(
-            lucid_context.config.num_fuzzers as u64,
-        ));
-
         // Parent is done forking, printing stats
         loop {
-            // Sleep for the stat reporting interval
+            // Sleep for the stat reporting interval + 2 seconds 
             std::thread::sleep(std::time::Duration::from_millis(
-                lucid_context.stats.stat_interval as u64,
+                lucid_context.stats.stat_interval as u64 + 2_000,
             ));
 
             // Print statistics

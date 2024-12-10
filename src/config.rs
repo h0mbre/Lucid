@@ -268,6 +268,14 @@ pub fn parse_args() -> Result<Config, LucidErr> {
                 fuzzers = num_cpus as usize;
             }
 
+            // Make sure we have at least one
+            if fuzzers <= 0 {
+                prompt_warn!(
+                    "Bumping number of fuzzers up to 1",
+                );
+                fuzzers = 1;
+            }
+
             fuzzers
         }
     };
