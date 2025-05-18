@@ -112,6 +112,7 @@ struct fuzz_input {
     size_t input_len;
     char input[MAX_INPUT_SIZE];
 };
+```
 
 ### Example Usage
 ```terminal
