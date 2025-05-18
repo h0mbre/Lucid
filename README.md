@@ -195,7 +195,19 @@ People who have had a hand in the project one way or another thus far:
 - [thc](https://x.com/hackerschoice)
 - [alxndr](https://twitter.com/a1xndr22)
 
-# Misc:
+# License
+Lucid is licensed under the MIT License
+
+- Bochs Patches: Licensed under the GNU Lesser General Public License v2.1 (LGPL-2.1) due to Bochs’ licensing
+- Musl Patches: Licensed under the MIT License due to Musl’s licensing
+
+You must comply with the license terms of Bochs and Musl when applying these patches. Lucid does not redistribute either project; please obtain original source code from:
+- Bochs: https://sourceforge.net/projects/bochs/
+- Musl: https://musl.libc.org/
+
+I added a copyright claim for my contributions included in the patches as I'm under the impression this is best practice. Please let me know if I'm mistaken. Thank you!
+
+# Random
 + Bochs patch generator command
 ```terminal
 diff -x 'Makefile' -x'bochs' -x '*.txt' -x 'bochs-dlx' -x '*.plist' -x'*.nsi' -x'bxhub' -x'bximage' -x'*.o' -x'bxversion.h' -x'*.rc' -x'config.h' -x'*.log' -x'*.status' -x'*.a' -x'libtool' -x'ltdlconf.h' -x'*.conf' -ruN
@@ -213,14 +225,3 @@ Date:   Wed Mar 20 18:19:40 2024 +0100
     Some more work on the MSVC workspace files.
     Don't generate debug information for release builds (plugin DLLs).
 ```
-# License
-Lucid is licensed under the MIT License
-
-- Bochs Patches: Licensed under the GNU Lesser General Public License v2.1 (LGPL-2.1) due to Bochs’ licensing
-- Musl Patches: Licensed under the MIT License due to Musl’s licensing
-
-You must comply with the license terms of Bochs and Musl when applying these patches. Lucid does not redistribute either project; please obtain original source code from:
-- Bochs: https://sourceforge.net/projects/bochs/
-- Musl: https://musl.libc.org/
-
-I added a copyright claim for my contributions included in the patches as I'm under the impression this is best practice. Please let me know if I'm mistaken. Thank you!
