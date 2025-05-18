@@ -1,4 +1,7 @@
 //! This file contains all of the code for keeping stats for the current session
+//!
+//! SPDX-License-Identifier: MIT
+//! Copyright (c) 2025 h0mbre
 
 use chrono::Local;
 use std::fs::File;

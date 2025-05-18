@@ -1,5 +1,8 @@
 //! This file contains all of the datastructures and logic necessary to create
 //! and manage a corpus of inputs for fuzzing
+//!
+//! SPDX-License-Identifier: MIT
+//! Copyright (c) 2025 h0mbre
 
 use std::collections::HashSet;
 use std::fs::File;

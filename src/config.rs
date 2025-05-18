@@ -1,6 +1,9 @@
 //! This file contains all of the logic necessary to formulate a coherent
 //! Config data structure that we'll pass around with the LucidContext so that
 //! we can parse args appropriately. We use the `clap` crate and parse args here
+//!
+//! SPDX-License-Identifier: MIT
+//! Copyright (c) 2025 h0mbre
 
 use clap::{Arg, ArgAction, Command};
 

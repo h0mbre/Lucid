@@ -3,6 +3,9 @@
 //!
 //! The calling convention we use for context switching:
 //! r15 -- Pointer to a LucidContext
+//!
+//! SPDX-License-Identifier: MIT
+//! Copyright (c) 2025 h0mbre
 
 use std::arch::{asm, global_asm};
 

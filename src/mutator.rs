@@ -10,6 +10,9 @@
 //! turn is inspired by Hongfuzz. We don't use any of the Hongfuzz derived code
 //! in here, just trying to implement our own stuff that tries to mirror what
 //! AFL++ does. Eventually we'll try to just use LibAFL's mutator?
+//!
+//! SPDX-License-Identifier: MIT
+//! Copyright (c) 2025 h0mbre
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};

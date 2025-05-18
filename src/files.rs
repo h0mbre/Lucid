@@ -1,4 +1,7 @@
 //! This file contains all of the logic related to file I/O from Bochs
+//!
+//! SPDX-License-Identifier: MIT
+//! Copyright (c) 2025 h0mbre
 
 use std::fs::{metadata, read, Metadata};
 use std::os::unix::fs::MetadataExt;

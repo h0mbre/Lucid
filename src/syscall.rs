@@ -1,4 +1,7 @@
 //! This file contains the logic for handling syscalls that Bochs attempts
+//!
+//! SPDX-License-Identifier: MIT
+//! Copyright (c) 2025 h0mbre
 
 use crate::context::{fault_handler, LucidContext};
 use crate::err::LucidErr;

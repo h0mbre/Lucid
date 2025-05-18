@@ -1,4 +1,7 @@
 //! This file contains miscellaneous helper functions
+//!
+//! SPDX-License-Identifier: MIT
+//! Copyright (c) 2025 h0mbre
 
 use core::arch::x86_64::{_fxrstor64, _fxsave64, _xgetbv, _xrstor64, _xsave64};
 

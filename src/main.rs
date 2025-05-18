@@ -1,5 +1,8 @@
 //! This file contains the `main` program logic which right now parses a Bochs
 //! image, loads that image into memory, and starts executing it
+//!
+//! SPDX-License-Identifier: MIT
+//! Copyright (c) 2025 h0mbre
 
 mod config;
 mod context;

@@ -1,5 +1,8 @@
 //! This file contains all of the logic necessary to perform Redqueen operations
 //! during fuzzing
+//!
+//! SPDX-License-Identifier: MIT
+//! Copyright (c) 2025 h0mbre
 
 use std::collections::{HashSet, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};

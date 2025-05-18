@@ -1,5 +1,8 @@
 //! A place-holder for perhaps a more detailed/robust error reporting system in
 //! the future
+//!
+//! SPDX-License-Identifier: MIT
+//! Copyright (c) 2025 h0mbre
 
 #[derive(Debug, Clone)]
 pub struct LucidErr {

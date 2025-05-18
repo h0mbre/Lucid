@@ -1,4 +1,7 @@
 //! This file contains all of the logic pertaining to code coverage feedback
+//!
+//! SPDX-License-Identifier: MIT
+//! Copyright (c) 2025 h0mbre
 
 /// This is the size of coverage map, this *has* to be a power of 2
 const COVERAGE_MAP_SIZE: usize = 65536;

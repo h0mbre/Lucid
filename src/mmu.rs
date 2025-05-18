@@ -1,5 +1,8 @@
 //! This file contains all of the logic necessary to manage dynamically
 //! allocated memory that Bochs asks for and uses (brk, mmap)
+//!
+//! SPDX-License-Identifier: MIT
+//! Copyright (c) 2025 h0mbre
 
 use crate::err::LucidErr;
 use crate::misc::PAGE_SIZE;
