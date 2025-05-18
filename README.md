@@ -55,18 +55,8 @@ Right now, we don't have many options to worry about. This will probably all cha
 ```
 
 ## Arguments
-+ `--input-signature`: This is a 128-bit signature that we should scan for from the fuzzer in Bochs' memory in order to find your user input. This will change in the future, but for now, this is how I've chosen to do it. For instance, here is the user input defined in my current harness:
-```c
-#define LUCID_SIGNATURE { 0x13, 0x37, 0x13, 0x37, 0x13, 0x37, 0x13, 0x37, \
-                          0x13, 0x38, 0x13, 0x38, 0x13, 0x38, 0x13, 0x38 }
 
-#define MAX_INPUT_SIZE 1024UL
-
-struct fuzz_input {
-    unsigned char signature[16];
-    size_t input_len;
-    char input[MAX_INPUT_SIZE];
-};
+### `--help`
 ```
 The help menu for command line arguments is below, just ping me on Twitter if you have any questions:
 ```terminal
@@ -108,6 +98,24 @@ Options:
           Print help
   -V, --version
           Print version
+```
+### `--input-signature` 
++ `--input-signature`: This is a 128-bit signature that we should scan for from the fuzzer in Bochs' memory in order to find your user input. This will change in the future, but for now, this is how I've chosen to do it. For instance, here is the user input defined in my current harness:
+```c
+#define LUCID_SIGNATURE { 0x13, 0x37, 0x13, 0x37, 0x13, 0x37, 0x13, 0x37, \
+                          0x13, 0x38, 0x13, 0x38, 0x13, 0x38, 0x13, 0x38 }
+
+#define MAX_INPUT_SIZE 1024UL
+
+struct fuzz_input {
+    unsigned char signature[16];
+    size_t input_len;
+    char input[MAX_INPUT_SIZE];
+};
+
+### Example Usage
+```terminal
+./lucid --input-max-size 8192 --input-signature 0x13371337133713371338133813381338 --verbose --bochs-image ~/git_bochs/Bochs/bochs/bochs --output-dir /tmp/findings --output-limit 10 --icount-timeout 40 --fuzzers 1 --stat-interval 5 --bochs-args -f /home/h0mbre/git_bochs/Bochs/bochs/bochsrc_nogui.txt -q -r ~/snapshot/lucid_snapshot/
 ```
 ### Bochs-specific Arguments
 I won't go into too much detail here, as Bochs documentation exists, but the relevant options can be explained as:
