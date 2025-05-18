@@ -21,7 +21,7 @@ pub struct Corpus {
     pub stats_dir: String,      // Where statistics are written to on disk
     pub inputs: Vec<Vec<u8>>,   // In memory input database
     input_hashes: HashSet<u64>, // Database of unique input hashes
-    findings_limit: usize,      // The limit in megabytes of what we can save
+    output_limit: usize,        // The limit in megabytes of what we can save
     pub id: usize,              // Inherited from the LucidContext
     last_sync: Instant,         // The last time we synced from disk to memory
     sync_interval: u64,         // How often we sync the in-memory corpus with the disk
@@ -155,7 +155,7 @@ impl Corpus {
             stats_dir,
             inputs,
             input_hashes: HashSet::new(),
-            findings_limit: config.findings_limit,
+            output_limit: config.output_limit,
             id: 0,
             last_sync,
             sync_interval: config.sync_interval as u64,
@@ -198,10 +198,10 @@ impl Corpus {
         }
 
         // Make sure we have enough space
-        if input.len() > self.findings_limit {
+        if input.len() > self.output_limit {
             finding_warn!(
                 self.id,
-                "Unable to save new input, findings_limit exhausted!"
+                "Unable to save new input, output_limit exhausted!"
             );
             return hash;
         }
@@ -209,7 +209,7 @@ impl Corpus {
         // Attempt to save the input to disk
         match std::fs::write(file_path, input) {
             Ok(_) => {
-                self.findings_limit -= input.len();
+                self.output_limit -= input.len();
                 // Copy the input bytes over in memory only if successfully saved to disk
                 self.inputs.push(input.clone());
                 self.corpus_size += input.len();
@@ -249,10 +249,10 @@ impl Corpus {
         }
 
         // Make sure we have enough space
-        if input.len() > self.findings_limit {
+        if input.len() > self.output_limit {
             finding_warn!(
                 self.id,
-                "Unable to save {} input, findings_limit exhausted!",
+                "Unable to save {} input, output_limit exhausted!",
                 filetype
             );
             return hash;
@@ -261,7 +261,7 @@ impl Corpus {
         // Attempt to save the input to disk
         match std::fs::write(&file_path, input) {
             Ok(_) => {
-                self.findings_limit -= input.len();
+                self.output_limit -= input.len();
                 // Copy the input bytes over in memory only if successfully saved to disk
                 finding!(
                     self.id,

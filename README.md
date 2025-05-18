@@ -83,15 +83,15 @@ Options:
       --seeds-dir <SEEDS_DIR>
           Directory containing seed inputs (optional)
       --output-dir <OUTPUT_DIR>
-          Directory to store fuzzer findings
+          Directory to store fuzzer output (inputs, crashes, etc)
       --verbose
           Enables printing of Bochs stdout and stderr
       --skip-dryrun
           Skip dry-run of seed inputs to set coverage map
       --mutator-seed <SEED>
           Optional seed value provided to mutator pRNG (usize)
-      --findings-limit <LIMIT>
-          Number of megabytes we can save to disk for findings (100 default)
+      --output-limit <LIMIT>
+          Number of megabytes we can save to disk for output (inputs, crashes, etc) (100 default)
       --fuzzers <COUNT>
           Number of fuzzers we spawn (1 default)
       --stat-interval <INTERVAL>

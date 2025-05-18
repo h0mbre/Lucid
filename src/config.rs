@@ -15,9 +15,9 @@ const DEFAULT_SYNC_INTERVAL: usize = 3_600; // 1 Hour
 /// million instructions per second in testing
 const DEFAULT_ICOUNT_TIMEOUT: usize = 250_000_000;
 
-/// The default maximum amount of findings we can use in disk space which
+/// The default maximum amount of output we can use in disk space which
 /// includes inputs and crashes
-const DEFAULT_FINDINGS_MAX: usize = 1_000_000_000;
+const DEFAULT_OUTPUT_MAX: usize = 1_000_000_000;
 const MEG: usize = 1_000_000;
 
 /// Default batch time for stat reporting in milliseconds
@@ -36,7 +36,7 @@ pub struct Config {
     pub mutator_seed: Option<usize>,
     pub seeds_dir: Option<String>,
     pub output_dir: String,
-    pub findings_limit: usize,
+    pub output_limit: usize,
     pub stat_interval: u128,
     pub sync_interval: usize,
     pub icount_timeout: usize,
@@ -67,7 +67,7 @@ pub fn parse_args() -> Result<Config, LucidErr> {
     .arg(Arg::new("output-dir")
         .long("output-dir")
         .value_name("OUTPUT_DIR")
-        .help("Directory to store fuzzer findings")
+        .help("Directory to store fuzzer output (inputs, crashes, etc)")
         .required(true))
     .arg(Arg::new("verbose")
         .long("verbose")
@@ -81,10 +81,10 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         .long("mutator-seed")
         .value_name("SEED")
         .help("Optional seed value provided to mutator pRNG (usize)"))
-    .arg(Arg::new("findings-limit")
-        .long("findings-limit")
+    .arg(Arg::new("output-limit")
+        .long("output-limit")
         .value_name("LIMIT")
-        .help("Number of megabytes we can save to disk for findings (100 default)"))
+        .help("Number of megabytes we can save to disk for output (inputs, crashes, etc) (100 default)"))
     .arg(Arg::new("fuzzers")
         .long("fuzzers")
         .value_name("COUNT")
@@ -163,24 +163,24 @@ pub fn parse_args() -> Result<Config, LucidErr> {
     let seeds_str = matches.get_one::<String>("seeds-dir");
     let seeds_dir = seeds_str.map(|str_repr| str_repr.to_string());
 
-    // See if a findings limit was provided
-    let limit_str = matches.get_one::<String>("findings-limit");
-    let findings_limit = match limit_str {
+    // See if an output limit was provided
+    let limit_str = matches.get_one::<String>("output-limit");
+    let output_limit = match limit_str {
         None => {
             prompt!(
-                "No findings limit specified, defaulting to {}MB",
-                DEFAULT_FINDINGS_MAX / MEG
+                "No output limit specified, defaulting to {}MB",
+                DEFAULT_OUTPUT_MAX / MEG
             );
-            DEFAULT_FINDINGS_MAX
+            DEFAULT_OUTPUT_MAX
         }
         Some(str_repr) => {
             let Ok(limit) = str_repr.parse::<usize>() else {
-                return Err(LucidErr::from("Invalid --findings_limit"));
+                return Err(LucidErr::from("Invalid --output_limit"));
             };
 
             // Multiply the passed in limit by a megabyte
             let limit = limit.wrapping_mul(MEG);
-            prompt!("Findings limit set to {}MB", limit / MEG);
+            prompt!("Output limit set to {}MB", limit / MEG);
 
             limit
         }
@@ -291,7 +291,7 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         mutator_seed,
         seeds_dir,
         output_dir,
-        findings_limit,
+        output_limit,
         stat_interval,
         sync_interval,
         icount_timeout,
