@@ -86,8 +86,8 @@
  	register long r10 __asm__("r10") = a4;
  	register long r8 __asm__("r8") = a5;
 --- musl-1.2.4/include/lucid.h	1969-12-31 19:00:00.000000000 -0500
-+++ musl-1.2.4/include/lucid.h	2024-07-05 15:05:58.557605823 -0400
-@@ -0,0 +1,135 @@
++++ musl-1.2.4/include/lucid.h	2024-07-24 12:26:11.062841954 -0400
+@@ -0,0 +1,160 @@
 +#ifndef LUCID_H
 +#define LUCID_H
 +
@@ -95,6 +95,7 @@
 +#include <stdint.h>
 +#include <stdio.h>
 +#include <stdlib.h>
++#include <signal.h>
 +
 +// Data structures in this file will need to remain consistent with the ones
 +// defined in context.rs
@@ -193,10 +194,26 @@
 +    size_t coverage_map_size;
 +    size_t trace_hash;
 +    int crash;
++    int timeout;
++    size_t icount_timeout;
 +    CpuMode cpu_mode;
++    uint8_t *dirty_map_addr;
++    size_t dirty_block_start;
++    size_t dirty_block_length;
++    int new_dirty_page;
 +
 +    /* Opaque Members */
 +} lucid_ctx_t;
++
++
++// Data structure we use to set up the signal handler for snapshot dirty page
++// tracking
++typedef struct lucid_sigaction {
++  void (*handler)(int, siginfo_t *, void *);
++  unsigned long flags;
++  void (*restorer)(void);
++  sigset_t mask;
++} lucid_sigaction_t;
 +
 +// Pointer to the global execution context, if running inside Lucid, this will
 +// point to the a struct lucid_ctx_t inside the Fuzzer 
@@ -209,7 +226,7 @@
 +// Create an instance of the function pointer
 +extern lucid_syscall_p g_lucid_syscall;
 +
-+// Define a function pointer type for 
++// Define a function pointer type for lucid_report_cmps
 +typedef void (*lucid_report_cmps_p)(lucid_ctx_t *ctx, size_t op1, size_t op2,
 +    size_t op_size, size_t rip);
 +
@@ -222,9 +239,17 @@
 +// Call into the post-fuzz hook in Lucid
 +extern void lucid_postfuzz_hook(void);
 +
++// A Musl-like function for allowing pass-through syscalls through the sandbox
++// right now used for rt_sigaction
++long passthrough_syscall4(long n, long a1, long a2, long a3, long a4);
++
++// A Musl-like function for allowing pass-through syscalls through the sandbox
++// right now used for mprotect for signal handler 
++long passthrough_syscall3(long n, long a1, long a2, long a3);
++
 +#endif // LUCID_H
 --- musl-1.2.4/ldso/dlstart.c	2023-05-01 23:39:41.000000000 -0400
-+++ musl-1.2.4/ldso/dlstart.c	2024-07-05 18:31:13.922010301 -0400
++++ musl-1.2.4/ldso/dlstart.c	2024-07-12 14:05:25.503239324 -0400
 @@ -2,6 +2,8 @@
  #include "dynlink.h"
  #include "libc.h"
@@ -371,8 +396,8 @@
  	push %rdx
  	mov %fs:8,%rdx
 --- musl-1.2.4/src/lucid/lucid.c	1969-12-31 19:00:00.000000000 -0500
-+++ musl-1.2.4/src/lucid/lucid.c	2024-07-05 18:31:54.338338945 -0400
-@@ -0,0 +1,60 @@
++++ musl-1.2.4/src/lucid/lucid.c	2024-07-24 12:27:33.763889861 -0400
+@@ -0,0 +1,81 @@
 +#include <lucid.h>
 +
 +// Define the global execution context pointer
@@ -432,4 +457,25 @@
 +    );
 +
 +    return;
++}
++
++// Pass a syscall with 4 args straight through to the OS, skipping over the
++// Lucid syscall sandbox
++long passthrough_syscall4(long n, long a1, long a2, long a3, long a4)
++{
++	unsigned long ret;
++	register long r10 __asm__("r10") = a4;
++	__asm__ __volatile__ ("syscall" : "=a"(ret) : "a"(n), "D"(a1), "S"(a2),
++						  "d"(a3), "r"(r10): "rcx", "r11", "memory");
++	return ret;
++}
++
++// Pass a syscall with 3 args straight through to the OS, skipping over the
++// Lucid syscall sandbox
++long passthrough_syscall3(long n, long a1, long a2, long a3)
++{
++    unsigned long ret;
++	__asm__ __volatile__ ("syscall" : "=a"(ret) : "a"(n), "D"(a1), "S"(a2),
++						  "d"(a3) : "rcx", "r11", "memory");
++	return ret;
 +}

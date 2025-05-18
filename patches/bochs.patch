@@ -1,9 +1,10 @@
 --- bochs/bochs.h	2024-07-07 12:54:41.268545141 -0400
-+++ bochs/bochs.h	2024-05-15 18:28:11.556120698 -0400
-@@ -45,6 +45,11 @@
++++ bochs/bochs.h	2024-07-11 23:07:59.346227335 -0400
+@@ -45,6 +45,12 @@
  #include <stdarg.h>
  #include <stdio.h>
  #include <stdlib.h>
++#include <sys/syscall.h>
 +
 +#if BX_LUCID
 +#include <lucid.h>
@@ -221,29 +222,42 @@
  }
  
 --- bochs/cpu/cpu.cc	2024-07-07 12:54:41.296545458 -0400
-+++ bochs/cpu/cpu.cc	2024-07-03 09:52:50.522106226 -0400
-@@ -63,6 +63,11 @@
++++ bochs/cpu/cpu.cc	2024-07-12 20:12:24.490430801 -0400
+@@ -63,6 +63,16 @@
    BX_CPU_THIS_PTR stop_reason = STOP_NO_REASON;
  #endif
  
 +// Place the Lucid snapshot taking code here above potential long jump returns
 +#if BX_LUCID
++  // Keep track of the number of instructions that have been emulated up to now
++  size_t icount_base = BX_CPU_THIS_PTR icount;
++
++  // Keep track of the timeout threshold of instructions
++  size_t icount_timeout = g_lucid_ctx->icount_timeout;
 +  lucid_take_snapshot();
 +#endif
 +
    if (setjmp(BX_CPU_THIS_PTR jmp_buf_env)) {
      // can get here only from exception function or VMEXIT
      BX_CPU_THIS_PTR icount++;
-@@ -115,7 +120,7 @@
+@@ -114,8 +124,15 @@
+ 
  #if BX_SUPPORT_HANDLERS_CHAINING_SPEEDUPS
      for(;;) {
++#if BX_LUCID
++      // Check if we should register a timeout
++      if ((BX_CPU_THIS_PTR icount - icount_base)>= icount_timeout) {
++        g_lucid_ctx->timeout = 1;
++        lucid_postfuzz_hook();
++      }
++#endif /* BX_LUCID */
        // want to allow changing of the instruction inside instrumentation callback
 -      BX_INSTR_BEFORE_EXECUTION(BX_CPU_ID, i);
 +      BX_INSTR_BEFORE_EXECUTION(BX_CPU_ID, i, RIP);
        RIP += i->ilen();
        // when handlers chaining is enabled this single call will execute entire trace
        BX_CPU_CALL_METHOD(i->execute1, (i)); // might iterate repeat instruction
-@@ -138,7 +143,7 @@
+@@ -138,7 +155,7 @@
  #endif
  
        // want to allow changing of the instruction inside instrumentation callback
@@ -252,7 +266,7 @@
        RIP += i->ilen();
        BX_CPU_CALL_METHOD(i->execute1, (i)); // might iterate repeat instruction
        BX_CPU_THIS_PTR prev_rip = RIP; // commit new RIP
-@@ -186,7 +191,7 @@
+@@ -186,7 +203,7 @@
  
  #if BX_SUPPORT_HANDLERS_CHAINING_SPEEDUPS
    // want to allow changing of the instruction inside instrumentation callback
@@ -261,7 +275,7 @@
    RIP += i->ilen();
    // when handlers chaining is enabled this single call will execute entire trace
    BX_CPU_CALL_METHOD(i->execute1, (i)); // might iterate repeat instruction
-@@ -200,7 +205,7 @@
+@@ -200,7 +217,7 @@
  
    for(;;) {
      // want to allow changing of the instruction inside instrumentation callback
@@ -531,7 +545,7 @@
  #endif
  
 --- bochs/cpu/ctrl_xfer32.cc	2024-07-07 12:54:41.300545504 -0400
-+++ bochs/cpu/ctrl_xfer32.cc	2024-06-02 08:46:58.714472162 -0400
++++ /home/h0mbre/git_bochs/bochs/cpu/ctrl_xfer32.cc	2024-06-02 08:46:58.714472162 -0400
 @@ -288,7 +288,8 @@
      BX_LINK_TRACE(i);
    }
@@ -995,7 +1009,7 @@
  #endif
  
 --- bochs/cpu/data_xfer16.cc	2024-07-07 12:54:41.300545504 -0400
-+++ bochs/cpu/data_xfer16.cc	2024-06-21 14:45:32.520934181 -0400
++++ bochs/cpu/data_xfer16.cc	2024-07-12 20:10:25.253161725 -0400
 @@ -22,6 +22,7 @@
  #define NEED_CPU_REG_SHORTCUTS 1
  #include "bochs.h"
@@ -1063,7 +1077,7 @@
                        }
                        delete [] buffer;
 --- bochs/instrument/stubs/instrument.cc	2024-07-07 12:54:41.348546047 -0400
-+++ bochs/instrument/stubs/instrument.cc	2024-07-05 20:35:35.233388026 -0400
++++ bochs/instrument/stubs/instrument.cc	2024-07-12 18:53:19.599250304 -0400
 @@ -21,6 +21,7 @@
  
  
@@ -1242,17 +1256,114 @@
 +
  #endif
 --- bochs/main.cc	2024-07-07 12:54:41.368546273 -0400
-+++ bochs/main.cc	2024-07-05 16:53:06.459628808 -0400
-@@ -306,6 +306,14 @@
++++ bochs/main.cc	2024-07-24 12:43:18.185741661 -0400
+@@ -304,8 +304,111 @@
+ }
+ #endif
  
++#if BX_LUCID
++#include <sys/mman.h>
++#define LUCID_PAGE 4096UL
++#define PAGE_MASK (~(LUCID_PAGE - 1))
++
++// Handler function for segfaults to check if they are for dirty page tracking
++void lucid_segv_handler(int signo, siginfo_t *si, void *unused) {
++  // Get the faulting address
++  size_t fault_addr = (size_t)si->si_addr;
++
++  // Make sure the faulting address is within the dirty page range
++  size_t lower = g_lucid_ctx->dirty_block_start;
++  size_t upper = lower + g_lucid_ctx->dirty_block_length;
++  if (!(lower <= fault_addr && upper > fault_addr)) {
++    // Early return since this access is out of bounds of our dirty range
++    return;
++  }
++
++  // For readability
++  uint8_t *bitmap = g_lucid_ctx->dirty_map_addr;
++
++  // Get the faulting page address
++  size_t fault_page = fault_addr & PAGE_MASK;
++
++  // Get the page index into the bitmap
++  size_t page_idx = (fault_page - lower) / PAGE_SIZE;
++
++  // Get the byte index in the vector
++  size_t byte_idx = page_idx / 8;
++
++  // Now find out which bit in that byte to use 
++  size_t bit_idx = page_idx % 8;
++
++  // Set that bit by taking the byte, and OR'ing the right bit with 1
++  bitmap[byte_idx] |= (1 << bit_idx);
++
++  // Set the flag to tell Lucid we found a new dirty page to reset
++  g_lucid_ctx->new_dirty_page = 1;
++
++  // Mark this page as writable going forward, set out the mprotect() arguments
++  // and then directly make the syscall to avoid the sandbox
++  long start = fault_page;
++  long len = LUCID_PAGE;
++  long prot = PROT_READ | PROT_WRITE;
++  if (passthrough_syscall3(SYS_mprotect, start, len, prot) < 0 ) {
++    // On failure just die
++    return;
++  }
++
++  // We should be good to go at this point to return to the instruction and
++  // execute it?
++  return;  
++}
++
++// Signal handler for Lucid to determine what pages are dirtied during fuzzing
++void lucid_setup_signal_handler(void) {
++  lucid_sigaction_t new_act = { 0 };
++  lucid_sigaction_t old_act = { 0 };
++
++  // Get a copy of the old sigaction if there was one and build on those 
++  if (passthrough_syscall4(
++    SYS_rt_sigaction,
++    SIGSEGV,
++    0,  // No new action yet, just checking old
++    (long)&old_act,
++    8  // Hardcoded size of sigset_t a single unsigned long
++  ) == -1) {
++    printf("Failed to retrieve old sigaction\n");
++    exit(-1);
++  }
++
++  // With old sigaction, set up new sigaction
++  memcpy((void *)&new_act, (void *)&old_act, sizeof(lucid_sigaction_t));
++
++  // Add adjustments to the new_act
++  new_act.handler = lucid_segv_handler;
++  new_act.flags |= SA_SIGINFO;
++
++  // Use the pass-through API to circumvent syscall sandbox
++  if (passthrough_syscall4(
++    SYS_rt_sigaction,
++    SIGSEGV,
++    (long)&new_act,
++    (long)&old_act,
++    8
++  ) == -1) {
++    printf("Failed to set new sigaction\n");
++    exit(-1);
++  }
++}
++#endif /* BX_LUCID */
++
  int bxmain(void)
  {
-+
 +  // Added for fuzzing with Lucid 
 +#if BX_LUCID
++  // Just make sure nothing is weird, we don't check this always for NULL
 +  if (!g_lucid_ctx) {
 +    BX_PANIC(("Lucid configured but g_lucid_ctx is NULL"));
 +  }
++
++  // Setup signal handler
++  lucid_setup_signal_handler();
 +#endif /* BX_LUCID */
 +
  #ifdef HAVE_LOCALE_H

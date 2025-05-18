@@ -221,7 +221,7 @@ fn main() {
             }
         }
 
-        // Parent is done forking, printing stats
+        // Parent is done forking, in a loop, print stats
         loop {
             // Sleep for the stat reporting interval + 2 seconds 
             std::thread::sleep(std::time::Duration::from_millis(

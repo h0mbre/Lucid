@@ -182,7 +182,7 @@ pub enum CpuMode {
 /// fuzzing stages are finding coverage or crashes
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum FuzzingStage {
-    NotFuzzing,
+    Setup,
     DryRun,
     Fuzzing,
     Cmplog,
@@ -194,7 +194,7 @@ pub enum FuzzingStage {
 impl std::fmt::Display for FuzzingStage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FuzzingStage::NotFuzzing => write!(f, "Not Fuzzing"),
+            FuzzingStage::Setup => write!(f, "Setup"),
             FuzzingStage::DryRun => write!(f, "Dry Run"),
             FuzzingStage::Fuzzing => write!(f, "Fuzzing"),
             FuzzingStage::Cmplog => write!(f, "Cmplog"),
@@ -549,7 +549,7 @@ impl LucidContext {
             cpu_mode: CpuMode::Fuzzing,
             config: config.clone(),
             corpus,
-            fuzzing_stage: FuzzingStage::NotFuzzing,
+            fuzzing_stage: FuzzingStage::Setup,
             fuzzer_id: 0,
             exec_arch,
             dirty_map_addr: snapshot.dirty_map_addr,
@@ -1116,15 +1116,31 @@ pub fn handle_timeout(context: &mut LucidContext) {
 /// place the current input into Redqueen's queue to process
 pub fn handle_new_coverage(context: &mut LucidContext, old_edge_count: usize) -> usize {
     context.corpus.save_input(&context.mutator.input);
+
+    // Take the new edge count
     let new_edge_count = context.coverage.get_edge_count();
-    finding!(
-        context.fuzzer_id,
-        "{} increased edge count {} -> {} (+{})",
-        context.fuzzing_stage,
-        old_edge_count,
-        new_edge_count,
-        new_edge_count - old_edge_count
-    );
+
+    // If the edge count differs, we truly found a new edge pair
+    if new_edge_count != old_edge_count {
+        finding!(
+            context.fuzzer_id,
+            "{} increased edge count {} -> {} (+{})",
+            context.fuzzing_stage,
+            old_edge_count,
+            new_edge_count,
+            new_edge_count - old_edge_count
+        );
+    }
+
+    // If the edgecount is the same, that means we likely just found a new 
+    // hit count for an edge pair
+    else {
+        finding!(
+            context.fuzzer_id,
+            "{} increased edge-pair hit count",
+            context.fuzzing_stage
+        );
+    }
 
     // Update stats
     context.stats.new_coverage(new_edge_count);
