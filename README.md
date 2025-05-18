@@ -48,12 +48,6 @@ To build Lucid Bochs, you should be able to just use `Lucid/bochs_configs/lucid_
 
 **Remember to update the path in `Lucid/bochs_configs/lucid_bochs.conf` with the path to your musl toolchain**
 
-# Usage
-Right now, we don't have many options to worry about. This will probably all change many times in the future but for now, let's break down an example command that I'm using to fuzz a Linux kernel syscall:
-```terminal
-./lucid --input-signature 0x13371337133713371338133813381338 --verbose --bochs-image /tmp/lucid_bochs --bochs-args -f /home/h0mbre/git_bochs/Bochs/bochs/bochsrc_nogui.txt -q -r /tmp/lucid_snapshot
-```
-
 ## Arguments
 
 ### `--help`
