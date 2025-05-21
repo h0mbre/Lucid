@@ -225,3 +225,11 @@ Date:   Wed Mar 20 18:19:40 2024 +0100
     Some more work on the MSVC workspace files.
     Don't generate debug information for release builds (plugin DLLs).
 ```
++ Musl commit information
+```terminal
+commit 26bb55104559325b5e840911742220268f556d7a (HEAD -> master, origin/master, origin/HEAD)
+Author: Viktor Szakats <commit@vsz.me>
+Date:   Wed Aug 30 08:57:42 2023 +0000
+
+    use HTTPS when retrieving code from the internet
+```
