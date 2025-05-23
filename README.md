@@ -156,28 +156,14 @@ lucid:: Input buffer address @ 0xE9FD9A8
 lucid:: Input size in snapshot: 0x8
 lucid:: Input buffer in snapshot: [41, 41, 41, 41, 41, 41, 41, 41]...
 lucid:: Starting fuzzer...
-fuzzer-0: Fuzzing increased edge count 0 -> 1519 (+1519)
 
-[lucid stats (start time: 2025-05-17 21:11:55)]
-globals: uptime: 0d 0h 0m 5s | fuzzers: 1 | iters: 1.31K | iters/s: 261.74 | crashes: 0 | timeouts: 0
-coverage: edges: 1519 | last find: 0h 0m 4s | map: 2.32%
-cpu: target: 68.1% | reset: 4.6% | mutator: 0.0% | coverage: 1.8% | redqueen: 25.6% | misc: -0.1%
-snapshot: dirty pages: 562 | dirty / total: 0.00010% | reset memcpys: 95
-corpus: inputs: 1 | corpus size (MB): 0.007 | max input: 0x2000
-
-[lucid stats (start time: 2025-05-17 21:11:55)]
-globals: uptime: 0d 0h 0m 10s | fuzzers: 1 | iters: 3.10K | iters/s: 358.19 | crashes: 0 | timeouts: 0
-coverage: edges: 1519 | last find: 0h 0m 9s | map: 2.32%
-cpu: target: 91.3% | reset: 6.0% | mutator: 0.0% | coverage: 2.5% | redqueen: 0.0% | misc: 0.1%
-snapshot: dirty pages: 562 | dirty / total: 0.00010% | reset memcpys: 95
-corpus: inputs: 1 | corpus size (MB): 0.007 | max input: 0x2000
-
-[lucid stats (start time: 2025-05-17 21:11:55)]
-globals: uptime: 0d 0h 0m 15s | fuzzers: 1 | iters: 4.87K | iters/s: 353.99 | crashes: 0 | timeouts: 0
-coverage: edges: 1519 | last find: 0h 0m 14s | map: 2.32%
-cpu: target: 91.2% | reset: 6.3% | mutator: 0.1% | coverage: 2.4% | redqueen: 0.0% | misc: 0.1%
-snapshot: dirty pages: 562 | dirty / total: 0.00010% | reset memcpys: 95
-corpus: inputs: 1 | corpus size (MB): 0.007 | max input: 0x2000
+[lucid stats (start time: 2025-05-23 13:35:09)]
+globals: uptime: 0d 0h 1m 15s | fuzzers: 8 | crashes: 0 | timeouts: 0
+perf: iters: 231.76K | iters/s: 2806.40 | iters/s/f: 350.80
+cpu: target: 91.2% | reset: 5.8% | mutator: 0.1% | coverage: 2.7% | redqueen: 0.0% | misc: 0.1%
+coverage: edges: 1584 | last find: 0h 0m 21s | map: 2.42%
+snapshot: dirty pages: 578 | dirty / total: 0.00010% | reset memcpys: 103
+corpus: inputs: 21 | corpus size (MB): 0.056 | max input: 0x2000
 ```
 
 # Contributors
@@ -208,15 +194,15 @@ You must comply with the license terms of Bochs and Musl when applying these pat
 I added a copyright claim for my contributions included in the patches as I'm under the impression this is best practice. Please let me know if I'm mistaken. Thank you!
 
 # Random
-+ Bochs patch generator command
+### Bochs patch generator command
 ```terminal
 diff -x 'Makefile' -x'bochs' -x '*.txt' -x 'bochs-dlx' -x '*.plist' -x'*.nsi' -x'bxhub' -x'bximage' -x'*.o' -x'bxversion.h' -x'*.rc' -x'config.h' -x'*.log' -x'*.status' -x'*.a' -x'libtool' -x'ltdlconf.h' -x'*.conf' -ruN
 ```
-+ Musl patch generator command
+### Musl patch generator command
 ```terminal
 iff -x'*.o' -x'*.a' -x'config.mak' -x'*.so' -x'*.specs' -x'alltypes.h' -x'syscall.h' -x'*.lo' -x'version.h' -x'musl-gcc' -ruN
 ```
-+ Bochs commit information
+### Bochs commit information
 ```terminal
 commit a9d2e8f41990c05db4a1a2f52383fc7ae51d819b (HEAD -> master, origin/master, origin/HEAD)
 Author: Volker Ruppert <Volker.Ruppert@t-online.de>
@@ -225,7 +211,7 @@ Date:   Wed Mar 20 18:19:40 2024 +0100
     Some more work on the MSVC workspace files.
     Don't generate debug information for release builds (plugin DLLs).
 ```
-+ Musl commit information
+### Musl commit information
 ```terminal
 commit 26bb55104559325b5e840911742220268f556d7a (HEAD -> master, origin/master, origin/HEAD)
 Author: Viktor Szakats <commit@vsz.me>
