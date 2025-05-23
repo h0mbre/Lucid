@@ -202,10 +202,7 @@ impl Corpus {
 
         // Make sure we have enough space
         if input.len() > self.output_limit {
-            finding_warn!(
-                self.id,
-                "Unable to save new input, output_limit exhausted!"
-            );
+            finding_warn!(self.id, "Unable to save new input, output_limit exhausted!");
             return hash;
         }
 

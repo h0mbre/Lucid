@@ -67,33 +67,36 @@ impl Encoding {
     /// Transforms an encoded operand value to a vector of bytes
     pub fn to_bytes(self) -> Vec<u8> {
         match self {
-            Encoding::ZeroExtend8(val) => val.to_ne_bytes().to_vec(),
-            Encoding::ZeroExtend16(val) => val.to_ne_bytes().to_vec(),
-            Encoding::ZeroExtend32(val) => val.to_ne_bytes().to_vec(),
-            Encoding::ZeroExtend64(val) => val.to_ne_bytes().to_vec(),
-            Encoding::SignExtend8(val) => val.to_ne_bytes().to_vec(),
-            Encoding::SignExtend16(val) => val.to_ne_bytes().to_vec(),
-            Encoding::SignExtend32(val) => val.to_ne_bytes().to_vec(),
-            Encoding::SignExtend64(val) => val.to_ne_bytes().to_vec(),
-            Encoding::ZeroReduce8(val) => val.to_ne_bytes().to_vec(),
-            Encoding::ZeroReduce16(val) => val.to_ne_bytes().to_vec(),
-            Encoding::ZeroReduce32(val) => val.to_ne_bytes().to_vec(),
-            Encoding::SignReduce8(val) => val.to_ne_bytes().to_vec(),
-            Encoding::SignReduce16(val) => val.to_ne_bytes().to_vec(),
-            Encoding::SignReduce32(val) => val.to_ne_bytes().to_vec(),
-            Encoding::BeZeroExtend16(val) => val.to_ne_bytes().to_vec(),
-            Encoding::BeZeroExtend32(val) => val.to_ne_bytes().to_vec(),
-            Encoding::BeZeroExtend64(val) => val.to_ne_bytes().to_vec(),
-            Encoding::BeSignExtend8(val) => val.to_ne_bytes().to_vec(),
-            Encoding::BeSignExtend16(val) => val.to_ne_bytes().to_vec(),
-            Encoding::BeSignExtend32(val) => val.to_ne_bytes().to_vec(),
-            Encoding::BeSignExtend64(val) => val.to_ne_bytes().to_vec(),
-            Encoding::BeZeroReduce8(val) => val.to_ne_bytes().to_vec(),
-            Encoding::BeZeroReduce16(val) => val.to_ne_bytes().to_vec(),
-            Encoding::BeZeroReduce32(val) => val.to_ne_bytes().to_vec(),
-            Encoding::BeSignReduce8(val) => val.to_ne_bytes().to_vec(),
-            Encoding::BeSignReduce16(val) => val.to_ne_bytes().to_vec(),
-            Encoding::BeSignReduce32(val) => val.to_ne_bytes().to_vec(),
+            // Little endian
+            Encoding::ZeroExtend8(val) => val.to_le_bytes().to_vec(),
+            Encoding::ZeroExtend16(val) => val.to_le_bytes().to_vec(),
+            Encoding::ZeroExtend32(val) => val.to_le_bytes().to_vec(),
+            Encoding::ZeroExtend64(val) => val.to_le_bytes().to_vec(),
+            Encoding::SignExtend8(val) => val.to_le_bytes().to_vec(),
+            Encoding::SignExtend16(val) => val.to_le_bytes().to_vec(),
+            Encoding::SignExtend32(val) => val.to_le_bytes().to_vec(),
+            Encoding::SignExtend64(val) => val.to_le_bytes().to_vec(),
+            Encoding::ZeroReduce8(val) => val.to_le_bytes().to_vec(),
+            Encoding::ZeroReduce16(val) => val.to_le_bytes().to_vec(),
+            Encoding::ZeroReduce32(val) => val.to_le_bytes().to_vec(),
+            Encoding::SignReduce8(val) => val.to_le_bytes().to_vec(),
+            Encoding::SignReduce16(val) => val.to_le_bytes().to_vec(),
+            Encoding::SignReduce32(val) => val.to_le_bytes().to_vec(),
+
+            // Big endian
+            Encoding::BeZeroExtend16(val) => val.to_be_bytes().to_vec(),
+            Encoding::BeZeroExtend32(val) => val.to_be_bytes().to_vec(),
+            Encoding::BeZeroExtend64(val) => val.to_be_bytes().to_vec(),
+            Encoding::BeSignExtend8(val) => val.to_be_bytes().to_vec(),
+            Encoding::BeSignExtend16(val) => val.to_be_bytes().to_vec(),
+            Encoding::BeSignExtend32(val) => val.to_be_bytes().to_vec(),
+            Encoding::BeSignExtend64(val) => val.to_be_bytes().to_vec(),
+            Encoding::BeZeroReduce8(val) => val.to_be_bytes().to_vec(),
+            Encoding::BeZeroReduce16(val) => val.to_be_bytes().to_vec(),
+            Encoding::BeZeroReduce32(val) => val.to_be_bytes().to_vec(),
+            Encoding::BeSignReduce8(val) => val.to_be_bytes().to_vec(),
+            Encoding::BeSignReduce16(val) => val.to_be_bytes().to_vec(),
+            Encoding::BeSignReduce32(val) => val.to_be_bytes().to_vec(),
         }
     }
 }
@@ -344,14 +347,14 @@ fn cmplog_pass(context: &mut LucidContext) -> Result<(), LucidErr> {
     context.fuzzing_stage = FuzzingStage::Cmplog;
 
     // Turn on Cmplog mode
-    let backup = context.cpu_mode;
+    let backup_mode = context.cpu_mode;
     context.cpu_mode = CpuMode::Cmplog;
 
     // Execute the colorized fuzzcase
     fuzz_one(context)?;
 
     // Reset Bochs' CPU mode
-    context.cpu_mode = backup;
+    context.cpu_mode = backup_mode;
 
     // Restore stage
     context.fuzzing_stage = backup_stage;
@@ -442,78 +445,93 @@ fn remove_loops(context: &mut LucidContext) {
 }
 
 /// Generates all of the possible encodings we want to consider for a specific
-/// size of compare operand
+/// size of compare operand, the set of encodings is deduplicated
 fn get_encodings(operand: Operand) -> Vec<Encoding> {
+    // Store final encodings
     let mut encodings = Vec::new();
 
-    // Match on the operand type
+    // Create a hash-set of seen encodings
+    let mut seen_bytes = HashSet::new();
+
+    // Create a little named closure for ease of use
+    let mut add = |enc: Encoding| {
+        // Convert encoding to bytes
+        let bytes = enc.to_bytes();
+
+        // If we haven't seen this repr, add it
+        if seen_bytes.insert(bytes) {
+            encodings.push(enc);
+        }
+    };
+
+    // Match on the operand type and try adding it to the HashSet
     match operand {
         Operand::U8(val) => {
-            encodings.push(Encoding::ZeroExtend8(val)); // Original
-            encodings.push(Encoding::SignExtend8(val as i8));
-            encodings.push(Encoding::BeSignExtend8((val as i8).to_be()));
-            encodings.push(Encoding::ZeroExtend16(val as u16));
-            encodings.push(Encoding::ZeroExtend32(val as u32));
-            encodings.push(Encoding::ZeroExtend64(val as u64));
-            encodings.push(Encoding::SignExtend16(val as i16));
-            encodings.push(Encoding::SignExtend32(val as i32));
-            encodings.push(Encoding::SignExtend64(val as i64));
-            encodings.push(Encoding::BeZeroExtend16((val as u16).to_be()));
-            encodings.push(Encoding::BeZeroExtend32((val as u32).to_be()));
-            encodings.push(Encoding::BeZeroExtend64((val as u64).to_be()));
-            encodings.push(Encoding::BeSignExtend16((val as i16).to_be()));
-            encodings.push(Encoding::BeSignExtend32((val as i32).to_be()));
-            encodings.push(Encoding::BeSignExtend64((val as i64).to_be()));
+            add(Encoding::ZeroExtend8(val));
+            add(Encoding::SignExtend8(val as i8));
+            add(Encoding::BeSignExtend8((val as i8).to_be()));
+            add(Encoding::ZeroExtend16(val as u16));
+            add(Encoding::ZeroExtend32(val as u32));
+            add(Encoding::ZeroExtend64(val as u64));
+            add(Encoding::SignExtend16(val as i16));
+            add(Encoding::SignExtend32(val as i32));
+            add(Encoding::SignExtend64(val as i64));
+            add(Encoding::BeZeroExtend16((val as u16).to_be()));
+            add(Encoding::BeZeroExtend32((val as u32).to_be()));
+            add(Encoding::BeZeroExtend64((val as u64).to_be()));
+            add(Encoding::BeSignExtend16((val as i16).to_be()));
+            add(Encoding::BeSignExtend32((val as i32).to_be()));
+            add(Encoding::BeSignExtend64((val as i64).to_be()));
         }
         Operand::U16(val) => {
-            encodings.push(Encoding::ZeroExtend16(val)); // Original
-            encodings.push(Encoding::BeZeroExtend16(val.to_be())); // BE orig
-            encodings.push(Encoding::ZeroExtend32(val as u32));
-            encodings.push(Encoding::ZeroExtend64(val as u64));
-            encodings.push(Encoding::SignExtend32(val as i32));
-            encodings.push(Encoding::SignExtend64(val as i64));
-            encodings.push(Encoding::BeZeroExtend32((val as u32).to_be()));
-            encodings.push(Encoding::BeZeroExtend64((val as u64).to_be()));
-            encodings.push(Encoding::BeSignExtend32((val as i32).to_be()));
-            encodings.push(Encoding::BeSignExtend64((val as i64).to_be()));
-            encodings.push(Encoding::ZeroReduce8((val & 0xFF) as u8));
-            encodings.push(Encoding::SignReduce8(val as i8));
-            encodings.push(Encoding::BeZeroReduce8(((val & 0xFF) as u8).to_be()));
-            encodings.push(Encoding::BeSignReduce8((val as i8).to_be()));
+            add(Encoding::ZeroExtend16(val));
+            add(Encoding::BeZeroExtend16(val.to_be()));
+            add(Encoding::ZeroExtend32(val as u32));
+            add(Encoding::ZeroExtend64(val as u64));
+            add(Encoding::SignExtend32(val as i32));
+            add(Encoding::SignExtend64(val as i64));
+            add(Encoding::BeZeroExtend32((val as u32).to_be()));
+            add(Encoding::BeZeroExtend64((val as u64).to_be()));
+            add(Encoding::BeSignExtend32((val as i32).to_be()));
+            add(Encoding::BeSignExtend64((val as i64).to_be()));
+            add(Encoding::ZeroReduce8((val & 0xFF) as u8));
+            add(Encoding::SignReduce8(val as i8));
+            add(Encoding::BeZeroReduce8(((val & 0xFF) as u8).to_be()));
+            add(Encoding::BeSignReduce8((val as i8).to_be()));
         }
         Operand::U32(val) => {
-            encodings.push(Encoding::ZeroExtend32(val)); // Original
-            encodings.push(Encoding::BeZeroExtend32(val.to_be())); // BE orig
-            encodings.push(Encoding::ZeroExtend64(val as u64));
-            encodings.push(Encoding::SignExtend64(val as i64));
-            encodings.push(Encoding::BeZeroExtend64((val as u64).to_be()));
-            encodings.push(Encoding::BeSignExtend64((val as i64).to_be()));
-            encodings.push(Encoding::ZeroReduce16((val & 0xFFFF) as u16));
-            encodings.push(Encoding::SignReduce16(val as i16));
-            encodings.push(Encoding::BeZeroReduce16(((val & 0xFFFF) as u16).to_be()));
-            encodings.push(Encoding::BeSignReduce16((val as i16).to_be()));
-            encodings.push(Encoding::ZeroReduce8((val & 0xFF) as u8));
-            encodings.push(Encoding::SignReduce8(val as i8));
-            encodings.push(Encoding::BeZeroReduce8(((val & 0xFF) as u8).to_be()));
-            encodings.push(Encoding::BeSignReduce8((val as i8).to_be()));
+            add(Encoding::ZeroExtend32(val));
+            add(Encoding::BeZeroExtend32(val.to_be()));
+            add(Encoding::ZeroExtend64(val as u64));
+            add(Encoding::SignExtend64(val as i64));
+            add(Encoding::BeZeroExtend64((val as u64).to_be()));
+            add(Encoding::BeSignExtend64((val as i64).to_be()));
+            add(Encoding::ZeroReduce16((val & 0xFFFF) as u16));
+            add(Encoding::SignReduce16(val as i16));
+            add(Encoding::BeZeroReduce16(((val & 0xFFFF) as u16).to_be()));
+            add(Encoding::BeSignReduce16((val as i16).to_be()));
+            add(Encoding::ZeroReduce8((val & 0xFF) as u8));
+            add(Encoding::SignReduce8(val as i8));
+            add(Encoding::BeZeroReduce8(((val & 0xFF) as u8).to_be()));
+            add(Encoding::BeSignReduce8((val as i8).to_be()));
         }
         Operand::U64(val) => {
-            encodings.push(Encoding::ZeroExtend64(val)); // Original
-            encodings.push(Encoding::BeZeroExtend64(val.to_be())); // BE orig
-            encodings.push(Encoding::ZeroReduce32((val & 0xFFFFFFFF) as u32));
-            encodings.push(Encoding::SignReduce32(val as i32));
-            encodings.push(Encoding::BeZeroReduce32(
+            add(Encoding::ZeroExtend64(val));
+            add(Encoding::BeZeroExtend64(val.to_be()));
+            add(Encoding::ZeroReduce32((val & 0xFFFFFFFF) as u32));
+            add(Encoding::SignReduce32(val as i32));
+            add(Encoding::BeZeroReduce32(
                 ((val & 0xFFFFFFFF) as u32).to_be(),
             ));
-            encodings.push(Encoding::BeSignReduce32((val as i32).to_be()));
-            encodings.push(Encoding::ZeroReduce16((val & 0xFFFF) as u16));
-            encodings.push(Encoding::SignReduce16(val as i16));
-            encodings.push(Encoding::BeZeroReduce16(((val & 0xFFFF) as u16).to_be()));
-            encodings.push(Encoding::BeSignReduce16((val as i16).to_be()));
-            encodings.push(Encoding::ZeroReduce8((val & 0xFF) as u8));
-            encodings.push(Encoding::SignReduce8(val as i8));
-            encodings.push(Encoding::BeZeroReduce8(((val & 0xFF) as u8).to_be()));
-            encodings.push(Encoding::BeSignReduce8((val as i8).to_be()));
+            add(Encoding::BeSignReduce32((val as i32).to_be()));
+            add(Encoding::ZeroReduce16((val & 0xFFFF) as u16));
+            add(Encoding::SignReduce16(val as i16));
+            add(Encoding::BeZeroReduce16(((val & 0xFFFF) as u16).to_be()));
+            add(Encoding::BeSignReduce16((val as i16).to_be()));
+            add(Encoding::ZeroReduce8((val & 0xFF) as u8));
+            add(Encoding::SignReduce8(val as i8));
+            add(Encoding::BeZeroReduce8(((val & 0xFF) as u8).to_be()));
+            add(Encoding::BeSignReduce8((val as i8).to_be()));
         }
     }
 
@@ -611,14 +629,27 @@ fn get_single_encoding(encoding: Encoding, value: Operand) -> Encoding {
 /// Generates three variant values for the partner operand (value, value + 1,
 /// value - 1) and then applies the partner's encoding scheme to each variant
 fn get_partner_encodings(encoding: Encoding, value: Operand) -> Vec<Encoding> {
+    // Store final encodings
     let mut encodings = Vec::new();
+
+    // Deduplicate results
+    let mut seen_bytes = HashSet::new();
 
     // Match on the operand type and create encodings for the variant values
     let (var1, var2, var3) = get_partner_variants(value);
 
     // Iterate through the variants and get encodings for each
     for var in &[var1, var2, var3] {
-        encodings.push(get_single_encoding(encoding, *var));
+        // Grab encoding
+        let enc = get_single_encoding(encoding, *var);
+
+        // Convert to bytes
+        let bytes = enc.to_bytes();
+
+        // Attempt to store if unique
+        if seen_bytes.insert(bytes) {
+            encodings.push(enc);
+        }
     }
 
     encodings
@@ -644,7 +675,7 @@ fn patch_input(input: &[u8], offset: usize, patch: &[u8]) -> Vec<u8> {
 fn process_partners(input: &[u8], k: Operand, v: Operand) -> Vec<Vec<u8>> {
     let mut new_inputs = Vec::new();
 
-    // Get all of the encodings for our key value
+    // Get all of the deduped encodings for our key value
     let k_encodings = get_encodings(k);
 
     // Iterate through the encodings for k
@@ -663,16 +694,11 @@ fn process_partners(input: &[u8], k: Operand, v: Operand) -> Vec<Vec<u8>> {
         // If we have offsets, get encoding values for the key's partner
         let partner_encs = get_partner_encodings(enc, v);
 
-        // Dedupe encodings at byte level
-        let mut partner_bytes = HashSet::new();
-        for partner_enc in partner_encs {
-            partner_bytes.insert(partner_enc.to_bytes());
-        }
-
         // Patch the input
         for offset in offsets {
-            for partner_byte in &partner_bytes {
-                new_inputs.push(patch_input(input, offset, partner_byte));
+            for partner_enc in &partner_encs {
+                let patch = partner_enc.to_bytes();
+                new_inputs.push(patch_input(input, offset, &patch));
             }
         }
     }

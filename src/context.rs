@@ -1134,8 +1134,7 @@ pub fn handle_new_coverage(context: &mut LucidContext, old_edge_count: usize) ->
             new_edge_count - old_edge_count
         );
     }
-
-    // If the edgecount is the same, that means we likely just found a new 
+    // If the edgecount is the same, that means we likely just found a new
     // hit count for an edge pair
     else {
         finding!(

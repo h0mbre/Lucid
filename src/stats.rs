@@ -136,6 +136,7 @@ struct FormattedStats {
     fuzzers: usize,
     iters: String,
     iters_per_sec: f64,
+    iters_per_sec_fuzzer: f64,
     crashes: usize,
     timeouts: usize,
     edges: usize,
@@ -251,6 +252,9 @@ impl Stats {
             self.batch_iters as f64 / oldest_seconds
         };
 
+        // Calculate Iters/s per fuzzer
+        let iters_sec_fuzzer = iters_sec / self.fuzzers as f64;
+
         // Generate the dynamic iters/s string value to print
         let iters_str = match self.session_iters {
             0..=999 => format!("{}", self.session_iters),
@@ -280,6 +284,7 @@ impl Stats {
             fuzzers: self.fuzzers,
             iters: iters_str,
             iters_per_sec: iters_sec,
+            iters_per_sec_fuzzer: iters_sec_fuzzer,
             crashes: self.crashes,
             timeouts: self.timeouts,
             edges: self.edges,
@@ -315,26 +320,24 @@ impl Stats {
         let globals = [
             ("uptime".to_string(), formatted_stats.uptime),
             ("fuzzers".to_string(), formatted_stats.fuzzers.to_string()),
-            ("iters".to_string(), formatted_stats.iters),
-            (
-                "iters/s".to_string(),
-                format!("{:.2}", formatted_stats.iters_per_sec),
-            ),
             ("crashes".to_string(), formatted_stats.crashes.to_string()),
             ("timeouts".to_string(), formatted_stats.timeouts.to_string()),
         ];
         println!("{}", format_group("globals", &globals));
 
-        // Print coverage metrics
-        let coverage = [
-            ("edges".to_string(), formatted_stats.edges.to_string()),
-            ("last find".to_string(), formatted_stats.last_find),
+        // Print all the perf stuff
+        let perf = [
+            ("iters".to_string(), formatted_stats.iters),
             (
-                "map".to_string(),
-                format!("{:.2}%", formatted_stats.map_coverage),
+                "iters/s".to_string(),
+                format!("{:.2}", formatted_stats.iters_per_sec),
+            ),
+            (
+                "iters/s/f".to_string(),
+                format!("{:.2}", formatted_stats.iters_per_sec_fuzzer),
             ),
         ];
-        println!("{}", format_group("coverage", &coverage));
+        println!("{}", format_group("perf", &perf));
 
         // Print where we're spending our CPU time
         let cpu = [
@@ -364,6 +367,17 @@ impl Stats {
             ),
         ];
         println!("{}", format_group("cpu", &cpu));
+
+        // Print coverage metrics
+        let coverage = [
+            ("edges".to_string(), formatted_stats.edges.to_string()),
+            ("last find".to_string(), formatted_stats.last_find),
+            (
+                "map".to_string(),
+                format!("{:.2}%", formatted_stats.map_coverage),
+            ),
+        ];
+        println!("{}", format_group("coverage", &coverage));
 
         // Print the dirty memory snapshot metrics
         let snapshot = [

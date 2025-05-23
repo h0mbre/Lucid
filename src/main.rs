@@ -180,7 +180,6 @@ fn main() {
             fatal!(error);
         });
     }
-    
     // Multi-process arch:
     // - The original process becomes a simple stat reporter and waits to reap
     //      dead spawned children
@@ -226,7 +225,7 @@ fn main() {
 
         // Parent is done forking, in a loop, print stats
         loop {
-            // Sleep for the stat reporting interval + 2 seconds 
+            // Sleep for the stat reporting interval + 2 seconds
             std::thread::sleep(std::time::Duration::from_millis(
                 lucid_context.stats.stat_interval as u64 + 2_000,
             ));

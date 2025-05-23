@@ -52,7 +52,7 @@ pub fn parse_args() -> Result<Config, LucidErr> {
     let matches = Command::new("lucid")
     .version("0.0.1")
     .author("h0mbre")
-    .about("x86_64 Full-system Snapshot Fuzzer Powered by Bochs")
+    .about("x86_64 Full-System Snapshot Fuzzer Powered by Bochs")
     .arg(Arg::new("input-max-size")
         .long("input-max-size")
         .value_name("SIZE")
@@ -273,9 +273,7 @@ pub fn parse_args() -> Result<Config, LucidErr> {
 
             // Make sure we have at least one
             if fuzzers == 0 {
-                prompt_warn!(
-                    "Bumping number of fuzzers up to 1",
-                );
+                prompt_warn!("Bumping number of fuzzers up to 1",);
                 fuzzers = 1;
             }
 

@@ -244,46 +244,27 @@ fn merge_ranges(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
     // Store newly merged ranges here
     let mut merged = Vec::new();
 
-    // Our iteration idx
-    let mut i = 0;
+    // Start with the first range
+    let mut current = ranges[0];
 
-    // Until we're done with the original range list
-    while i < ranges.len() {
-        // Get the current start and length
-        let (start1, length1) = ranges[i];
+    // Iterate through remaining ranges
+    for range in ranges.iter().skip(1) {
+        let (start, length) = range;
+        let end = start + length;
+        let current_end = current.0 + current.1;
 
-        // Calculate the current end
-        let mut end1 = start1 + length1;
-
-        // Copy off the curr range
-        let mut current_range = (start1, length1);
-
-        // Merge as many consecutive ranges as possible
-        while i + 1 < ranges.len() {
-            // Get the next range
-            let (start2, length2) = ranges[i + 1];
-            let end2 = start2 + length2;
-
-            // Check if curr and next range are adjacent or overlapping
-            if end1 >= start2 {
-                // Merge the ranges accounting for overlap we shouldnt have tho
-                end1 = end1.max(end2);
-
-                // Get a new range and calc new length
-                current_range = (current_range.0, end1 - current_range.0);
-
-                // We have to skip over merged ranges next iteration
-                i += 1;
-            } else {
-                // No merge candidate, break
-                break;
-            }
+        // Merge if overlapping or page-adjacent
+        if current_end >= *start {
+            let new_end = current_end.max(end);
+            current.1 = new_end - current.0;
+        } else {
+            merged.push(current);
+            current = (*start, *length);
         }
-
-        // Done merging with this specific index, move on
-        merged.push(current_range);
-        i += 1;
     }
+
+    // Push the final range
+    merged.push(current);
 
     merged
 }
