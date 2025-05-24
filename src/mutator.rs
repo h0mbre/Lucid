@@ -19,6 +19,15 @@ use std::hash::{Hash, Hasher};
 
 use crate::corpus::Corpus;
 
+/// Input alignment enforcement
+const ALIGN: bool = true;
+
+/// Input alignment length
+const ALIGN_LEN: usize = 8;
+
+/// Input alignment frequency
+const ALIGN_RATE: usize = 95;
+
 /// The maximum amount of mutation rounds we can apply to an input, I *think*
 /// this is what AFL++ does?
 const MAX_STACK: usize = 6;
@@ -442,55 +451,6 @@ impl Mutator {
         self.input.truncate(idx);
     }
 
-    /// Takes a magic number value and mutates it
-    fn mutate_magic(&mut self, magic: u64) -> Vec<u8> {
-        // Mutate the magic value
-        let magic = match self.rand() % 14 {
-            0 => magic,
-            1 => magic & 0xFF,
-            2 => magic & 0xFFFF,
-            3 => magic & 0xFFFFFFFF,
-            4 => magic - 1,
-            5 => magic + 1,
-            6 => !magic,                 // Bitwise NOT
-            7 => magic << 1,             // Left shift by 1
-            8 => magic >> 1,             // Right shift by 1
-            9 => magic.rotate_left(8),   // Rotate left by 8 bits
-            10 => magic.rotate_right(8), // Rotate right by 8 bits
-            11 => magic ^ 0xFFFFFFFF,    // XOR with all 1s (32-bit)
-            12 => magic.swap_bytes(),    // Swap byte order
-            13 => {
-                // Flip a random bit
-                let bit = self.rand() % 64;
-                magic ^ (1 << bit)
-            }
-            _ => unreachable!(),
-        };
-
-        // Convert to bytes
-        let magic_bytes = magic.to_ne_bytes();
-
-        // Randomly truncate bytes
-        match self.rand() % 15 {
-            0 => magic_bytes.to_vec(),       // All 8 bytes (u64)
-            1 => magic_bytes[0..4].to_vec(), // First 4 bytes (u32)
-            2 => magic_bytes[4..8].to_vec(), // Last 4 bytes (u32)
-            3 => magic_bytes[0..2].to_vec(), // First 2 bytes (u16)
-            4 => magic_bytes[2..4].to_vec(), // Second 2 bytes (u16)
-            5 => magic_bytes[4..6].to_vec(), // Third 2 bytes (u16)
-            6 => magic_bytes[6..8].to_vec(), // Last 2 bytes (u16)
-            7 => vec![magic_bytes[0]],       // 1st byte (u8)
-            8 => vec![magic_bytes[1]],       // 2nd byte (u8)
-            9 => vec![magic_bytes[2]],       // 3rd byte (u8)
-            10 => vec![magic_bytes[3]],      // 4th byte (u8)
-            11 => vec![magic_bytes[4]],      // 5th byte (u8)
-            12 => vec![magic_bytes[5]],      // 6th byte (u8)
-            13 => vec![magic_bytes[6]],      // 7th byte (u8)
-            14 => vec![magic_bytes[7]],      // 8th byte (u8)
-            _ => unreachable!(),
-        }
-    }
-
     /// Inserts magic bytes into the input buffer after optionally mutating
     /// the bytes
     fn magic_byte_insert(&mut self) {
@@ -522,12 +482,8 @@ impl Mutator {
             // Pick a magic value
             let magic = MAGIC_NUMBERS[self.rand() % MAGIC_NUMBERS.len()];
 
-            // Randomly corrupt the magic number
-            let magic_bytes = if self.rand() % 2 == 0 {
-                self.mutate_magic(magic)
-            } else {
-                magic.to_ne_bytes().to_vec()
-            };
+            // Convert to vector of bytes
+            let magic_bytes = magic.to_ne_bytes().to_vec();
 
             // Insert magic bytes
             for (i, &byte) in magic_bytes.iter().enumerate() {
@@ -567,12 +523,8 @@ impl Mutator {
             // Pick a magic value
             let magic = MAGIC_NUMBERS[self.rand() % MAGIC_NUMBERS.len()];
 
-            // Randomly corrupt the magic number
-            let magic_bytes = if self.rand() % 2 == 0 {
-                self.mutate_magic(magic)
-            } else {
-                magic.to_ne_bytes().to_vec()
-            };
+            // Convert to vector of bytes
+            let magic_bytes = magic.to_ne_bytes().to_vec();
 
             // Overwrite with magic bytes
             for (i, &byte) in magic_bytes.iter().enumerate() {
@@ -737,6 +689,15 @@ impl Mutator {
                     self.splice(corpus);
                     self.last_mutation.push(MutationTypes::Splice);
                 }
+            }
+        }
+
+        // Align the input length optionally
+        if ALIGN && self.input.len() > ALIGN_LEN {
+            let align = self.rand() % 100;
+            if align < ALIGN_RATE {
+                let aligned_len = self.input.len() & !ALIGN_LEN;
+                self.input.truncate(aligned_len);
             }
         }
 
