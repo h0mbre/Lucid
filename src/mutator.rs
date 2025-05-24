@@ -23,7 +23,7 @@ use crate::corpus::Corpus;
 const ALIGN: bool = true;
 
 /// Input alignment length
-const ALIGN_LEN: usize = 8;
+const ALIGN_LEN: usize = 4;
 
 /// Input alignment frequency
 const ALIGN_RATE: usize = 95;
@@ -693,10 +693,10 @@ impl Mutator {
         }
 
         // Align the input length optionally
-        if ALIGN && self.input.len() > ALIGN_LEN {
+        if ALIGN && ALIGN_LEN > 0 && self.input.len() > ALIGN_LEN {
             let align = self.rand() % 100;
             if align < ALIGN_RATE {
-                let aligned_len = self.input.len() & !ALIGN_LEN;
+                let aligned_len = self.input.len() & !(ALIGN_LEN - 1);
                 self.input.truncate(aligned_len);
             }
         }
