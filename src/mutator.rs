@@ -56,7 +56,7 @@ const MAX_BLOCK_CORRUPTION: usize = 512;
 /// may pass through multiple rounds of mutation.
 const MAX_BIT_CORRUPTION: usize = 64;
 
-/// Hacky list of magic numbers to try and mutate and insert into random positions
+/// Hacky list of magic numbers to insert into random positions
 /// in the input buffer
 const MAGIC_NUMBERS: &[u64] = &[
     0,        // Hmmm
