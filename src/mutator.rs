@@ -145,11 +145,11 @@ pub enum MutationTypes {
 /// A structure that holds all the state for the Mutator
 #[derive(Clone, Default)]
 pub struct Mutator {
-    pub rng: usize,                         // The RNG we use for random
-    pub input: Vec<u8>,                     // Our current input buffer
-    pub max_size: usize,                    // Largest size an input can be
-    pub last_mutation: Vec<MutationTypes>,  // The last mutation round summary
-    fields: Vec<Vec<u8>>,                   // Non-structured fields of input 
+    pub rng: usize,                        // The RNG we use for random
+    pub input: Vec<u8>,                    // Our current input buffer
+    pub max_size: usize,                   // Largest size an input can be
+    pub last_mutation: Vec<MutationTypes>, // The last mutation round summary
+    fields: Vec<Vec<u8>>,                  // Non-structured fields of input
 }
 
 impl Mutator {

@@ -316,12 +316,27 @@ impl Stats {
             self.start_str
         );
 
+        // Highlight crashes and timeouts as red/yellow respectively
+        fn colorize_number(label: &str, value: usize) -> String {
+            match label {
+                "crashes" if value > 0 => format!("\x1b[1;31m{}\x1b[0m", value),
+                "timeouts" if value > 0 => format!("\x1b[1;33m{}\x1b[0m", value),
+                _ => value.to_string(),
+            }
+        }
+
         // Print all the global statistics
         let globals = [
             ("uptime".to_string(), formatted_stats.uptime),
             ("fuzzers".to_string(), formatted_stats.fuzzers.to_string()),
-            ("crashes".to_string(), formatted_stats.crashes.to_string()),
-            ("timeouts".to_string(), formatted_stats.timeouts.to_string()),
+            (
+                "crashes".to_string(),
+                colorize_number("crashes", formatted_stats.crashes),
+            ),
+            (
+                "timeouts".to_string(),
+                colorize_number("timeouts", formatted_stats.timeouts),
+            ),
         ];
         println!("{}", format_group("globals", &globals));
 

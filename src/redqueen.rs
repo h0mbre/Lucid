@@ -222,7 +222,11 @@ fn input_trace_hash(context: &mut LucidContext) -> Result<(usize, FuzzingResult)
 /// affected, it then reduces the amount of randomness and tries again until
 /// we've introduced as much randomness as possible without affecting the
 /// execution path
-fn colorize_input(context: &mut LucidContext, orig_hash: usize, idx: usize) -> Result<(), LucidErr> {
+fn colorize_input(
+    context: &mut LucidContext,
+    orig_hash: usize,
+    idx: usize,
+) -> Result<(), LucidErr> {
     // Get the field we want to colorize
     let mut colorized_field = context.mutator.get_redqueen_field(idx)?;
 
@@ -254,7 +258,7 @@ fn colorize_input(context: &mut LucidContext, orig_hash: usize, idx: usize) -> R
         old_edge_count = context.coverage.get_edge_count();
 
         // Take backup of field before we alter it
-        let backup_field = colorized_field.clone(); 
+        let backup_field = colorized_field.clone();
 
         // Replace bytes in the range with random bytes
         for byte in &mut colorized_field[range.clone()] {
@@ -262,7 +266,9 @@ fn colorize_input(context: &mut LucidContext, orig_hash: usize, idx: usize) -> R
         }
 
         // Set new field
-        context.mutator.set_redqueen_field(idx, colorized_field.clone())?;
+        context
+            .mutator
+            .set_redqueen_field(idx, colorized_field.clone())?;
 
         // Re-assemble input with new field value
         context.mutator.reassemble_redqueen_fields();
@@ -272,17 +278,15 @@ fn colorize_input(context: &mut LucidContext, orig_hash: usize, idx: usize) -> R
 
         // FuzzingResult must be None if hash is the same
         if new_hash == orig_hash && fuzzing_result != FuzzingResult::None {
-            return Err(
-                LucidErr::from(
-                    "Redqueen colorization hash was same, but FuzzingResult != None"
-                ));
+            return Err(LucidErr::from(
+                "Redqueen colorization hash was same, but FuzzingResult != None",
+            ));
         }
 
         // Hashes matched, keep coloring the field
         if new_hash == orig_hash {
             continue;
         }
-
         // Hashes didn't match
         else {
             // First try to handle any significant fuzzing results
@@ -301,9 +305,11 @@ fn colorize_input(context: &mut LucidContext, orig_hash: usize, idx: usize) -> R
 
             // Restore the original field value since execution changed
             colorized_field = backup_field;
-            
+
             // Make sure the mutator input reverts back to a known good
-            context.mutator.set_redqueen_field(idx, colorized_field.clone())?;
+            context
+                .mutator
+                .set_redqueen_field(idx, colorized_field.clone())?;
             context.mutator.reassemble_redqueen_fields();
 
             // Handle one-byte range
