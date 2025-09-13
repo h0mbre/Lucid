@@ -87,6 +87,13 @@ macro_rules! red {
 }
 
 #[macro_export]
+macro_rules! yellow {
+    () => {{
+        print!("\x1b[1;33m");
+    }};
+}
+
+#[macro_export]
 macro_rules! clear {
     () => {{
         print!("\x1b[0m");

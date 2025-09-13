@@ -180,6 +180,7 @@ People who have had a hand in the project one way or another thus far:
 - [Addison](https://x.com/addisoncrump_vr)
 - [thc](https://x.com/hackerschoice)
 - [alxndr](https://twitter.com/a1xndr22)
+- killahertz
 
 # License
 Lucid is licensed under the MIT License

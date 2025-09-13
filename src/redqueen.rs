@@ -190,21 +190,6 @@ pub extern "C" fn lucid_report_cmps(
     context.redqueen.update_operands(rip, op1, op2, op_size);
 }
 
-/// Gives pRNG functionality to Redqueen for colorization of the input
-#[inline]
-fn random(seed: &mut usize) -> usize {
-    // Save off current value
-    let curr = *seed;
-
-    // Mutate current state with xorshift for next call
-    *seed ^= *seed << 13;
-    *seed ^= *seed >> 17;
-    *seed ^= *seed << 43;
-
-    // Return saved off value
-    curr
-}
-
 /// Changes the Bochs CpuMode to TraceHash which will force Bochs to hash
 /// all of the PCs that are executed for the current input. This function is
 /// used to determine if changes to the input affect the execution paths
@@ -237,18 +222,15 @@ fn input_trace_hash(context: &mut LucidContext) -> Result<(usize, FuzzingResult)
 /// affected, it then reduces the amount of randomness and tries again until
 /// we've introduced as much randomness as possible without affecting the
 /// execution path
-fn colorize_input(context: &mut LucidContext, orig_hash: usize) -> Result<(), LucidErr> {
-    // Track our colorized input
-    let mut colorized = context.mutator.input.clone();
+fn colorize_input(context: &mut LucidContext, orig_hash: usize, idx: usize) -> Result<(), LucidErr> {
+    // Get the field we want to colorize
+    let mut colorized_field = context.mutator.get_redqueen_field(idx)?;
 
-    // Initialize ranges with the entire input range
+    // Initialize ranges with the length of the field
     let mut ranges: VecDeque<Range<usize>> = VecDeque::new();
-    ranges.push_back(0..context.mutator.input.len());
+    ranges.push_back(0..colorized_field.len());
 
-    // Get an RNG seed
-    let mut seed = unsafe { core::arch::x86_64::_rdtsc() as usize };
-
-    // Get the old edge count
+    // Get the old edge count in case we increase code coverage with colorization
     let mut old_edge_count;
 
     // Set stage to Colorization
@@ -267,32 +249,40 @@ fn colorize_input(context: &mut LucidContext, orig_hash: usize) -> Result<(), Lu
     // 5. 32..48 fails, add 32-40 and 40-48 to ranges
     // 6. 48..64 works, save this input and keep iterating on it
     // 7. Continue until there are no more ranges to try
-    loop {
-        // Make sure we a range to test
-        if ranges.is_empty() {
-            break;
-        }
-
+    while let Some(range) = ranges.pop_front() {
+        // Update old edge count
         old_edge_count = context.coverage.get_edge_count();
 
-        // Insert the colorized input
-        context.mutator.memcpy_input(&colorized);
+        // Take backup of field before we alter it
+        let backup_field = colorized_field.clone(); 
 
-        // Get the next range to test
-        let range = ranges.pop_front().unwrap();
-
-        // Replace the bytes in the range randomly
-        for byte in &mut context.mutator.input[range.clone()] {
-            *byte = random(&mut seed) as u8;
+        // Replace bytes in the range with random bytes
+        for byte in &mut colorized_field[range.clone()] {
+            *byte = context.mutator.rand() as u8;
         }
+
+        // Set new field
+        context.mutator.set_redqueen_field(idx, colorized_field.clone())?;
+
+        // Re-assemble input with new field value
+        context.mutator.reassemble_redqueen_fields();
 
         // Execute the fuzzcase
         let (new_hash, fuzzing_result) = input_trace_hash(context)?;
 
-        // If the hashes are equal, update the colorized input
-        if new_hash == orig_hash && fuzzing_result == FuzzingResult::None {
-            colorized = context.mutator.input.clone();
+        // FuzzingResult must be None if hash is the same
+        if new_hash == orig_hash && fuzzing_result != FuzzingResult::None {
+            return Err(
+                LucidErr::from(
+                    "Redqueen colorization hash was same, but FuzzingResult != None"
+                ));
         }
+
+        // Hashes matched, keep coloring the field
+        if new_hash == orig_hash {
+            continue;
+        }
+
         // Hashes didn't match
         else {
             // First try to handle any significant fuzzing results
@@ -309,8 +299,15 @@ fn colorize_input(context: &mut LucidContext, orig_hash: usize) -> Result<(), Lu
                 FuzzingResult::None => (),
             }
 
+            // Restore the original field value since execution changed
+            colorized_field = backup_field;
+            
+            // Make sure the mutator input reverts back to a known good
+            context.mutator.set_redqueen_field(idx, colorized_field.clone())?;
+            context.mutator.reassemble_redqueen_fields();
+
             // Handle one-byte range
-            if range.end - range.start <= 1 {
+            if range.len() <= 1 {
                 continue;
             }
 
@@ -327,9 +324,6 @@ fn colorize_input(context: &mut LucidContext, orig_hash: usize) -> Result<(), Lu
             }
         }
     }
-
-    // Done with the loop, make sure we set our colorized input
-    context.mutator.memcpy_input(&colorized);
 
     // Reset stage
     context.fuzzing_stage = backup_stage;
@@ -655,25 +649,25 @@ fn get_partner_encodings(encoding: Encoding, value: Operand) -> Vec<Encoding> {
     encodings
 }
 
-/// Replaces the bytes in an input with the patch value at offset
-fn patch_input(input: &[u8], offset: usize, patch: &[u8]) -> Vec<u8> {
-    let mut new_input = input.to_owned();
+/// Replaces the bytes in an field with the patch value at offset
+fn patch_field(field: &[u8], offset: usize, patch: &[u8]) -> Vec<u8> {
+    let mut new_field = field.to_owned();
 
     // Ensure we don't go out of bounds
-    let end = std::cmp::min(offset + patch.len(), new_input.len());
+    let end = std::cmp::min(offset + patch.len(), new_field.len());
 
     // Replace the bytes at the specified offset with the patch
-    new_input[offset..end].copy_from_slice(&patch[0..(end - offset)]);
+    new_field[offset..end].copy_from_slice(&patch[0..(end - offset)]);
 
-    new_input
+    new_field
 }
 
-/// Searches for a compare operand (and its encoded values) in the input,
+/// Searches for a compare operand (and its encoded values) in the field,
 /// if found, it generates the equivalent encoding value for its partner
-/// operand (and variants +1, -1) and patches the input so that it can try
+/// operand (and variants +1, -1) and patches the field so that it can try
 /// to solve the comparison
-fn process_partners(input: &[u8], k: Operand, v: Operand) -> Vec<Vec<u8>> {
-    let mut new_inputs = Vec::new();
+fn process_partners(field: &[u8], k: Operand, v: Operand) -> Vec<Vec<u8>> {
+    let mut new_fields = Vec::new();
 
     // Get all of the deduped encodings for our key value
     let k_encodings = get_encodings(k);
@@ -683,8 +677,8 @@ fn process_partners(input: &[u8], k: Operand, v: Operand) -> Vec<Vec<u8>> {
         // Get the byte representation of the encoding so we can search for it
         let bytes = enc.to_bytes();
 
-        // Find offsets in the input that have the byte pattern
-        let offsets = pattern_search(input, &bytes);
+        // Find offsets in the field that have the byte pattern
+        let offsets = pattern_search(field, &bytes);
 
         // If we don't find the pattern just continue
         if offsets.is_empty() {
@@ -694,17 +688,17 @@ fn process_partners(input: &[u8], k: Operand, v: Operand) -> Vec<Vec<u8>> {
         // If we have offsets, get encoding values for the key's partner
         let partner_encs = get_partner_encodings(enc, v);
 
-        // Patch the input
+        // Patch the field
         for offset in offsets {
             for partner_enc in &partner_encs {
                 let patch = partner_enc.to_bytes();
-                new_inputs.push(patch_input(input, offset, &patch));
+                new_fields.push(patch_field(field, offset, &patch));
             }
         }
     }
 
-    // Return new inputs
-    new_inputs
+    // Return new fields
+    new_fields
 }
 
 /// Hash an input with the default hasher
@@ -718,7 +712,7 @@ fn hash_input(input: &Vec<u8>) -> u64 {
 /// algorithm of finding operand values (and their encoded equivalents) in the
 /// input space and patching the input with its equivalent partner value to
 /// solve the comparison
-fn create_redqueen_inputs(context: &mut LucidContext) {
+fn create_redqueen_inputs(context: &mut LucidContext, idx: usize) -> Result<(), LucidErr> {
     // Remove loops from the operand map
     remove_loops(context);
 
@@ -755,16 +749,31 @@ fn create_redqueen_inputs(context: &mut LucidContext) {
         }
     }
 
+    // Grab the field we want to look through for patching opportunities
+    let search_field = context.mutator.get_redqueen_field(idx)?;
+
     // Process each partner and try to get a patchset to apply to the current
     // input
     for (k, v) in partner_map.iter() {
-        let inputs = process_partners(&context.mutator.input, *k, *v);
+        let new_fields = process_partners(&search_field, *k, *v);
+
+        // Take backup of the current input so we know the pristine fields
+        let backup_input = context.mutator.input.clone();
 
         // Store each input in the redqueen queue if we haven't tried them
         // before
-        for input in inputs {
-            // Hash input
-            let hash = hash_input(&input);
+        for new_field in new_fields {
+            // Replace original field with new field for input hashing
+            context.mutator.set_redqueen_field(idx, new_field)?;
+
+            // Re-assemble new input based on new field
+            context.mutator.reassemble_redqueen_fields();
+
+            // Get the current input
+            let input = &context.mutator.input;
+
+            // Hash the input
+            let hash = hash_input(input);
 
             // Check if hash is in our last n inputs
             if context.redqueen.hash_set.contains(&hash) {
@@ -784,9 +793,15 @@ fn create_redqueen_inputs(context: &mut LucidContext) {
             context.redqueen.hash_queue.push_back(hash);
 
             // Add input to the Redqueen test queue for testing
-            context.redqueen.test_queue.push(input);
+            context.redqueen.test_queue.push(input.to_vec());
+
+            // Reset to backup value before processing next field
+            context.mutator.memcpy_input(&backup_input);
+            context.mutator.extract_redqueen_fields();
         }
     }
+
+    Ok(())
 }
 
 /// Obtains an execution trace of the current input then colorizes the input
@@ -797,21 +812,35 @@ fn create_redqueen_inputs(context: &mut LucidContext) {
 /// algorithm to patch input operand value candidate positions with its partner
 /// value (and variants)
 pub fn redqueen_pass(context: &mut LucidContext) -> Result<(), LucidErr> {
-    // Obtain the trace hash for the current input
-    let (trace_hash, _fuzzing_result) = input_trace_hash(context)?;
+    // Take backup of original input
+    let orig_input = context.mutator.input.clone();
 
-    // Colorize the input
-    colorize_input(context, trace_hash)?;
+    // Get the ground truth trace hash
+    let (trace_hash, _) = input_trace_hash(context)?;
 
-    // Now do a Cmplog pass for the colorized input
-    cmplog_pass(context)?;
+    // Extract redqueen fields so we get a count
+    context.mutator.extract_redqueen_fields();
 
-    // Create new inputs to test
-    create_redqueen_inputs(context);
+    // Process each field
+    for idx in 0..context.mutator.num_redqueen_fields() {
+        // Seperate the input into redqueen fields
+        context.mutator.extract_redqueen_fields();
 
-    // Clear the compare operand map now that we've done our pass and added
-    // inputs to the test queue
-    context.redqueen.cmp_operand_map.clear();
+        // Colorize the input
+        colorize_input(context, trace_hash, idx)?;
+
+        // Now do a Cmplog pass for the colorized input
+        cmplog_pass(context)?;
+
+        // Create new inputs to test
+        create_redqueen_inputs(context, idx)?;
+
+        // Reset operand map
+        context.redqueen.cmp_operand_map.clear();
+
+        // Restore original input so that the field we changed is reverted
+        context.mutator.memcpy_input(&orig_input);
+    }
 
     Ok(())
 }

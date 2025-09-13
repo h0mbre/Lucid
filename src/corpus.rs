@@ -265,7 +265,7 @@ impl Corpus {
                 // Copy the input bytes over in memory only if successfully saved to disk
                 finding!(
                     self.id,
-                    "Saved {} input: {:016X} ({} bytes)",
+                    "Saved {} input '{:016X}' ({} bytes)",
                     filetype,
                     hash,
                     input.len()

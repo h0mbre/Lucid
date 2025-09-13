@@ -1198,11 +1198,13 @@ pub fn fuzz_one(context: &mut LucidContext) -> Result<FuzzingResult, LucidErr> {
         fuzzing_result = FuzzingResult::Crash;
         context.crash = 0;
     }
+
     // Check for timeout
     else if context.timeout == 1 {
         fuzzing_result = FuzzingResult::Timeout;
         context.timeout = 0;
     }
+    
     // Check for coverage increase
     else if time_func!(context, batch_coverage, context.coverage.update_coverage()) {
         fuzzing_result = FuzzingResult::NewCoverage;

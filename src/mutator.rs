@@ -18,6 +18,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use crate::corpus::Corpus;
+use crate::LucidErr;
 
 /// Input alignment enforcement
 const ALIGN: bool = true;
@@ -144,10 +145,11 @@ pub enum MutationTypes {
 /// A structure that holds all the state for the Mutator
 #[derive(Clone, Default)]
 pub struct Mutator {
-    pub rng: usize,                        // The RNG we use for random
-    pub input: Vec<u8>,                    // Our current input buffer
-    pub max_size: usize,                   // Largest size an input can be
-    pub last_mutation: Vec<MutationTypes>, // The last mutation round summary
+    pub rng: usize,                         // The RNG we use for random
+    pub input: Vec<u8>,                     // Our current input buffer
+    pub max_size: usize,                    // Largest size an input can be
+    pub last_mutation: Vec<MutationTypes>,  // The last mutation round summary
+    fields: Vec<Vec<u8>>,                   // Non-structured fields of input 
 }
 
 impl Mutator {
@@ -166,6 +168,7 @@ impl Mutator {
             input: Vec::with_capacity(max_size),
             max_size,
             last_mutation: Vec::with_capacity(MAX_STACK),
+            fields: Vec::new(),
         }
     }
 
@@ -175,9 +178,46 @@ impl Mutator {
         self.rng
     }
 
+    /// Breaks the current input into fields for Redqueen to manipulate
+    pub fn extract_redqueen_fields(&mut self) {
+        // For a dumb mutator, just put the entire input into one field
+        self.fields.clear();
+        self.fields.push(self.input.clone());
+    }
+
+    /// Reassembles fields into the input buffer
+    pub fn reassemble_redqueen_fields(&mut self) {
+        self.input.clear();
+        for f in &self.fields {
+            self.input.extend_from_slice(f);
+        }
+    }
+
+    /// Return the number of fields currently decomposed
+    pub fn num_redqueen_fields(&self) -> usize {
+        self.fields.len()
+    }
+
+    /// Getters and setters for fields
+    pub fn get_redqueen_field(&self, idx: usize) -> Result<Vec<u8>, LucidErr> {
+        self.fields
+            .get(idx)
+            .cloned()
+            .ok_or_else(|| LucidErr::from("Invalid Redqueen field index"))
+    }
+
+    pub fn set_redqueen_field(&mut self, idx: usize, field: Vec<u8>) -> Result<(), LucidErr> {
+        if idx < self.fields.len() {
+            self.fields[idx] = field;
+            Ok(())
+        } else {
+            Err(LucidErr::from("Invalid Redqueen field index"))
+        }
+    }
+
     /// Xorshift pseudo-random function based on Brandon Falk's streams
     #[inline]
-    fn rand(&mut self) -> usize {
+    pub fn rand(&mut self) -> usize {
         // Save off current value
         let curr = self.rng;
 
