@@ -14,7 +14,7 @@ mod files;
 mod loader;
 mod misc;
 mod mmu;
-mod mutator;
+mod mutators;
 mod redqueen;
 mod snapshot;
 mod stats;
@@ -114,10 +114,13 @@ fn main() {
     prompt!("Scratch RSP @ 0x{:X}", lucid_context.scratch_rsp);
 
     // Update user with Mutator details
-    prompt!("Mutator seeded with 0x{:X}", lucid_context.mutator.rng);
+    prompt!(
+        "Mutator seeded with 0x{:X}",
+        lucid_context.mutator.get_rng()
+    );
     prompt!(
         "Mutator max input size: 0x{:X}",
-        lucid_context.mutator.max_size
+        lucid_context.mutator.get_max_size()
     );
 
     // Start executing Bochs

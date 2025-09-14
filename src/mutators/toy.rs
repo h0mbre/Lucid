@@ -1,10 +1,5 @@
-//! This file contains all of the logic necessary to implement possibly the
-//! worst mutator of all time, there is no science here
-//!
-//! We get passed a corpus in Mutator, because we need access to other inputs,
-//! Corpus should implement these two methods:
-//! - num_inputs() -> Returns the number of inputs in the Corpus
-//! - get_input() -> Returns a slice view of an input in the Corpus
+//! This file contains all of the logic necessary for a toy mutator implementation.
+//! This mutator just does basic dumb mutations on a single raw byte buffer.
 //!
 //! This is inspired by: https://github.com/gamozolabs/basic_mutator, which in
 //! turn is inspired by Hongfuzz. We don't use any of the Hongfuzz derived code
@@ -17,6 +12,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+use super::{Mutator, MutatorCore};
 use crate::corpus::Corpus;
 use crate::LucidErr;
 
@@ -142,20 +138,18 @@ pub enum MutationTypes {
     Splice,
 }
 
-/// A structure that holds all the state for the Mutator
-#[derive(Clone, Default)]
-pub struct Mutator {
-    pub rng: usize,                        // The RNG we use for random
-    pub input: Vec<u8>,                    // Our current input buffer
-    pub max_size: usize,                   // Largest size an input can be
-    pub last_mutation: Vec<MutationTypes>, // The last mutation round summary
-    fields: Vec<Vec<u8>>,                  // Non-structured fields of input
+/// Toy mutator structure, everything in core is shared amongst all Mutator
+/// structures while everything outside of core is unique to that mutator
+/// implementation
+pub struct ToyMutator {
+    core: MutatorCore,
+    last_mutation: Vec<MutationTypes>,
 }
 
-impl Mutator {
+impl Mutator for ToyMutator {
     /// Generates a new Mutator instance with a random seed if one is not
     /// provided
-    pub fn new(seed: Option<usize>, max_size: usize) -> Self {
+    fn new(seed: Option<usize>, max_size: usize) -> Self {
         // If pRNG seed not provided, make our own
         let rng = if let Some(seed_val) = seed {
             seed_val
@@ -163,52 +157,55 @@ impl Mutator {
             generate_seed()
         };
 
-        Mutator {
-            rng,
-            input: Vec::with_capacity(max_size),
-            max_size,
+        ToyMutator {
+            core: MutatorCore {
+                rng,
+                input: Vec::with_capacity(max_size),
+                max_size,
+                fields: Vec::new(),
+            },
             last_mutation: Vec::with_capacity(MAX_STACK),
-            fields: Vec::new(),
         }
     }
 
     /// Picks a new random seed to use for the RNG
-    pub fn reseed(&mut self) -> usize {
-        self.rng = generate_seed();
-        self.rng
+    fn reseed(&mut self) -> usize {
+        self.core.rng = generate_seed();
+        self.core.rng
     }
 
     /// Breaks the current input into fields for Redqueen to manipulate
-    pub fn extract_redqueen_fields(&mut self) {
+    fn extract_redqueen_fields(&mut self) {
         // For a dumb mutator, just put the entire input into one field
-        self.fields.clear();
-        self.fields.push(self.input.clone());
+        self.core.fields.clear();
+        self.core.fields.push(self.core.get_input());
     }
 
     /// Reassembles fields into the input buffer
-    pub fn reassemble_redqueen_fields(&mut self) {
-        self.input.clear();
-        for f in &self.fields {
-            self.input.extend_from_slice(f);
+    fn reassemble_redqueen_fields(&mut self) {
+        self.core.input.clear();
+        for f in &self.core.fields {
+            self.core.input.extend_from_slice(f);
         }
     }
 
     /// Return the number of fields currently decomposed
-    pub fn num_redqueen_fields(&self) -> usize {
-        self.fields.len()
+    fn num_redqueen_fields(&self) -> usize {
+        self.core.fields.len()
     }
 
     /// Getters and setters for fields
-    pub fn get_redqueen_field(&self, idx: usize) -> Result<Vec<u8>, LucidErr> {
-        self.fields
+    fn get_redqueen_field(&self, idx: usize) -> Result<Vec<u8>, LucidErr> {
+        self.core
+            .fields
             .get(idx)
             .cloned()
             .ok_or_else(|| LucidErr::from("Invalid Redqueen field index"))
     }
 
-    pub fn set_redqueen_field(&mut self, idx: usize, field: Vec<u8>) -> Result<(), LucidErr> {
-        if idx < self.fields.len() {
-            self.fields[idx] = field;
+    fn set_redqueen_field(&mut self, idx: usize, field: Vec<u8>) -> Result<(), LucidErr> {
+        if idx < self.core.fields.len() {
+            self.core.fields[idx] = field;
             Ok(())
         } else {
             Err(LucidErr::from("Invalid Redqueen field index"))
@@ -217,416 +214,17 @@ impl Mutator {
 
     /// Xorshift pseudo-random function based on Brandon Falk's streams
     #[inline]
-    pub fn rand(&mut self) -> usize {
+    fn rand(&mut self) -> usize {
         // Save off current value
-        let curr = self.rng;
+        let curr = self.core.rng;
 
         // Mutate current state with xorshift for next call
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 17;
-        self.rng ^= self.rng << 43;
+        self.core.rng ^= self.core.rng << 13;
+        self.core.rng ^= self.core.rng >> 17;
+        self.core.rng ^= self.core.rng << 43;
 
         // Return saved off value
         curr
-    }
-
-    /// Insert bytes into the input randomly
-    fn byte_insert(&mut self) {
-        // Defaults to global max, but can be hand tuned
-        const MAX_INSERTS: usize = MAX_BYTE_CORRUPTION;
-
-        // Determine the slack space we have
-        let slack = self.max_size - self.input.len();
-
-        // If we don't have any slack, return
-        if slack == 0 {
-            return;
-        }
-
-        // Determine the ceiling
-        let ceiling = std::cmp::min(slack, MAX_INSERTS);
-
-        // Pick number of bytes to insert, at least 1
-        let insert_num = (self.rand() % ceiling) + 1;
-
-        // Iterate through and apply insertions, duplicate idxs is ok
-        for _ in 0..insert_num {
-            // Pick an index
-            let curr_idx = self.rand() % self.input.len();
-
-            // Pick a byte to insert
-            let byte = (self.rand() % 256) as u8;
-
-            // Insert it
-            self.input.insert(curr_idx, byte);
-        }
-    }
-
-    /// Overwrite bytes in the input randomly
-    fn byte_overwrite(&mut self) {
-        // Defaults to global max, but can be hand tuned
-        const MAX_OVERWRITES: usize = MAX_BYTE_CORRUPTION;
-
-        // Determine how many bytes we can overwrite
-        let ceiling = std::cmp::min(self.input.len(), MAX_OVERWRITES);
-
-        // Pick a number of bytes to overwrite
-        let overwrite_num = (self.rand() % ceiling) + 1;
-
-        // Iterate through and apply overwrites
-        for _ in 0..overwrite_num {
-            // Pick an index
-            let curr_idx = self.rand() % self.input.len();
-
-            // Pick a byte to overwrite with
-            let byte = (self.rand() % 256) as u8;
-
-            // Overwrite it
-            self.input[curr_idx] = byte;
-        }
-    }
-
-    /// Delete bytes in the input randomly
-    fn byte_delete(&mut self) {
-        // Defaults to global max, but can be hand tuned
-        const MAX_DELETES: usize = MAX_BYTE_CORRUPTION;
-
-        // Determine how many bytes we can delete
-        let ceiling = std::cmp::min(self.input.len() - 1, MAX_DELETES);
-
-        // If the ceiling is 0, return
-        if ceiling == 0 {
-            return;
-        }
-
-        // Pick a number of bytes to delete
-        let delete_num = (self.rand() % ceiling) + 1;
-
-        // Iterate through and apply the deletes
-        for _ in 0..delete_num {
-            // Pick an index
-            let curr_idx = self.rand() % self.input.len();
-
-            // Remove it
-            self.input.remove(curr_idx);
-        }
-    }
-
-    /// Grabs a block from the input, and insert it randomly somewhere else
-    fn block_insert(&mut self) {
-        // Defaults to global max, but can be hand tuned
-        const MAX_BLOCK_SIZE: usize = MAX_BLOCK_CORRUPTION;
-        let mut block = [0u8; MAX_BLOCK_SIZE];
-
-        // Determine the slack space in the input we have since we're growing
-        let slack = self.max_size - self.input.len();
-
-        // If we don't have any slack, return
-        if slack == 0 {
-            return;
-        }
-
-        // Determine a ceiling
-        let mut ceiling = std::cmp::min(slack, MAX_BLOCK_SIZE);
-
-        // If the ceiling is larger than the input, adjust it
-        if ceiling > self.input.len() {
-            ceiling = self.input.len();
-        }
-
-        // Determine a block size
-        let block_size = (self.rand() % ceiling) + 1;
-
-        // Determine the end range we can start from for the block
-        let max_start = self.input.len() - block_size;
-
-        // Determine where to start reading the block
-        let block_start = self.rand() % (max_start + 1);
-
-        // Copy the block into the block array
-        block[..block_size].copy_from_slice(&self.input[block_start..block_start + block_size]);
-
-        // Determine where to insert the block
-        let block_insert = self.rand() % self.input.len();
-
-        // Use insert calls (slow, but readable and who cares?)
-        for (i, &byte) in block[..block_size].iter().enumerate() {
-            self.input.insert(block_insert + i, byte);
-        }
-    }
-
-    /// Grabs a block from the input and copy it over to another location
-    fn block_overwrite(&mut self) {
-        // Defaults to global max, but can be hand tuned
-        const MAX_BLOCK_SIZE: usize = MAX_BLOCK_CORRUPTION;
-        let mut block = [0u8; MAX_BLOCK_SIZE];
-
-        // Determine a ceiling of block size
-        let ceiling = std::cmp::min(self.input.len(), MAX_BLOCK_SIZE);
-
-        // Pick a block size
-        let block_size = (self.rand() % ceiling) + 1;
-
-        // Determine the end range we can start from for the block reading, but
-        // also this is the block writing start as well
-        let max_start = self.input.len() - block_size;
-
-        // Determine where to start reading the block
-        let block_start = self.rand() % (max_start + 1);
-
-        // Copy the block into the block array
-        block[..block_size].copy_from_slice(&self.input[block_start..block_start + block_size]);
-
-        // Determine where to start overwriting
-        let overwrite_start = self.rand() % (max_start + 1);
-
-        // Overwrite those bytes
-        self.input[overwrite_start..overwrite_start + block_size]
-            .copy_from_slice(&block[..block_size]);
-    }
-
-    /// Removes a random block from the input buffer
-    fn block_delete(&mut self) {
-        // Defaults to global max, but can be hand tuned
-        const MAX_BLOCK_SIZE: usize = MAX_BLOCK_CORRUPTION;
-
-        // Determine how much we can delete
-        let ceiling = std::cmp::min(self.input.len() - 1, MAX_BLOCK_SIZE);
-
-        // If we have a ceiling of 0, just return
-        if ceiling == 0 {
-            return;
-        }
-
-        // Pick a block size for deletion
-        let block_size = (self.rand() % ceiling) + 1;
-
-        // Determine the end range to start deleting from
-        let max_start = self.input.len() - block_size;
-
-        // Pick a place to start deleting from
-        let block_start = self.rand() % (max_start + 1);
-
-        // Delete that block
-        self.input.drain(block_start..block_start + block_size);
-    }
-
-    /// Generates a random input from scratch, not likely to be a great strategy
-    fn generate_random_input(&mut self) {
-        // Pick a size for the input
-        let input_size = (self.rand() % self.max_size) + 1;
-
-        // Re-size the input vector
-        self.input.resize(input_size, 0);
-
-        // Fill in the data randomly
-        for i in 0..input_size {
-            self.input[i] = (self.rand() % 256) as u8;
-        }
-    }
-
-    /// Randomly flips bits in the input buffer
-    fn bit_flip(&mut self) {
-        // Determine the number of bits in the input
-        let num_bits = self.input.len() * 8;
-
-        // Determine the ceiling of what we can flip
-        let ceiling = std::cmp::min(num_bits, MAX_BIT_CORRUPTION);
-
-        // Determine the number of bits to flip (at least 1)
-        let num_flips = (self.rand() % ceiling) + 1;
-
-        // Go through and flip bits
-        for _ in 0..num_flips {
-            // Choose a random bit to flip
-            let bit_position = self.rand() % num_bits;
-
-            // Calculate which byte this bit is in
-            let byte_index = bit_position / 8;
-
-            // Calculate which bit within the byte to flip
-            let bit_index = bit_position % 8;
-
-            // Flip the bit
-            self.input[byte_index] ^= 1 << bit_index;
-        }
-    }
-
-    /// Inserts a random byte block into the input buffer
-    fn grow(&mut self) {
-        // Determine maximum size to grow
-        let slack = self.max_size - self.input.len();
-        if slack == 0 {
-            return;
-        }
-
-        // Pick size of block
-        let size = (self.rand() % slack) + 1;
-
-        // Pick an index to add to
-        let idx = self.rand() % self.input.len();
-
-        // Pick byte to place in there
-        let byte = (self.rand() % 256) as u8;
-
-        // Insert there
-        for _ in 0..size {
-            self.input.insert(idx, byte);
-        }
-    }
-
-    /// Truncates the input a random amount of bytes but always leaves at least
-    /// one byte
-    fn truncate(&mut self) {
-        // Determine how much we can shrink
-        let slack = self.input.len() - 1;
-        if slack == 0 {
-            return;
-        }
-
-        // Pick an index to truncate at, can't be zero
-        let idx = (self.rand() % slack) + 1;
-
-        // Truncate
-        self.input.truncate(idx);
-    }
-
-    /// Inserts magic bytes into the input buffer after optionally mutating
-    /// the bytes
-    fn magic_byte_insert(&mut self) {
-        // Defaults to global max, but can be hand tuned
-        const MAX_INSERTS: usize = MAX_BYTE_CORRUPTION;
-
-        // Determine the slack space we have
-        let slack = self.max_size - self.input.len();
-
-        // If we don't have any slack space, return
-        if slack == 0 {
-            return;
-        }
-
-        // Determine the ceiling
-        let ceiling = std::cmp::min(slack, MAX_INSERTS);
-
-        // Pick number of bytes to insert, at least 1
-        let insert_num = (self.rand() % ceiling) + 1;
-
-        // Divide that by 8 to determine how many u64s will fit
-        let num_u64 = insert_num / 8;
-
-        // Insert up to num_u64 u64 values, likely much smaller
-        for _ in 0..num_u64 {
-            // Pick an index to insert at
-            let idx = self.rand() % self.input.len();
-
-            // Pick a magic value
-            let magic = MAGIC_NUMBERS[self.rand() % MAGIC_NUMBERS.len()];
-
-            // Convert to vector of bytes
-            let magic_bytes = magic.to_ne_bytes().to_vec();
-
-            // Insert magic bytes
-            for (i, &byte) in magic_bytes.iter().enumerate() {
-                self.input.insert(idx + i, byte);
-            }
-        }
-    }
-
-    /// Overwrites randomly selected input buffer data with magic bytes that are
-    /// optionally mutated
-    fn magic_byte_overwrite(&mut self) {
-        // If the input isn't at least 8 bytes, just NOP
-        if self.input.len() < 8 {
-            return;
-        }
-
-        // Defaults to global max, but can be hand tuned
-        const MAX_OVERWRITES: usize = MAX_BYTE_CORRUPTION;
-
-        // Determine how many bytes we can overwrite
-        let ceiling = std::cmp::min(self.input.len(), MAX_OVERWRITES);
-
-        // Pick a number of bytes to overwrite
-        let overwrite_num = (self.rand() % ceiling) + 1;
-
-        // Divide that number by 8 to determine how many u64s will fit
-        let num_u64 = overwrite_num / 8;
-
-        // Make sure we don't go out of bounds
-        let max_overwrite = self.input.len() - 8;
-
-        // Overwrite up to num_u64 u64 values
-        for _ in 0..num_u64 {
-            // Pick an index to overwrite at
-            let idx = self.rand() % (max_overwrite + 1);
-
-            // Pick a magic value
-            let magic = MAGIC_NUMBERS[self.rand() % MAGIC_NUMBERS.len()];
-
-            // Convert to vector of bytes
-            let magic_bytes = magic.to_ne_bytes().to_vec();
-
-            // Overwrite with magic bytes
-            for (i, &byte) in magic_bytes.iter().enumerate() {
-                self.input[idx + i] = byte;
-            }
-        }
-    }
-
-    /// Splices two inputs together if possible, this strategy depends on
-    /// having access to the corpus in order to select a 2nd input
-    fn splice(&mut self, corpus: &Corpus) {
-        // Take a block of the current input
-        let old_block_start = self.rand() % self.input.len();
-
-        // Pick a length for the block
-        let old_block_len = self.rand() % (self.input.len() - old_block_start) + 1;
-
-        // Pick a new input index
-        let new_idx = self.rand() % corpus.num_inputs();
-
-        // Get reference to new input
-        let Some(new_input) = corpus.get_input(new_idx) else {
-            return; // No inputs in corpus?
-        };
-
-        // Determine the slack space left
-        let slack = self.max_size - old_block_len;
-
-        // If there's no slack, we can return early
-        if slack == 0 {
-            return;
-        }
-
-        // Pick a place in the new input to read a block from
-        let new_block_start = self.rand() % new_input.len();
-
-        // Pick a length ceiling of the new block, guaranteed to be at least 1
-        let new_ceiling = std::cmp::min(new_input.len() - new_block_start, slack);
-
-        // Pick a length
-        let new_block_len = (self.rand() % new_ceiling) + 1;
-
-        // Determine total length we'll have
-        let total_len = old_block_len + new_block_len;
-
-        // Adjust input buffer if necessary
-        if total_len > self.input.len() {
-            self.input.resize(total_len, 0);
-        }
-
-        // Copy with memmove because of overlap potential
-        self.input
-            .copy_within(old_block_start..old_block_start + old_block_len, 0);
-
-        // Then, copy the new block right after the old block
-        let new_block = &new_input[new_block_start..new_block_start + new_block_len];
-        self.input[old_block_len..total_len].copy_from_slice(new_block);
-
-        // Adjust input buffer length if necessary
-        if total_len < self.input.len() {
-            self.input.truncate(total_len);
-        }
     }
 
     /// The main mutation function which will:
@@ -634,9 +232,9 @@ impl Mutator {
     /// 2. Randomly select an input from the corpus or generate one from scratch
     /// 3. Select the number of mutation rounds (stack)
     /// 4. Randomly select mutation strategies and apply them for n rounds
-    pub fn mutate_input(&mut self, corpus: &Corpus) {
+    fn mutate(&mut self, corpus: &Corpus) {
         // Clear current input
-        self.input.clear();
+        self.core.input.clear();
         self.last_mutation.clear();
 
         // Get the number of inputs to choose from
@@ -658,7 +256,7 @@ impl Mutator {
         let chosen = corpus.get_input(idx).unwrap();
 
         // Copy the input over
-        self.input.extend_from_slice(chosen);
+        self.core.input.extend_from_slice(chosen);
 
         // We have an input, pick a number of rounds of mutation
         let rounds = (self.rand() % MAX_STACK) + 1;
@@ -733,26 +331,457 @@ impl Mutator {
         }
 
         // Align the input length optionally
-        if ALIGN && ALIGN_LEN > 0 && self.input.len() > ALIGN_LEN {
+        if ALIGN && ALIGN_LEN > 0 && self.input_len() > ALIGN_LEN {
             let align = self.rand() % 100;
             if align < ALIGN_RATE {
-                let aligned_len = self.input.len() & !(ALIGN_LEN - 1);
-                self.input.truncate(aligned_len);
+                let aligned_len = self.input_len() & !(ALIGN_LEN - 1);
+                self.core.input.truncate(aligned_len);
             }
         }
 
         // This isn't prod
-        assert!(!self.input.is_empty());
-        assert!(self.input.len() <= self.max_size);
+        assert!(!self.core.input.is_empty());
+        assert!(self.input_len() <= self.core.max_size);
     }
 
-    /// Clears the current mutator input buffer and copies a passed in slice
-    /// into the input buffer
-    pub fn memcpy_input(&mut self, slice: &[u8]) {
-        // Clear the current input
-        self.input.clear();
+    // Clears the current mutator input buffer and copies a passed in slice
+    // into the input buffer
+    fn copy_input(&mut self, slice: &[u8]) {
+        self.core.copy_input(slice);
+    }
 
-        // Copy the passed in buffer
-        self.input.extend_from_slice(slice);
+    // Get a read-only reference to current input buffer
+    fn get_input_ref(&self) -> &Vec<u8> {
+        self.core.get_input_ref()
+    }
+
+    // Get owned copy of current input buffer
+    fn get_input(&self) -> Vec<u8> {
+        self.core.get_input()
+    }
+
+    // Returns input length
+    fn input_len(&self) -> usize {
+        self.core.input_len()
+    }
+
+    // Returns input as a pointer
+    fn input_ptr(&self) -> *const u8 {
+        self.core.input_ptr()
+    }
+
+    // Return rng
+    fn get_rng(&self) -> usize {
+        self.core.get_rng()
+    }
+
+    // Return max_size
+    fn get_max_size(&self) -> usize {
+        self.core.get_max_size()
+    }
+}
+
+/// Implementation of all the mutation methods that are unique to this mutator
+impl ToyMutator {
+    /// Insert bytes into the input randomly
+    fn byte_insert(&mut self) {
+        // Defaults to global max, but can be hand tuned
+        const MAX_INSERTS: usize = MAX_BYTE_CORRUPTION;
+
+        // Determine the slack space we have
+        let slack = self.core.max_size - self.input_len();
+
+        // If we don't have any slack, return
+        if slack == 0 {
+            return;
+        }
+
+        // Determine the ceiling
+        let ceiling = std::cmp::min(slack, MAX_INSERTS);
+
+        // Pick number of bytes to insert, at least 1
+        let insert_num = (self.rand() % ceiling) + 1;
+
+        // Iterate through and apply insertions, duplicate idxs is ok
+        for _ in 0..insert_num {
+            // Pick an index
+            let curr_idx = self.rand() % self.input_len();
+
+            // Pick a byte to insert
+            let byte = (self.rand() % 256) as u8;
+
+            // Insert it
+            self.core.input.insert(curr_idx, byte);
+        }
+    }
+
+    /// Overwrite bytes in the input randomly
+    fn byte_overwrite(&mut self) {
+        // Defaults to global max, but can be hand tuned
+        const MAX_OVERWRITES: usize = MAX_BYTE_CORRUPTION;
+
+        // Determine how many bytes we can overwrite
+        let ceiling = std::cmp::min(self.input_len(), MAX_OVERWRITES);
+
+        // Pick a number of bytes to overwrite
+        let overwrite_num = (self.rand() % ceiling) + 1;
+
+        // Iterate through and apply overwrites
+        for _ in 0..overwrite_num {
+            // Pick an index
+            let curr_idx = self.rand() % self.input_len();
+
+            // Pick a byte to overwrite with
+            let byte = (self.rand() % 256) as u8;
+
+            // Overwrite it
+            self.core.input[curr_idx] = byte;
+        }
+    }
+
+    /// Delete bytes in the input randomly
+    fn byte_delete(&mut self) {
+        // Defaults to global max, but can be hand tuned
+        const MAX_DELETES: usize = MAX_BYTE_CORRUPTION;
+
+        // Determine how many bytes we can delete
+        let ceiling = std::cmp::min(self.input_len() - 1, MAX_DELETES);
+
+        // If the ceiling is 0, return
+        if ceiling == 0 {
+            return;
+        }
+
+        // Pick a number of bytes to delete
+        let delete_num = (self.rand() % ceiling) + 1;
+
+        // Iterate through and apply the deletes
+        for _ in 0..delete_num {
+            // Pick an index
+            let curr_idx = self.rand() % self.input_len();
+
+            // Remove it
+            self.core.input.remove(curr_idx);
+        }
+    }
+
+    /// Grabs a block from the input, and insert it randomly somewhere else
+    fn block_insert(&mut self) {
+        // Defaults to global max, but can be hand tuned
+        const MAX_BLOCK_SIZE: usize = MAX_BLOCK_CORRUPTION;
+        let mut block = [0u8; MAX_BLOCK_SIZE];
+
+        // Determine the slack space in the input we have since we're growing
+        let slack = self.core.max_size - self.input_len();
+
+        // If we don't have any slack, return
+        if slack == 0 {
+            return;
+        }
+
+        // Determine a ceiling
+        let mut ceiling = std::cmp::min(slack, MAX_BLOCK_SIZE);
+
+        // If the ceiling is larger than the input, adjust it
+        if ceiling > self.input_len() {
+            ceiling = self.input_len();
+        }
+
+        // Determine a block size
+        let block_size = (self.rand() % ceiling) + 1;
+
+        // Determine the end range we can start from for the block
+        let max_start = self.input_len() - block_size;
+
+        // Determine where to start reading the block
+        let block_start = self.rand() % (max_start + 1);
+
+        // Copy the block into the block array
+        block[..block_size]
+            .copy_from_slice(&self.core.input[block_start..block_start + block_size]);
+
+        // Determine where to insert the block
+        let block_insert = self.rand() % self.input_len();
+
+        // Use insert calls (slow, but readable and who cares?)
+        for (i, &byte) in block[..block_size].iter().enumerate() {
+            self.core.input.insert(block_insert + i, byte);
+        }
+    }
+
+    /// Grabs a block from the input and copy it over to another location
+    fn block_overwrite(&mut self) {
+        // Defaults to global max, but can be hand tuned
+        const MAX_BLOCK_SIZE: usize = MAX_BLOCK_CORRUPTION;
+        let mut block = [0u8; MAX_BLOCK_SIZE];
+
+        // Determine a ceiling of block size
+        let ceiling = std::cmp::min(self.input_len(), MAX_BLOCK_SIZE);
+
+        // Pick a block size
+        let block_size = (self.rand() % ceiling) + 1;
+
+        // Determine the end range we can start from for the block reading, but
+        // also this is the block writing start as well
+        let max_start = self.input_len() - block_size;
+
+        // Determine where to start reading the block
+        let block_start = self.rand() % (max_start + 1);
+
+        // Copy the block into the block array
+        block[..block_size]
+            .copy_from_slice(&self.core.input[block_start..block_start + block_size]);
+
+        // Determine where to start overwriting
+        let overwrite_start = self.rand() % (max_start + 1);
+
+        // Overwrite those bytes
+        self.core.input[overwrite_start..overwrite_start + block_size]
+            .copy_from_slice(&block[..block_size]);
+    }
+
+    /// Removes a random block from the input buffer
+    fn block_delete(&mut self) {
+        // Defaults to global max, but can be hand tuned
+        const MAX_BLOCK_SIZE: usize = MAX_BLOCK_CORRUPTION;
+
+        // Determine how much we can delete
+        let ceiling = std::cmp::min(self.input_len() - 1, MAX_BLOCK_SIZE);
+
+        // If we have a ceiling of 0, just return
+        if ceiling == 0 {
+            return;
+        }
+
+        // Pick a block size for deletion
+        let block_size = (self.rand() % ceiling) + 1;
+
+        // Determine the end range to start deleting from
+        let max_start = self.input_len() - block_size;
+
+        // Pick a place to start deleting from
+        let block_start = self.rand() % (max_start + 1);
+
+        // Delete that block
+        self.core.input.drain(block_start..block_start + block_size);
+    }
+
+    /// Generates a random input from scratch, not likely to be a great strategy
+    fn generate_random_input(&mut self) {
+        // Pick a size for the input
+        let input_size = (self.rand() % self.core.max_size) + 1;
+
+        // Re-size the input vector
+        self.core.input.resize(input_size, 0);
+
+        // Fill in the data randomly
+        for i in 0..input_size {
+            self.core.input[i] = (self.rand() % 256) as u8;
+        }
+    }
+
+    /// Randomly flips bits in the input buffer
+    fn bit_flip(&mut self) {
+        // Determine the number of bits in the input
+        let num_bits = self.input_len() * 8;
+
+        // Determine the ceiling of what we can flip
+        let ceiling = std::cmp::min(num_bits, MAX_BIT_CORRUPTION);
+
+        // Determine the number of bits to flip (at least 1)
+        let num_flips = (self.rand() % ceiling) + 1;
+
+        // Go through and flip bits
+        for _ in 0..num_flips {
+            // Choose a random bit to flip
+            let bit_position = self.rand() % num_bits;
+
+            // Calculate which byte this bit is in
+            let byte_index = bit_position / 8;
+
+            // Calculate which bit within the byte to flip
+            let bit_index = bit_position % 8;
+
+            // Flip the bit
+            self.core.input[byte_index] ^= 1 << bit_index;
+        }
+    }
+
+    /// Inserts a random byte block into the input buffer
+    fn grow(&mut self) {
+        // Determine maximum size to grow
+        let slack = self.core.max_size - self.input_len();
+        if slack == 0 {
+            return;
+        }
+
+        // Pick size of block
+        let size = (self.rand() % slack) + 1;
+
+        // Pick an index to add to
+        let idx = self.rand() % self.input_len();
+
+        // Pick byte to place in there
+        let byte = (self.rand() % 256) as u8;
+
+        // Insert there
+        for _ in 0..size {
+            self.core.input.insert(idx, byte);
+        }
+    }
+
+    /// Truncates the input a random amount of bytes but always leaves at least
+    /// one byte
+    fn truncate(&mut self) {
+        // Determine how much we can shrink
+        let slack = self.input_len() - 1;
+        if slack == 0 {
+            return;
+        }
+
+        // Pick an index to truncate at, can't be zero
+        let idx = (self.rand() % slack) + 1;
+
+        // Truncate
+        self.core.input.truncate(idx);
+    }
+
+    /// Inserts magic bytes into the input buffer after optionally mutating
+    /// the bytes
+    fn magic_byte_insert(&mut self) {
+        // Defaults to global max, but can be hand tuned
+        const MAX_INSERTS: usize = MAX_BYTE_CORRUPTION;
+
+        // Determine the slack space we have
+        let slack = self.core.max_size - self.input_len();
+
+        // If we don't have any slack space, return
+        if slack == 0 {
+            return;
+        }
+
+        // Determine the ceiling
+        let ceiling = std::cmp::min(slack, MAX_INSERTS);
+
+        // Pick number of bytes to insert, at least 1
+        let insert_num = (self.rand() % ceiling) + 1;
+
+        // Divide that by 8 to determine how many u64s will fit
+        let num_u64 = insert_num / 8;
+
+        // Insert up to num_u64 u64 values, likely much smaller
+        for _ in 0..num_u64 {
+            // Pick an index to insert at
+            let idx = self.rand() % self.input_len();
+
+            // Pick a magic value
+            let magic = MAGIC_NUMBERS[self.rand() % MAGIC_NUMBERS.len()];
+
+            // Convert to vector of bytes
+            let magic_bytes = magic.to_ne_bytes().to_vec();
+
+            // Insert magic bytes
+            for (i, &byte) in magic_bytes.iter().enumerate() {
+                self.core.input.insert(idx + i, byte);
+            }
+        }
+    }
+
+    /// Overwrites randomly selected input buffer data with magic bytes that are
+    /// optionally mutated
+    fn magic_byte_overwrite(&mut self) {
+        // If the input isn't at least 8 bytes, just NOP
+        if self.input_len() < 8 {
+            return;
+        }
+
+        // Defaults to global max, but can be hand tuned
+        const MAX_OVERWRITES: usize = MAX_BYTE_CORRUPTION;
+
+        // Determine how many bytes we can overwrite
+        let ceiling = std::cmp::min(self.input_len(), MAX_OVERWRITES);
+
+        // Pick a number of bytes to overwrite
+        let overwrite_num = (self.rand() % ceiling) + 1;
+
+        // Divide that number by 8 to determine how many u64s will fit
+        let num_u64 = overwrite_num / 8;
+
+        // Make sure we don't go out of bounds
+        let max_overwrite = self.input_len() - 8;
+
+        // Overwrite up to num_u64 u64 values
+        for _ in 0..num_u64 {
+            // Pick an index to overwrite at
+            let idx = self.rand() % (max_overwrite + 1);
+
+            // Pick a magic value
+            let magic = MAGIC_NUMBERS[self.rand() % MAGIC_NUMBERS.len()];
+
+            // Convert to vector of bytes
+            let magic_bytes = magic.to_ne_bytes().to_vec();
+
+            // Overwrite with magic bytes
+            for (i, &byte) in magic_bytes.iter().enumerate() {
+                self.core.input[idx + i] = byte;
+            }
+        }
+    }
+
+    /// Splices two inputs together if possible, this strategy depends on
+    /// having access to the corpus in order to select a 2nd input
+    fn splice(&mut self, corpus: &Corpus) {
+        // Take a block of the current input
+        let old_block_start = self.rand() % self.input_len();
+
+        // Pick a length for the block
+        let old_block_len = self.rand() % (self.input_len() - old_block_start) + 1;
+
+        // Pick a new input index
+        let new_idx = self.rand() % corpus.num_inputs();
+
+        // Get reference to new input
+        let Some(new_input) = corpus.get_input(new_idx) else {
+            return; // No inputs in corpus?
+        };
+
+        // Determine the slack space left
+        let slack = self.core.max_size - old_block_len;
+
+        // If there's no slack, we can return early
+        if slack == 0 {
+            return;
+        }
+
+        // Pick a place in the new input to read a block from
+        let new_block_start = self.rand() % new_input.len();
+
+        // Pick a length ceiling of the new block, guaranteed to be at least 1
+        let new_ceiling = std::cmp::min(new_input.len() - new_block_start, slack);
+
+        // Pick a length
+        let new_block_len = (self.rand() % new_ceiling) + 1;
+
+        // Determine total length we'll have
+        let total_len = old_block_len + new_block_len;
+
+        // Adjust input buffer if necessary
+        if total_len > self.input_len() {
+            self.core.input.resize(total_len, 0);
+        }
+
+        // Copy with memmove because of overlap potential
+        self.core
+            .input
+            .copy_within(old_block_start..old_block_start + old_block_len, 0);
+
+        // Then, copy the new block right after the old block
+        let new_block = &new_input[new_block_start..new_block_start + new_block_len];
+        self.core.input[old_block_len..total_len].copy_from_slice(new_block);
+
+        // Adjust input buffer length if necessary
+        if total_len < self.input_len() {
+            self.core.input.truncate(total_len);
+        }
     }
 }

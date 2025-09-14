@@ -18,7 +18,7 @@ use crate::loader::Bochs;
 use crate::misc::PAGE_SIZE;
 use crate::misc::{fxrstor64, fxsave64, get_xcr0, xrstor64, xsave64};
 use crate::mmu::Mmu;
-use crate::mutator::Mutator;
+use crate::mutators::{create_mutator, Mutator};
 use crate::redqueen::{lucid_report_cmps, redqueen_pass, Redqueen};
 use crate::snapshot::{restore_snapshot, take_snapshot, Snapshot};
 use crate::stats::{CorpusStats, SnapshotStats, Stats};
@@ -234,7 +234,6 @@ pub enum ExecArch {
 /// of members don't require any changes elsewhere besides the LucidContext
 /// definition on the C Musl side. The opaque members have flexible ordering.
 #[repr(C)]
-#[derive(Clone)]
 pub struct LucidContext {
     // These cannot change order, context_switch depends on them *OR* there are
     // hardcoded checks in dl_start.c for Musl for offsets that would need to be
@@ -285,7 +284,7 @@ pub struct LucidContext {
     pub coverage: CoverageMap,  // The coverage map
     pub input_size_addr: usize, // The memory address of the input size variable
     pub input_buf_addr: usize,  // The memory address of the input buf variable
-    pub mutator: Mutator,       // Mutator we're using
+    pub mutator: Box<dyn Mutator>, // Mutator we're using
     pub redqueen: Redqueen,     // Redqueen state
     pub config: Config,         // Configuration based on user options
     pub corpus: Corpus,         // Inputs
@@ -502,8 +501,11 @@ impl LucidContext {
         let coverage_map_addr = coverage.addr();
         let coverage_map_size = coverage.curr_map.len();
 
-        // Create mutator
-        let mutator = Mutator::new(config.mutator_seed, config.input_max_size);
+        // Get mutator name
+        let mutator_name = &config.mutator;
+
+        // Try to create mutator
+        let mutator = create_mutator(mutator_name, config.mutator_seed, config.input_max_size)?;
 
         // Determine execution architecture
         let exec_arch = if config.num_fuzzers == 1 {
@@ -1033,14 +1035,14 @@ fn generate_input(context: &mut LucidContext) {
     // First try to get an entry in the Redqueen queue
     if let Some(input) = context.redqueen.test_queue.pop() {
         // Memcpy the input into the mutator's buffer
-        context.mutator.memcpy_input(&input);
+        context.mutator.copy_input(&input);
 
         // Update the fuzzing stage
         context.fuzzing_stage = FuzzingStage::Redqueen;
     }
     // If it was empty, have the mutator create a new input
     else {
-        context.mutator.mutate_input(&context.corpus);
+        context.mutator.mutate(&context.corpus);
 
         // Update the fuzzing stage
         context.fuzzing_stage = FuzzingStage::Fuzzing;
@@ -1054,15 +1056,15 @@ pub fn insert_fuzzcase(context: &mut LucidContext) {
     // Update the size
     unsafe {
         let size_ptr = context.input_size_addr as *mut u64;
-        core::ptr::write(size_ptr, context.mutator.input.len() as u64);
+        core::ptr::write(size_ptr, context.mutator.input_len() as u64);
     }
 
     // Insert the fuzzing input
     unsafe {
         core::ptr::copy_nonoverlapping(
-            context.mutator.input.as_ptr(),
+            context.mutator.input_ptr(),
             context.input_buf_addr as *mut u8,
-            context.mutator.input.len(),
+            context.mutator.input_len(),
         );
     }
 }
@@ -1087,7 +1089,9 @@ pub fn run_fuzzcase(context: &mut LucidContext) -> Result<(), LucidErr> {
 /// new code. As of now, crashes are not saved into the corpus for re-running
 pub fn handle_crash(context: &mut LucidContext) {
     // Save crash
-    context.corpus.save_crash(&context.mutator.input, "crash");
+    context
+        .corpus
+        .save_crash(context.mutator.get_input_ref(), "crash");
 
     // Update coverage
     context.coverage.update_coverage();
@@ -1103,7 +1107,9 @@ pub fn handle_crash(context: &mut LucidContext) {
 /// any new code. As of now, timeouts are not saved into the corpus for re-running
 pub fn handle_timeout(context: &mut LucidContext) {
     // Save timeout
-    context.corpus.save_crash(&context.mutator.input, "timeout");
+    context
+        .corpus
+        .save_crash(context.mutator.get_input_ref(), "timeout");
 
     // Update coverage
     context.coverage.update_coverage();
@@ -1118,7 +1124,7 @@ pub fn handle_timeout(context: &mut LucidContext) {
 /// input to the corpus, get a new edge-count, update the coverage statistics,
 /// place the current input into Redqueen's queue to process
 pub fn handle_new_coverage(context: &mut LucidContext, old_edge_count: usize) -> usize {
-    context.corpus.save_input(&context.mutator.input);
+    context.corpus.save_input(context.mutator.get_input_ref());
 
     // Take the new edge count
     let new_edge_count = context.coverage.get_edge_count();
@@ -1151,7 +1157,7 @@ pub fn handle_new_coverage(context: &mut LucidContext, old_edge_count: usize) ->
     context
         .redqueen
         .process_queue
-        .push(context.mutator.input.clone());
+        .push(context.mutator.get_input());
 
     // Return new edge count to caller
     new_edge_count
@@ -1224,7 +1230,7 @@ pub fn dry_run(context: &mut LucidContext) -> Result<(), LucidErr> {
         // Place the seed input in the mutator buf
         context
             .mutator
-            .memcpy_input(context.corpus.get_input(i).unwrap());
+            .copy_input(context.corpus.get_input(i).unwrap());
 
         // Run the input through
         let result = fuzz_one(context);
@@ -1260,7 +1266,7 @@ fn try_redqueen(context: &mut LucidContext) -> Result<bool, LucidErr> {
     let input = context.redqueen.process_queue.pop().unwrap();
 
     // Make sure it's set in the mutator
-    context.mutator.memcpy_input(&input);
+    context.mutator.copy_input(&input);
 
     // Send the input off for Redqueen processing
     time_func!(context, batch_redqueen, redqueen_pass(context))?;

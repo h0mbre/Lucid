@@ -44,6 +44,7 @@ pub struct Config {
     pub sync_interval: usize,
     pub icount_timeout: usize,
     pub num_fuzzers: usize,
+    pub mutator: String,
 }
 
 /// Parses the command line arguments and creates a Config which is used to
@@ -117,6 +118,10 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         .value_delimiter(' ')
         .allow_hyphen_values(true)
         .required(true))
+    .arg(Arg::new("mutator")
+        .long("mutator")
+        .value_name("MUTATOR")
+        .help("Name of mutator to use, eg 'toy' in /mutators"))
     .get_matches();
 
     // Convert the string to a usize
@@ -281,6 +286,16 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         }
     };
 
+    // Get the mutator name
+    let mutator_str = matches.get_one::<String>("mutator");
+    let mutator = match mutator_str {
+        None => {
+            prompt_warn!("No mutator specified, defaulting to 'toy'");
+            "toy".to_string()
+        }
+        Some(mutator_str) => mutator_str.to_string(),
+    };
+
     // Create and return Config
     Ok(Config {
         input_max_size,
@@ -297,5 +312,6 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         sync_interval,
         icount_timeout,
         num_fuzzers,
+        mutator,
     })
 }

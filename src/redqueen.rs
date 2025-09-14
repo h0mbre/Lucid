@@ -764,7 +764,7 @@ fn create_redqueen_inputs(context: &mut LucidContext, idx: usize) -> Result<(), 
         let new_fields = process_partners(&search_field, *k, *v);
 
         // Take backup of the current input so we know the pristine fields
-        let backup_input = context.mutator.input.clone();
+        let backup_input = context.mutator.get_input();
 
         // Store each input in the redqueen queue if we haven't tried them
         // before
@@ -776,7 +776,7 @@ fn create_redqueen_inputs(context: &mut LucidContext, idx: usize) -> Result<(), 
             context.mutator.reassemble_redqueen_fields();
 
             // Get the current input
-            let input = &context.mutator.input;
+            let input = context.mutator.get_input_ref();
 
             // Hash the input
             let hash = hash_input(input);
@@ -802,7 +802,7 @@ fn create_redqueen_inputs(context: &mut LucidContext, idx: usize) -> Result<(), 
             context.redqueen.test_queue.push(input.to_vec());
 
             // Reset to backup value before processing next field
-            context.mutator.memcpy_input(&backup_input);
+            context.mutator.copy_input(&backup_input);
             context.mutator.extract_redqueen_fields();
         }
     }
@@ -819,7 +819,7 @@ fn create_redqueen_inputs(context: &mut LucidContext, idx: usize) -> Result<(), 
 /// value (and variants)
 pub fn redqueen_pass(context: &mut LucidContext) -> Result<(), LucidErr> {
     // Take backup of original input
-    let orig_input = context.mutator.input.clone();
+    let orig_input = context.mutator.get_input();
 
     // Get the ground truth trace hash
     let (trace_hash, _) = input_trace_hash(context)?;
@@ -845,7 +845,7 @@ pub fn redqueen_pass(context: &mut LucidContext) -> Result<(), LucidErr> {
         context.redqueen.cmp_operand_map.clear();
 
         // Restore original input so that the field we changed is reverted
-        context.mutator.memcpy_input(&orig_input);
+        context.mutator.copy_input(&orig_input);
     }
 
     Ok(())
