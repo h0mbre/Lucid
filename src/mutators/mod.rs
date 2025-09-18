@@ -7,72 +7,143 @@
 //! SPDX-License-Identifier: MIT
 //! Copyright (c) 2025 h0mbre
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use crate::corpus::Corpus;
 use crate::err::LucidErr;
 
 pub mod toy;
 use toy::ToyMutator;
 
-/// Shared state for all mutators, each implementation embeds this
-#[derive(Clone, Default)]
-struct MutatorCore {
-    rng: usize,           // Random generator seed/state
-    input: Vec<u8>,       // Current input buffer (empty by default)
-    max_size: usize,      // Maximum input size
-    fields: Vec<Vec<u8>>, // RedQueen fields
+/// Generates a random seed for the mutator by executing rdtsc() and then
+/// hashing the result
+fn generate_seed() -> usize {
+    let mut hasher = DefaultHasher::new();
+
+    let rdtsc = unsafe { core::arch::x86_64::_rdtsc() };
+    rdtsc.hash(&mut hasher);
+
+    // Combine all sources of entropy
+    hasher.finish() as usize
 }
 
-/// Trait all mutators must implement
+/// Shared state for all mutators, each implementation embeds this
+#[derive(Clone, Default)]
+pub(crate) struct MutatorCore {
+    pub rng: usize,           // Random generator seed/state
+    pub input: Vec<u8>,       // Current input buffer (empty by default)
+    pub max_size: usize,      // Maximum input size
+    pub fields: Vec<Vec<u8>>, // RedQueen fields
+}
+
+/// Trait that all mutators share
+/// All default methods have their implementations here so that they don't have
+/// to be implemented per-mutator implementation, while non-default methods are
+/// required but will be implemented on a per-mutator basis as they will be
+/// unique
 pub trait Mutator {
     /// Construct a new mutator with max input size.
     fn new(seed: Option<usize>, max_size: usize) -> Self
     where
         Self: Sized;
 
-    /// Return a random usize.
-    fn rand(&mut self) -> usize;
+    /// Get access to core
+    fn core(&self) -> &MutatorCore;
 
-    /// Reseed RNG.
-    fn reseed(&mut self) -> usize;
+    /// Get mutable access to core
+    fn core_mut(&mut self) -> &mut MutatorCore;
 
-    /// Split input into RedQueen fields.
-    fn extract_redqueen_fields(&mut self);
+    /// Default: Return a random usize.
+    #[inline]
+    fn rand(&mut self) -> usize {
+        // Save off current value
+        let curr = self.core().rng;
 
-    /// Reassemble input from RedQueen fields.
-    fn reassemble_redqueen_fields(&mut self);
+        // Mutate current state with xorshift for next call
+        let rng = &mut self.core_mut().rng;
+        *rng ^= *rng << 13;
+        *rng ^= *rng >> 17;
+        *rng ^= *rng << 43;
 
-    /// Number of RedQueen fields.
-    fn num_redqueen_fields(&self) -> usize;
+        // Return saved off value
+        curr
+    }
 
-    /// Get a RedQueen field by index.
-    fn get_redqueen_field(&self, idx: usize) -> Result<Vec<u8>, LucidErr>;
+    /// Default: Reseed RNG.
+    fn reseed(&mut self) -> usize {
+        self.core_mut().rng = generate_seed();
+        self.core().rng
+    }
 
-    /// Replace a RedQueen field by index.
-    fn set_redqueen_field(&mut self, idx: usize, field: Vec<u8>) -> Result<(), LucidErr>;
+    /// Default: Return the number of fields currently decomposed
+    fn num_redqueen_fields(&self) -> usize {
+        self.core().fields.len()
+    }
 
-    /// Copy into input buffer (enforces max_size).
-    fn copy_input(&mut self, new_input: &[u8]);
+    /// Default: Getter for Redqueen fields
+    fn get_redqueen_field(&self, idx: usize) -> Result<Vec<u8>, LucidErr> {
+        self.core()
+            .fields
+            .get(idx)
+            .cloned()
+            .ok_or_else(|| LucidErr::from("Invalid Redqueen field index"))
+    }
 
-    /// Perform one round of mutation on input.
+    /// Default: Setter for Redqueen fields
+    fn set_redqueen_field(&mut self, idx: usize, field: Vec<u8>) -> Result<(), LucidErr> {
+        if idx < self.core().fields.len() {
+            self.core_mut().fields[idx] = field;
+            Ok(())
+        } else {
+            Err(LucidErr::from("Invalid Redqueen field index"))
+        }
+    }
+
+    /// Default: Clears the current mutator input buffer and copies a passed in
+    /// slice into the input buffer
+    fn copy_input(&mut self, slice: &[u8]) {
+        self.core_mut().copy_input(slice);
+    }
+
+    /// Default: Get a read-only reference to current input buffer
+    fn get_input_ref(&self) -> &Vec<u8> {
+        self.core().get_input_ref()
+    }
+
+    /// Default: Get owned copy of current input buffer
+    fn get_input(&self) -> Vec<u8> {
+        self.core().get_input()
+    }
+
+    /// Default: Returns input length
+    fn input_len(&self) -> usize {
+        self.core().input_len()
+    }
+
+    /// Default: Returns input as a pointer
+    fn input_ptr(&self) -> *const u8 {
+        self.core().input_ptr()
+    }
+
+    /// Default: Return rng
+    fn get_rng(&self) -> usize {
+        self.core().get_rng()
+    }
+
+    /// Default: Return max_size
+    fn get_max_size(&self) -> usize {
+        self.core().get_max_size()
+    }
+
+    /// Custom: Perform one round of mutation on input.
     fn mutate(&mut self, corpus: &Corpus);
 
-    /// Get a read-only reference to current input buffer
-    fn get_input_ref(&self) -> &Vec<u8>;
+    /// Custom: Split input into RedQueen fields.
+    fn extract_redqueen_fields(&mut self);
 
-    /// Get owned copy of current input buffer
-    fn get_input(&self) -> Vec<u8>;
-
-    /// Get the size of the current input length
-    fn input_len(&self) -> usize;
-
-    /// Get ptr to current input
-    fn input_ptr(&self) -> *const u8;
-
-    /// Read-only accessor for rng
-    fn get_rng(&self) -> usize;
-
-    /// Read-only accessor for max_size
-    fn get_max_size(&self) -> usize;
+    /// Custom: Reassemble input from RedQueen fields.
+    fn reassemble_redqueen_fields(&mut self);
 }
 
 impl MutatorCore {

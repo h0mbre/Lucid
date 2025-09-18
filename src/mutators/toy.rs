@@ -9,12 +9,8 @@
 //! SPDX-License-Identifier: MIT
 //! Copyright (c) 2025 h0mbre
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-
-use super::{Mutator, MutatorCore};
+use super::{generate_seed, Mutator, MutatorCore};
 use crate::corpus::Corpus;
-use crate::LucidErr;
 
 /// Input alignment enforcement
 const ALIGN: bool = true;
@@ -109,18 +105,6 @@ const MUTATIONS: [MutationTypes; 12] = [
     MutationTypes::Splice,
 ];
 
-/// Generates a random seed for the mutator by executing rdtsc() and then
-/// hashing the result
-fn generate_seed() -> usize {
-    let mut hasher = DefaultHasher::new();
-
-    let rdtsc = unsafe { core::arch::x86_64::_rdtsc() };
-    rdtsc.hash(&mut hasher);
-
-    // Combine all sources of entropy
-    hasher.finish() as usize
-}
-
 /// Represents some of the mutation strategies that AFL++ seems to do in "Havoc"
 #[derive(Clone, Debug)]
 pub enum MutationTypes {
@@ -168,63 +152,31 @@ impl Mutator for ToyMutator {
         }
     }
 
-    /// Picks a new random seed to use for the RNG
-    fn reseed(&mut self) -> usize {
-        self.core.rng = generate_seed();
-        self.core.rng
+    /// Enables the default implementations
+    fn core(&self) -> &MutatorCore {
+        &self.core
     }
 
-    /// Breaks the current input into fields for Redqueen to manipulate
+    /// Enables the default implementations
+    fn core_mut(&mut self) -> &mut MutatorCore {
+        &mut self.core
+    }
+
+    /// Breaks the current input into fields for Redqueen to manipulate, since
+    /// this is a dumb mutator, we just hand over the entire input buffer
     fn extract_redqueen_fields(&mut self) {
         // For a dumb mutator, just put the entire input into one field
         self.core.fields.clear();
         self.core.fields.push(self.core.get_input());
     }
 
-    /// Reassembles fields into the input buffer
+    /// Reassembles fields into the input buffer, since this is a dumb mutator,
+    /// we take the single field and that's our whole input
     fn reassemble_redqueen_fields(&mut self) {
         self.core.input.clear();
         for f in &self.core.fields {
             self.core.input.extend_from_slice(f);
         }
-    }
-
-    /// Return the number of fields currently decomposed
-    fn num_redqueen_fields(&self) -> usize {
-        self.core.fields.len()
-    }
-
-    /// Getters and setters for fields
-    fn get_redqueen_field(&self, idx: usize) -> Result<Vec<u8>, LucidErr> {
-        self.core
-            .fields
-            .get(idx)
-            .cloned()
-            .ok_or_else(|| LucidErr::from("Invalid Redqueen field index"))
-    }
-
-    fn set_redqueen_field(&mut self, idx: usize, field: Vec<u8>) -> Result<(), LucidErr> {
-        if idx < self.core.fields.len() {
-            self.core.fields[idx] = field;
-            Ok(())
-        } else {
-            Err(LucidErr::from("Invalid Redqueen field index"))
-        }
-    }
-
-    /// Xorshift pseudo-random function based on Brandon Falk's streams
-    #[inline]
-    fn rand(&mut self) -> usize {
-        // Save off current value
-        let curr = self.core.rng;
-
-        // Mutate current state with xorshift for next call
-        self.core.rng ^= self.core.rng << 13;
-        self.core.rng ^= self.core.rng >> 17;
-        self.core.rng ^= self.core.rng << 43;
-
-        // Return saved off value
-        curr
     }
 
     /// The main mutation function which will:
@@ -342,42 +294,6 @@ impl Mutator for ToyMutator {
         // This isn't prod
         assert!(!self.core.input.is_empty());
         assert!(self.input_len() <= self.core.max_size);
-    }
-
-    // Clears the current mutator input buffer and copies a passed in slice
-    // into the input buffer
-    fn copy_input(&mut self, slice: &[u8]) {
-        self.core.copy_input(slice);
-    }
-
-    // Get a read-only reference to current input buffer
-    fn get_input_ref(&self) -> &Vec<u8> {
-        self.core.get_input_ref()
-    }
-
-    // Get owned copy of current input buffer
-    fn get_input(&self) -> Vec<u8> {
-        self.core.get_input()
-    }
-
-    // Returns input length
-    fn input_len(&self) -> usize {
-        self.core.input_len()
-    }
-
-    // Returns input as a pointer
-    fn input_ptr(&self) -> *const u8 {
-        self.core.input_ptr()
-    }
-
-    // Return rng
-    fn get_rng(&self) -> usize {
-        self.core.get_rng()
-    }
-
-    // Return max_size
-    fn get_max_size(&self) -> usize {
-        self.core.get_max_size()
     }
 }
 
