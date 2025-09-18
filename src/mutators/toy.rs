@@ -11,6 +11,7 @@
 
 use super::{generate_seed, Mutator, MutatorCore};
 use crate::corpus::Corpus;
+use crate::LucidErr;
 
 /// Input alignment enforcement
 const ALIGN: bool = true;
@@ -172,11 +173,13 @@ impl Mutator for ToyMutator {
 
     /// Reassembles fields into the input buffer, since this is a dumb mutator,
     /// we take the single field and that's our whole input
-    fn reassemble_redqueen_fields(&mut self) {
+    fn reassemble_redqueen_fields(&mut self) -> Result<(), LucidErr> {
         self.core.input.clear();
         for f in &self.core.fields {
             self.core.input.extend_from_slice(f);
         }
+
+        Ok(())
     }
 
     /// The main mutation function which will:

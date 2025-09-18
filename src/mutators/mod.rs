@@ -143,7 +143,7 @@ pub trait Mutator {
     fn extract_redqueen_fields(&mut self);
 
     /// Custom: Reassemble input from RedQueen fields.
-    fn reassemble_redqueen_fields(&mut self);
+    fn reassemble_redqueen_fields(&mut self) -> Result<(), LucidErr>;
 }
 
 impl MutatorCore {

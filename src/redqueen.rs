@@ -271,7 +271,7 @@ fn colorize_input(
             .set_redqueen_field(idx, colorized_field.clone())?;
 
         // Re-assemble input with new field value
-        context.mutator.reassemble_redqueen_fields();
+        context.mutator.reassemble_redqueen_fields()?;
 
         // Execute the fuzzcase
         let (new_hash, fuzzing_result) = input_trace_hash(context)?;
@@ -310,7 +310,7 @@ fn colorize_input(
             context
                 .mutator
                 .set_redqueen_field(idx, colorized_field.clone())?;
-            context.mutator.reassemble_redqueen_fields();
+            context.mutator.reassemble_redqueen_fields()?;
 
             // Handle one-byte range
             if range.len() <= 1 {
@@ -773,7 +773,7 @@ fn create_redqueen_inputs(context: &mut LucidContext, idx: usize) -> Result<(), 
             context.mutator.set_redqueen_field(idx, new_field)?;
 
             // Re-assemble new input based on new field
-            context.mutator.reassemble_redqueen_fields();
+            context.mutator.reassemble_redqueen_fields()?;
 
             // Get the current input
             let input = context.mutator.get_input_ref();
