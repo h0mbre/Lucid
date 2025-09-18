@@ -174,7 +174,7 @@ impl Mutator for ToyMutator {
     /// Reassembles fields into the input buffer, since this is a dumb mutator,
     /// we take the single field and that's our whole input
     fn reassemble_redqueen_fields(&mut self) -> Result<(), LucidErr> {
-        self.core.input.clear();
+        self.core.clear_input();
         for f in &self.core.fields {
             self.core.input.extend_from_slice(f);
         }
@@ -189,7 +189,7 @@ impl Mutator for ToyMutator {
     /// 4. Randomly select mutation strategies and apply them for n rounds
     fn mutate(&mut self, corpus: &Corpus) {
         // Clear current input
-        self.core.input.clear();
+        self.core.clear_input();
         self.last_mutation.clear();
 
         // Get the number of inputs to choose from

@@ -37,6 +37,53 @@ pub(crate) struct MutatorCore {
     pub fields: Vec<Vec<u8>>, // RedQueen fields
 }
 
+impl MutatorCore {
+    // Clears the current mutator input buffer and copies a passed in slice
+    /// into the input buffer
+    fn copy_input(&mut self, slice: &[u8]) {
+        // Clear the current input
+        self.input.clear();
+
+        // Copy the passed in buffer
+        self.input.extend_from_slice(slice);
+    }
+
+    /// Get a read-only reference to current input buffer
+    fn get_input_ref(&self) -> &Vec<u8> {
+        &self.input
+    }
+
+    /// Get owned copy of current input buffer
+    fn get_input(&self) -> Vec<u8> {
+        self.input.clone()
+    }
+
+    /// Returns input length
+    fn input_len(&self) -> usize {
+        self.input.len()
+    }
+
+    /// Returns input as a pointer
+    fn input_ptr(&self) -> *const u8 {
+        self.input.as_ptr()
+    }
+
+    /// Read-only accessor for rng
+    fn get_rng(&self) -> usize {
+        self.rng
+    }
+
+    /// Read-only accessor for max_size
+    fn get_max_size(&self) -> usize {
+        self.max_size
+    }
+
+    /// Clear the current input
+    fn clear_input(&mut self) {
+        self.input.clear();
+    }
+}
+
 /// Trait that all mutators share
 /// All default methods have their implementations here so that they don't have
 /// to be implemented per-mutator implementation, while non-default methods are
@@ -136,6 +183,11 @@ pub trait Mutator {
         self.core().get_max_size()
     }
 
+    /// Default: Helper to clear the input so we don't have to access core
+    fn clear_input(&mut self) {
+        self.core_mut().clear_input();
+    }
+
     /// Custom: Perform one round of mutation on input.
     fn mutate(&mut self, corpus: &Corpus);
 
@@ -144,48 +196,6 @@ pub trait Mutator {
 
     /// Custom: Reassemble input from RedQueen fields.
     fn reassemble_redqueen_fields(&mut self) -> Result<(), LucidErr>;
-}
-
-impl MutatorCore {
-    // Clears the current mutator input buffer and copies a passed in slice
-    /// into the input buffer
-    fn copy_input(&mut self, slice: &[u8]) {
-        // Clear the current input
-        self.input.clear();
-
-        // Copy the passed in buffer
-        self.input.extend_from_slice(slice);
-    }
-
-    /// Get a read-only reference to current input buffer
-    fn get_input_ref(&self) -> &Vec<u8> {
-        &self.input
-    }
-
-    /// Get owned copy of current input buffer
-    fn get_input(&self) -> Vec<u8> {
-        self.input.clone()
-    }
-
-    /// Returns input length
-    fn input_len(&self) -> usize {
-        self.input.len()
-    }
-
-    /// Returns input as a pointer
-    fn input_ptr(&self) -> *const u8 {
-        self.input.as_ptr()
-    }
-
-    /// Read-only accessor for rng
-    fn get_rng(&self) -> usize {
-        self.rng
-    }
-
-    /// Read-only accessor for max_size
-    fn get_max_size(&self) -> usize {
-        self.max_size
-    }
 }
 
 /// Simple factory to create mutators by name (extend as needed).
