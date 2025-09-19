@@ -187,7 +187,7 @@ impl Mutator for ToyMutator {
     /// 2. Randomly select an input from the corpus or generate one from scratch
     /// 3. Select the number of mutation rounds (stack)
     /// 4. Randomly select mutation strategies and apply them for n rounds
-    fn mutate(&mut self, corpus: &Corpus) {
+    fn mutate(&mut self, corpus: &Corpus) -> Result<(), LucidErr> {
         // Clear current input
         self.core.clear_input();
         self.last_mutation.clear();
@@ -201,7 +201,7 @@ impl Mutator for ToyMutator {
         // If we don't have any inputs to choose from, create a random one
         if num_inputs == 0 || gen < GEN_SCRATCH_RATE {
             self.generate_random_input();
-            return;
+            return Ok(());
         }
 
         // Pick an input from the corpus to use
@@ -294,9 +294,12 @@ impl Mutator for ToyMutator {
             }
         }
 
-        // This isn't prod
-        assert!(!self.core.input.is_empty());
-        assert!(self.input_len() <= self.core.max_size);
+        // Sanity check
+        if self.core.input.is_empty() || self.input_len() <= self.core.max_size {
+            return Err(LucidErr::from("Input was empty or larger than max size"));
+        }
+
+        Ok(())
     }
 }
 

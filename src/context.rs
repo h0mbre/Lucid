@@ -1031,7 +1031,7 @@ pub fn reset_bochs(context: &mut LucidContext) -> Result<(), LucidErr> {
 /// `insert_fuzzcase` copies from. This will try to get a Redqueen generated
 /// input to test if there are any first, and then fall back to using the
 /// Mutator to generate a new input.
-fn generate_input(context: &mut LucidContext) {
+fn generate_input(context: &mut LucidContext) -> Result<(), LucidErr> {
     // First try to get an entry in the Redqueen queue
     if let Some(input) = context.redqueen.test_queue.pop() {
         // Memcpy the input into the mutator's buffer
@@ -1042,11 +1042,13 @@ fn generate_input(context: &mut LucidContext) {
     }
     // If it was empty, have the mutator create a new input
     else {
-        context.mutator.mutate(&context.corpus);
+        context.mutator.mutate(&context.corpus)?;
 
         // Update the fuzzing stage
         context.fuzzing_stage = FuzzingStage::Fuzzing;
     }
+
+    Ok(())
 }
 
 /// Insert a fuzzcase into the target by writing the input-buffer and then also
@@ -1346,7 +1348,7 @@ pub fn fuzz_loop(context: &mut LucidContext, id: Option<usize>) -> Result<(), Lu
         }
 
         // Load a new input into the fuzzer
-        time_func!(context, batch_mutator, generate_input(context));
+        time_func!(context, batch_mutator, generate_input(context)?);
 
         // Run the input through
         let fuzzing_result = match fuzz_one(context) {

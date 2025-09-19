@@ -16,6 +16,9 @@ use crate::err::LucidErr;
 pub mod toy;
 use toy::ToyMutator;
 
+pub mod netlink;
+use netlink::NetlinkMutator;
+
 /// Generates a random seed for the mutator by executing rdtsc() and then
 /// hashing the result
 fn generate_seed() -> usize {
@@ -189,7 +192,7 @@ pub trait Mutator {
     }
 
     /// Custom: Perform one round of mutation on input.
-    fn mutate(&mut self, corpus: &Corpus);
+    fn mutate(&mut self, corpus: &Corpus) -> Result<(), LucidErr>;
 
     /// Custom: Split input into RedQueen fields.
     fn extract_redqueen_fields(&mut self);
@@ -206,6 +209,7 @@ pub fn create_mutator(
 ) -> Result<Box<dyn Mutator>, LucidErr> {
     match name {
         "toy" => Ok(Box::new(ToyMutator::new(seed, max_size))),
+        "netlink" => Ok(Box::new(NetlinkMutator::new(seed, max_size))),
         // Add others: "basic" => Box::new(BasicMutator::new(max_size)),
         _ => Err(LucidErr::from(&format!("Unrecognized mutator '{}'", name))),
     }
