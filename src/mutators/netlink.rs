@@ -56,15 +56,15 @@ const BIT_CORRUPT: usize = 128;
 const MAX_INPUT_SIZE: usize = 32904;
 
 /// List of all the different mutation strategies we implemented
-const MUTATIONS: [MutationTypes; 4] = [
+const MUTATIONS: [MutationTypes; 5] = [
     MutationTypes::ByteInsert,
     MutationTypes::ByteOverwrite,
     MutationTypes::ByteDelete,
     MutationTypes::BitFlip,
+    MutationTypes::ProtocolChange,
     /* TODO:
     MagicByteInsert
     MagicByteOverwrite
-    ProtocolChange
     MessageInsert
     MessageDelete
     */
@@ -77,6 +77,7 @@ pub enum MutationTypes {
     ByteOverwrite,
     ByteDelete,
     BitFlip,
+    ProtocolChange,
 }
 
 /// The overall input structure, some metadata followed by nested messages. This
@@ -396,6 +397,9 @@ impl Mutator for NetlinkMutator {
                 MutationTypes::BitFlip => {
                     self.bit_flip()?;
                 }
+                MutationTypes::ProtocolChange => {
+                    self.protocol_change()?;
+                }
             }
         }
 
@@ -697,6 +701,34 @@ impl NetlinkMutator {
         }
 
         // Serialize back into input buffer
+        self.netlink_input
+            .serialize(&mut self.core.input, &self.msg_bufs)?;
+
+        Ok(())
+    }
+
+    /// NO_LENGTH: Change the protocol of random messages
+    fn protocol_change(&mut self) -> Result<(), LucidErr> {
+        // Deserialize the core input buf into our data structure
+        self.netlink_input
+            .deserialize(&self.core.input, &mut self.msg_bufs)?;
+
+        // Pick a message to mutate
+        let msg_idx = self.rand_idx(self.netlink_input.num_msgs as usize);
+
+        // Get current protocol
+        let curr_protocol = self.netlink_input.protocols[msg_idx];
+
+        // Pick a new protocol that differs
+        let mut new_protocol = curr_protocol;
+        while new_protocol == curr_protocol {
+            new_protocol = self.rand_idx(NUM_PROTOCOLS) as u32;
+        }
+
+        // Write it back
+        self.netlink_input.protocols[msg_idx] = new_protocol;
+
+        // Re-serialize into the input buffer
         self.netlink_input
             .serialize(&mut self.core.input, &self.msg_bufs)?;
 
