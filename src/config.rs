@@ -12,7 +12,7 @@ use crate::{prompt, prompt_warn};
 
 /// How often the fuzzers in multi-process sync their in memory corpus with disk
 /// to capture findings of the other fuzzers
-const DEFAULT_SYNC_INTERVAL: usize = 3_600; // 1 Hour
+const DEFAULT_SYNC_INTERVAL: usize = 1800; // 30 mins
 
 /// Default timeout for instruction count in a fuzzcase, Bochs can do around 250
 /// million instructions per second in testing
@@ -26,6 +26,9 @@ const MEG: usize = 1_000_000;
 /// Default batch time for stat reporting in milliseconds
 const DEFAULT_BATCH_TIME: u128 = 2_000;
 
+/// Default time to consider fuzzer starved for code coverage in seconds
+const DEFAULT_STARVED_THRESHOLD: u64 = 3600;
+
 /// Struct that contains all of the configurable information we need to pass
 /// around in the LucidContext
 #[derive(Clone)]
@@ -33,7 +36,7 @@ pub struct Config {
     pub input_max_size: usize,
     pub input_signature: String,
     pub verbose: bool,
-    pub skip_dryrun: bool,
+    pub dryrun: bool,
     pub bochs_image: String,
     pub bochs_args: Vec<String>,
     pub mutator_seed: Option<usize>,
@@ -45,6 +48,8 @@ pub struct Config {
     pub icount_timeout: usize,
     pub num_fuzzers: usize,
     pub mutator: String,
+    pub starved_threshold: u64,
+    pub colorize: bool,
 }
 
 /// Parses the command line arguments and creates a Config which is used to
@@ -77,9 +82,9 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         .long("verbose")
         .help("Enables printing of Bochs stdout and stderr")
         .action(ArgAction::SetTrue))
-    .arg(Arg::new("skip-dryrun")
-        .long("skip-dryrun")
-        .help("Skip dry-run of seed inputs to set coverage map")
+    .arg(Arg::new("dryrun")
+        .long("dryrun")
+        .help("Conduct a dry-run of seed inputs to set coverage map (slow!)")
         .action(ArgAction::SetTrue))
     .arg(Arg::new("mutator-seed")
         .long("mutator-seed")
@@ -122,6 +127,14 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         .long("mutator")
         .value_name("MUTATOR")
         .help("Name of mutator to use, eg 'toy' in /mutators"))
+    .arg(Arg::new("starved-threshold")
+        .long("starved-threshold")
+        .value_name("SECONDS")
+        .help("Duration in seconds to consider the fuzzer 'starved' of new coverage"))
+    .arg(Arg::new("colorize")
+        .long("colorize")
+        .help("Enable Redqueen operand colorization")
+        .action(ArgAction::SetTrue))
     .get_matches();
 
     // Convert the string to a usize
@@ -137,7 +150,7 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         .unwrap()
         .to_string();
     let verbose = matches.get_flag("verbose");
-    let skip_dryrun = matches.get_flag("skip-dryrun");
+    let dryrun = matches.get_flag("dryrun");
     let bochs_image = matches
         .get_one::<String>("bochs-image")
         .unwrap()
@@ -296,12 +309,36 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         Some(mutator_str) => mutator_str.to_string(),
     };
 
+    // See if a starved threshold was provided
+    let threshold_str = matches.get_one::<String>("starved-threshold");
+    let starved_threshold = match threshold_str {
+        None => {
+            prompt_warn!(
+                "No starved-threshold provided, defaulting to: {} secs",
+                DEFAULT_STARVED_THRESHOLD
+            );
+            DEFAULT_STARVED_THRESHOLD
+        }
+        Some(str_repr) => {
+            let Ok(threshold) = str_repr.parse::<u64>() else {
+                return Err(LucidErr::from("Invalid --starved-threshold"));
+            };
+            threshold
+        }
+    };
+
+    // Detect opting into colorization
+    let colorize = matches.get_flag("colorize");
+    if colorize {
+        prompt_warn!("Colorization is enabled, this is VERY slow");
+    }
+
     // Create and return Config
     Ok(Config {
         input_max_size,
         input_signature,
         verbose,
-        skip_dryrun,
+        dryrun,
         bochs_image,
         bochs_args,
         mutator_seed,
@@ -313,5 +350,7 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         icount_timeout,
         num_fuzzers,
         mutator,
+        starved_threshold,
+        colorize,
     })
 }

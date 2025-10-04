@@ -192,7 +192,7 @@ pub trait Mutator {
     }
 
     /// Custom: Perform one round of mutation on input.
-    fn mutate(&mut self, corpus: &Corpus) -> Result<(), LucidErr>;
+    fn mutate(&mut self, corpus: &mut Corpus) -> Result<(), LucidErr>;
 
     /// Custom: Split input into RedQueen fields.
     fn extract_redqueen_fields(&mut self);
@@ -210,7 +210,6 @@ pub fn create_mutator(
     match name {
         "toy" => Ok(Box::new(ToyMutator::new(seed, max_size))),
         "netlink" => Ok(Box::new(NetlinkMutator::new(seed, max_size))),
-        // Add others: "basic" => Box::new(BasicMutator::new(max_size)),
         _ => Err(LucidErr::from(&format!("Unrecognized mutator '{}'", name))),
     }
 }

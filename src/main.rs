@@ -159,7 +159,7 @@ fn main() {
     prompt!("Input buffer in snapshot: {:X?}...", input_buf);
 
     // Dry-run if we have seeds and aren't skipping
-    if !config.skip_dryrun && lucid_context.corpus.num_inputs() > 0 {
+    if config.dryrun && lucid_context.corpus.num_inputs() > 0 {
         prompt!("Dry-running seeds to initialize coverage map...");
         dry_run(&mut lucid_context).unwrap_or_else(|error| {
             fatal!(error);
@@ -171,6 +171,9 @@ fn main() {
             lucid_context.coverage.get_edge_count()
         );
     }
+
+    // Sleep to allow configuration to display
+    std::thread::sleep(std::time::Duration::from_secs(2));
 
     // Pin ourselves to core 0
     pin_core(0);

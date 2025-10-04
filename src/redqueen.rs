@@ -4,7 +4,7 @@
 //! SPDX-License-Identifier: MIT
 //! Copyright (c) 2025 h0mbre
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 
@@ -14,13 +14,18 @@ use crate::context::{
 };
 use crate::err::LucidErr;
 use crate::mega_panic;
-use std::collections::HashMap;
 
 /// This is the number of unique Redqueen inputs we keep historical record of
 /// at once. This represents the last 10k unique inputs we've tried. This helps
 /// us make sure we deduplicate inputs and don't waste cycles on frequently
 /// created inputs
-const HASH_SET_SIZE: usize = 10_000;
+const HASH_SET_SIZE: usize = 500_000;
+
+/// How large operands must be for us to work on them/encode them in bytes
+const OP_FILTER_SIZE: usize = 4;
+
+/// How many inputs we place in the test queue for Redqueen
+const TEST_QUEUE_MAX: usize = 500;
 
 /// Representation of an operand that was reported by Bochs
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug)]
@@ -34,7 +39,10 @@ enum Operand {
 /// Various encoding schemes that are used to encode operand values
 #[derive(Clone, Copy, Debug)]
 enum Encoding {
-    ZeroExtend8(u8),
+    Raw8(u8),
+    Raw16(u16),
+    Raw32(u32),
+    Raw64(u64),
     ZeroExtend16(u16),
     ZeroExtend32(u32),
     ZeroExtend64(u64),
@@ -68,7 +76,10 @@ impl Encoding {
     pub fn to_bytes(self) -> Vec<u8> {
         match self {
             // Little endian
-            Encoding::ZeroExtend8(val) => val.to_le_bytes().to_vec(),
+            Encoding::Raw8(val) => val.to_le_bytes().to_vec(),
+            Encoding::Raw16(val) => val.to_le_bytes().to_vec(),
+            Encoding::Raw32(val) => val.to_le_bytes().to_vec(),
+            Encoding::Raw64(val) => val.to_le_bytes().to_vec(),
             Encoding::ZeroExtend16(val) => val.to_le_bytes().to_vec(),
             Encoding::ZeroExtend32(val) => val.to_le_bytes().to_vec(),
             Encoding::ZeroExtend64(val) => val.to_le_bytes().to_vec(),
@@ -119,11 +130,14 @@ pub struct Redqueen {
     pub process_queue: Vec<Vec<u8>>,
 
     // A collection of inputs that Redqueen crafted that we need to test
-    pub test_queue: Vec<Vec<u8>>,
+    pub test_queue: VecDeque<Vec<u8>>,
 
     // The last n inputs we added to queue (dedupe heuristic)
     hash_set: HashSet<u64>,
     hash_queue: VecDeque<u64>,
+
+    // Collection of RIPs we've seen
+    rip_set: HashSet<usize>,
 }
 
 impl Redqueen {
@@ -132,9 +146,10 @@ impl Redqueen {
         Redqueen {
             cmp_operand_map: HashMap::new(),
             process_queue: Vec::new(),
-            test_queue: Vec::new(),
+            test_queue: VecDeque::new(),
             hash_set: HashSet::with_capacity(HASH_SET_SIZE),
             hash_queue: VecDeque::with_capacity(HASH_SET_SIZE),
+            rip_set: HashSet::new(),
         }
     }
 
@@ -157,6 +172,24 @@ impl Redqueen {
     /// the operands in the comparison, and size is the size of the operands
     /// in bytes
     pub fn update_operands(&mut self, rip: usize, op1: usize, op2: usize, size: usize) {
+        // Skip small operands
+        if size < (OP_FILTER_SIZE * 8) {
+            return;
+        }
+
+        // Skip zeros
+        if op1 == 0 || op2 == 0 {
+            return;
+        }
+
+        // If we've seen this RIP before, skip it
+        if self.rip_set.contains(&rip) {
+            return;
+        }
+
+        // Mark RIP as seen
+        self.rip_set.insert(rip);
+
         // Create byte reprs for the operands
         let op1 = Self::usize_to_vec(op1, size);
         let op2 = Self::usize_to_vec(op2, size);
@@ -458,6 +491,11 @@ fn get_encodings(operand: Operand) -> Vec<Encoding> {
         // Convert encoding to bytes
         let bytes = enc.to_bytes();
 
+        // Skip little encodings
+        if bytes.len() < OP_FILTER_SIZE {
+            return;
+        }
+
         // If we haven't seen this repr, add it
         if seen_bytes.insert(bytes) {
             encodings.push(enc);
@@ -467,7 +505,7 @@ fn get_encodings(operand: Operand) -> Vec<Encoding> {
     // Match on the operand type and try adding it to the HashSet
     match operand {
         Operand::U8(val) => {
-            add(Encoding::ZeroExtend8(val));
+            add(Encoding::Raw8(val));
             add(Encoding::SignExtend8(val as i8));
             add(Encoding::BeSignExtend8((val as i8).to_be()));
             add(Encoding::ZeroExtend16(val as u16));
@@ -484,7 +522,7 @@ fn get_encodings(operand: Operand) -> Vec<Encoding> {
             add(Encoding::BeSignExtend64((val as i64).to_be()));
         }
         Operand::U16(val) => {
-            add(Encoding::ZeroExtend16(val));
+            add(Encoding::Raw16(val));
             add(Encoding::BeZeroExtend16(val.to_be()));
             add(Encoding::ZeroExtend32(val as u32));
             add(Encoding::ZeroExtend64(val as u64));
@@ -500,7 +538,7 @@ fn get_encodings(operand: Operand) -> Vec<Encoding> {
             add(Encoding::BeSignReduce8((val as i8).to_be()));
         }
         Operand::U32(val) => {
-            add(Encoding::ZeroExtend32(val));
+            add(Encoding::Raw32(val));
             add(Encoding::BeZeroExtend32(val.to_be()));
             add(Encoding::ZeroExtend64(val as u64));
             add(Encoding::SignExtend64(val as i64));
@@ -516,7 +554,7 @@ fn get_encodings(operand: Operand) -> Vec<Encoding> {
             add(Encoding::BeSignReduce8((val as i8).to_be()));
         }
         Operand::U64(val) => {
-            add(Encoding::ZeroExtend64(val));
+            add(Encoding::Raw64(val));
             add(Encoding::BeZeroExtend64(val.to_be()));
             add(Encoding::ZeroReduce32((val & 0xFFFFFFFF) as u32));
             add(Encoding::SignReduce32(val as i32));
@@ -548,37 +586,6 @@ fn pattern_search(input: &[u8], bytes: &[u8]) -> Vec<usize> {
         .collect()
 }
 
-/// Creates variant values for a partner operand by adding and subtracting 1
-/// from the variant to ensure that all possible compare operation flag setting
-/// outcomes are covered
-fn get_partner_variants(value: Operand) -> (Operand, Operand, Operand) {
-    // Match on the operand type and create encodings for the variant values
-    let (val1, val2, val3) = match value {
-        Operand::U8(val) => (
-            Operand::U8(val),
-            Operand::U8(val.wrapping_add(1)),
-            Operand::U8(val.wrapping_sub(1)),
-        ),
-        Operand::U16(val) => (
-            Operand::U16(val),
-            Operand::U16(val.wrapping_add(1)),
-            Operand::U16(val.wrapping_sub(1)),
-        ),
-        Operand::U32(val) => (
-            Operand::U32(val),
-            Operand::U32(val.wrapping_add(1)),
-            Operand::U32(val.wrapping_sub(1)),
-        ),
-        Operand::U64(val) => (
-            Operand::U64(val),
-            Operand::U64(val.wrapping_add(1)),
-            Operand::U64(val.wrapping_sub(1)),
-        ),
-    };
-
-    (val1, val2, val3)
-}
-
 /// Returns an encoded operand value based on the operand value's size and
 /// the requested encoding scheme passed in `encoding`
 fn get_single_encoding(encoding: Encoding, value: Operand) -> Encoding {
@@ -589,10 +596,12 @@ fn get_single_encoding(encoding: Encoding, value: Operand) -> Encoding {
         Operand::U32(val) => val as u64,
         Operand::U64(val) => val,
     };
-
     // Apply appropriate encoding to raw value and return the encoding
     match encoding {
-        Encoding::ZeroExtend8(_) => Encoding::ZeroExtend8(raw_val as u8),
+        Encoding::Raw8(_) => Encoding::Raw8(raw_val as u8),
+        Encoding::Raw16(_) => Encoding::Raw16(raw_val as u16),
+        Encoding::Raw32(_) => Encoding::Raw32(raw_val as u32),
+        Encoding::Raw64(_) => Encoding::Raw64(raw_val),
         Encoding::ZeroExtend16(_) => Encoding::ZeroExtend16(raw_val as u16),
         Encoding::ZeroExtend32(_) => Encoding::ZeroExtend32(raw_val as u32),
         Encoding::ZeroExtend64(_) => Encoding::ZeroExtend64(raw_val),
@@ -626,35 +635,6 @@ fn get_single_encoding(encoding: Encoding, value: Operand) -> Encoding {
     }
 }
 
-/// Generates three variant values for the partner operand (value, value + 1,
-/// value - 1) and then applies the partner's encoding scheme to each variant
-fn get_partner_encodings(encoding: Encoding, value: Operand) -> Vec<Encoding> {
-    // Store final encodings
-    let mut encodings = Vec::new();
-
-    // Deduplicate results
-    let mut seen_bytes = HashSet::new();
-
-    // Match on the operand type and create encodings for the variant values
-    let (var1, var2, var3) = get_partner_variants(value);
-
-    // Iterate through the variants and get encodings for each
-    for var in &[var1, var2, var3] {
-        // Grab encoding
-        let enc = get_single_encoding(encoding, *var);
-
-        // Convert to bytes
-        let bytes = enc.to_bytes();
-
-        // Attempt to store if unique
-        if seen_bytes.insert(bytes) {
-            encodings.push(enc);
-        }
-    }
-
-    encodings
-}
-
 /// Replaces the bytes in an field with the patch value at offset
 fn patch_field(field: &[u8], offset: usize, patch: &[u8]) -> Vec<u8> {
     let mut new_field = field.to_owned();
@@ -666,6 +646,41 @@ fn patch_field(field: &[u8], offset: usize, patch: &[u8]) -> Vec<u8> {
     new_field[offset..end].copy_from_slice(&patch[0..(end - offset)]);
 
     new_field
+}
+
+fn apply_variant(encoding: &Encoding, delta: i64) -> Encoding {
+    match encoding {
+        Encoding::Raw8(val) => Encoding::Raw8(val.wrapping_add(delta as u8)),
+        Encoding::Raw16(val) => Encoding::Raw16(val.wrapping_add(delta as u16)),
+        Encoding::Raw32(val) => Encoding::Raw32(val.wrapping_add(delta as u32)),
+        Encoding::Raw64(val) => Encoding::Raw64(val.wrapping_add(delta as u64)),
+        Encoding::ZeroExtend16(val) => Encoding::ZeroExtend16(val.wrapping_add(delta as u16)),
+        Encoding::ZeroExtend32(val) => Encoding::ZeroExtend32(val.wrapping_add(delta as u32)),
+        Encoding::ZeroExtend64(val) => Encoding::ZeroExtend64(val.wrapping_add(delta as u64)),
+        Encoding::SignExtend8(val) => Encoding::SignExtend8(val.wrapping_add(delta as i8)),
+        Encoding::SignExtend16(val) => Encoding::SignExtend16(val.wrapping_add(delta as i16)),
+        Encoding::SignExtend32(val) => Encoding::SignExtend32(val.wrapping_add(delta as i32)),
+        Encoding::SignExtend64(val) => Encoding::SignExtend64(val.wrapping_add(delta)),
+        Encoding::ZeroReduce8(val) => Encoding::ZeroReduce8(val.wrapping_add(delta as u8)),
+        Encoding::ZeroReduce16(val) => Encoding::ZeroReduce16(val.wrapping_add(delta as u16)),
+        Encoding::ZeroReduce32(val) => Encoding::ZeroReduce32(val.wrapping_add(delta as u32)),
+        Encoding::SignReduce8(val) => Encoding::SignReduce8(val.wrapping_add(delta as i8)),
+        Encoding::SignReduce16(val) => Encoding::SignReduce16(val.wrapping_add(delta as i16)),
+        Encoding::SignReduce32(val) => Encoding::SignReduce32(val.wrapping_add(delta as i32)),
+        Encoding::BeZeroExtend16(val) => Encoding::BeZeroExtend16(val.wrapping_add(delta as u16)),
+        Encoding::BeZeroExtend32(val) => Encoding::BeZeroExtend32(val.wrapping_add(delta as u32)),
+        Encoding::BeZeroExtend64(val) => Encoding::BeZeroExtend64(val.wrapping_add(delta as u64)),
+        Encoding::BeSignExtend8(val) => Encoding::BeSignExtend8(val.wrapping_add(delta as i8)),
+        Encoding::BeSignExtend16(val) => Encoding::BeSignExtend16(val.wrapping_add(delta as i16)),
+        Encoding::BeSignExtend32(val) => Encoding::BeSignExtend32(val.wrapping_add(delta as i32)),
+        Encoding::BeSignExtend64(val) => Encoding::BeSignExtend64(val.wrapping_add(delta)),
+        Encoding::BeZeroReduce8(val) => Encoding::BeZeroReduce8(val.wrapping_add(delta as u8)),
+        Encoding::BeZeroReduce16(val) => Encoding::BeZeroReduce16(val.wrapping_add(delta as u16)),
+        Encoding::BeZeroReduce32(val) => Encoding::BeZeroReduce32(val.wrapping_add(delta as u32)),
+        Encoding::BeSignReduce8(val) => Encoding::BeSignReduce8(val.wrapping_add(delta as i8)),
+        Encoding::BeSignReduce16(val) => Encoding::BeSignReduce16(val.wrapping_add(delta as i16)),
+        Encoding::BeSignReduce32(val) => Encoding::BeSignReduce32(val.wrapping_add(delta as i32)),
+    }
 }
 
 /// Searches for a compare operand (and its encoded values) in the field,
@@ -691,15 +706,20 @@ fn process_partners(field: &[u8], k: Operand, v: Operand) -> Vec<Vec<u8>> {
             continue;
         }
 
-        // If we have offsets, get encoding values for the key's partner
-        let partner_encs = get_partner_encodings(enc, v);
+        // Get partner encoding using the same encoding scheme as found
+        let base_encoding = get_single_encoding(enc, v);
+        let plus_encoding = apply_variant(&base_encoding, 1);
+        let minus_encoding = apply_variant(&base_encoding, -1);
 
-        // Patch the field
+        // Patch the field with all variants
         for offset in offsets {
-            for partner_enc in &partner_encs {
-                let patch = partner_enc.to_bytes();
-                new_fields.push(patch_field(field, offset, &patch));
-            }
+            let base_patch = base_encoding.to_bytes();
+            let plus_patch = plus_encoding.to_bytes();
+            let minus_patch = minus_encoding.to_bytes();
+
+            new_fields.push(patch_field(field, offset, &base_patch));
+            new_fields.push(patch_field(field, offset, &plus_patch));
+            new_fields.push(patch_field(field, offset, &minus_patch));
         }
     }
 
@@ -798,8 +818,13 @@ fn create_redqueen_inputs(context: &mut LucidContext, idx: usize) -> Result<(), 
             context.redqueen.hash_set.insert(hash);
             context.redqueen.hash_queue.push_back(hash);
 
+            // If we're over the max, remove the oldest entry
+            if context.redqueen.test_queue.len() >= TEST_QUEUE_MAX {
+                context.redqueen.test_queue.pop_front();
+            }
+
             // Add input to the Redqueen test queue for testing
-            context.redqueen.test_queue.push(input.to_vec());
+            context.redqueen.test_queue.push_back(input.to_vec());
 
             // Reset to backup value before processing next field
             context.mutator.copy_input(&backup_input);
@@ -822,7 +847,10 @@ pub fn redqueen_pass(context: &mut LucidContext) -> Result<(), LucidErr> {
     let orig_input = context.mutator.get_input();
 
     // Get the ground truth trace hash
-    let (trace_hash, _) = input_trace_hash(context)?;
+    let mut trace_hash = 0;
+    if context.config.colorize {
+        (trace_hash, _) = input_trace_hash(context)?;
+    }
 
     // Extract redqueen fields so we get a count
     context.mutator.extract_redqueen_fields();
@@ -832,8 +860,16 @@ pub fn redqueen_pass(context: &mut LucidContext) -> Result<(), LucidErr> {
         // Seperate the input into redqueen fields
         context.mutator.extract_redqueen_fields();
 
-        // Colorize the input
-        colorize_input(context, trace_hash, idx)?;
+        // If the field is zero length, just skip
+        let field = context.mutator.get_redqueen_field(idx)?;
+        if field.is_empty() {
+            continue;
+        }
+
+        // Colorize the input optionally
+        if context.config.colorize {
+            colorize_input(context, trace_hash, idx)?;
+        }
 
         // Now do a Cmplog pass for the colorized input
         cmplog_pass(context)?;

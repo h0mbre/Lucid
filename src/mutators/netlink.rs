@@ -5,6 +5,10 @@
 //! SPDX-License-Identifier: MIT
 //! Copyright (c) 2025 h0mbre
 
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashSet, VecDeque};
+use std::hash::{Hash, Hasher};
+
 use super::{generate_seed, Mutator, MutatorCore};
 use crate::corpus::Corpus;
 use crate::LucidErr;
@@ -13,7 +17,7 @@ use crate::LucidErr;
 const METADATA_SIZE: usize = 8;
 
 /// Max size of a message (total: meta + payload)
-const MAX_MSG_SIZE: usize = 2048;
+const MAX_MSG_SIZE: usize = 4096;
 
 /// Max size of a message payload (MAX_MSG_SIZE - meta size)
 const MAX_MSG_PAYLOAD_SIZE: usize = MAX_MSG_SIZE - METADATA_SIZE;
@@ -37,13 +41,16 @@ const ALIGN_RATE: usize = 99;
 const ALIGN_LEN: usize = 4;
 
 /// How many rounds of mutation we can do in a single mutate() call
-const MAX_STACK: usize = 4;
+const MAX_STACK: usize = 7;
 
 /// How many bytes in a message we can manipulate/add/delete
 const BYTE_CORRUPT: usize = 32;
 
 /// How many bits in a message we can manipulate
 const BIT_CORRUPT: usize = 128;
+
+/// How large of an input database we use to track unique inputs
+const INPUT_DB_SIZE: usize = 500_000;
 
 /// Max size of an input, this is calculated in the harness as follows:
 /*
@@ -53,21 +60,26 @@ const BIT_CORRUPT: usize = 128;
 #define LF_TOTAL_MSG_HDR_SIZE (LF_MSG_HDR_SIZE * LF_MAX_MSGS)
 #define LF_MAX_INPUT_SIZE (LF_INPUT_HDR_SIZE + LF_TOTAL_MSG_PAYLOAD_SIZE + LF_TOTAL_MSG_HDR_SIZE)
 */
-const MAX_INPUT_SIZE: usize = 32904;
+const MAX_INPUT_SIZE: usize = 65672;
 
 /// List of all the different mutation strategies we implemented
-const MUTATIONS: [MutationTypes; 5] = [
+const MUTATIONS: [MutationTypes; 13] = [
+    // Operate on the individual message level
     MutationTypes::ByteInsert,
     MutationTypes::ByteOverwrite,
     MutationTypes::ByteDelete,
     MutationTypes::BitFlip,
+    MutationTypes::PadMessage,
     MutationTypes::ProtocolChange,
-    /* TODO:
-    MagicByteInsert
-    MagicByteOverwrite
-    MessageInsert
-    MessageDelete
-    */
+    MutationTypes::UniProtocol,
+    // Change the message layout in the input
+    MutationTypes::DuplicateMessage,
+    MutationTypes::ShuffleMessages,
+    MutationTypes::SpliceMessage,
+    // Smartish
+    MutationTypes::PatchHeaderLen,
+    MutationTypes::PatchHeaderType,
+    MutationTypes::PatchHeaderFlags,
 ];
 
 /// Represents some of the mutation strategies that AFL++ seems to do in "Havoc"
@@ -77,7 +89,15 @@ pub enum MutationTypes {
     ByteOverwrite,
     ByteDelete,
     BitFlip,
+    PadMessage,
     ProtocolChange,
+    UniProtocol,
+    DuplicateMessage,
+    ShuffleMessages,
+    SpliceMessage,
+    PatchHeaderLen,
+    PatchHeaderType,
+    PatchHeaderFlags,
 }
 
 /// The overall input structure, some metadata followed by nested messages. This
@@ -254,9 +274,12 @@ impl NetlinkInput {
 
 /// Netlink mutator structure
 pub struct NetlinkMutator {
-    core: MutatorCore,                 // Common stuff for all mutators
-    msg_bufs: [Vec<u8>; MAX_NUM_MSGS], // Pre-allocated message buffers
-    netlink_input: NetlinkInput,       // Structured view for mutation
+    core: MutatorCore,                     // Common stuff for all mutators
+    msg_bufs: [Vec<u8>; MAX_NUM_MSGS],     // Pre-allocated message buffers
+    netlink_input: NetlinkInput,           // Structured view for mutation
+    scratch_msgs: [Vec<u8>; MAX_NUM_MSGS], // Used for mutations for zero alloc
+    recent_inputs: HashSet<u64>,           // Set of hashes for inputs
+    recent_order: VecDeque<u64>,           // Order of the hashes inserted in DB
 }
 
 /// Implementation for this mutator for Mutator trait
@@ -274,6 +297,9 @@ impl Mutator for NetlinkMutator {
         let msg_bufs_arr: [Vec<u8>; MAX_NUM_MSGS] =
             std::array::from_fn(|_| Vec::with_capacity(MAX_MSG_PAYLOAD_SIZE));
 
+        let scratch_msgs_arr: [Vec<u8>; MAX_NUM_MSGS] =
+            std::array::from_fn(|_| Vec::with_capacity(MAX_MSG_PAYLOAD_SIZE));
+
         // Return instance
         NetlinkMutator {
             core: MutatorCore {
@@ -284,6 +310,9 @@ impl Mutator for NetlinkMutator {
             },
             msg_bufs: msg_bufs_arr,
             netlink_input: NetlinkInput::new(),
+            scratch_msgs: scratch_msgs_arr,
+            recent_inputs: HashSet::with_capacity(INPUT_DB_SIZE),
+            recent_order: VecDeque::with_capacity(INPUT_DB_SIZE),
         }
     }
 
@@ -308,11 +337,6 @@ impl Mutator for NetlinkMutator {
         for i in 0..self.netlink_input.num_msgs as usize {
             // Get this message's payload length
             let msg_len = self.netlink_input.msg_lens[i] as usize;
-
-            // Just skip these?
-            if msg_len == 0 {
-                continue;
-            }
 
             // Clone the payload so it becomes an owned vec for fields
             let payload = self.msg_bufs[i][..msg_len].to_vec();
@@ -350,7 +374,7 @@ impl Mutator for NetlinkMutator {
     }
 
     /// Main mutation logic for this mutator
-    fn mutate(&mut self, corpus: &Corpus) -> Result<(), LucidErr> {
+    fn mutate(&mut self, corpus: &mut Corpus) -> Result<(), LucidErr> {
         // Clear the current input
         self.core.clear_input();
 
@@ -366,39 +390,57 @@ impl Mutator for NetlinkMutator {
             return Ok(());
         }
 
-        // Pick a random input from the corpus
-        let idx = self.rand_idx(num_inputs);
-
-        // Get that input
-        let chosen = corpus.get_input(idx).unwrap();
+        // Pick a random input from the corpus, bias towards new inputs, can
+        // unwrap here because we checked above that we have > 1 inputs
+        let chosen = corpus.get_input_bias_new(self.get_rng()).unwrap();
 
         // Copy that input into the input buffer
         self.copy_input(chosen);
 
         // Determine how many rounds of mutation we're doing
-        let rounds = self.rand_one_incl(MAX_STACK);
+        let mut rounds = self.rand_one_incl(MAX_STACK);
 
         // For that many rounds, pick a mutation strategy and use it
-        for _ in 0..rounds {
+        while rounds > 0 {
             // Get strategy index
             let strat_idx = self.rand_idx(MUTATIONS.len());
 
             // Match on the mutation and apply it
-            match MUTATIONS[strat_idx] {
-                MutationTypes::ByteInsert => {
-                    self.byte_insert()?;
+            let success = match MUTATIONS[strat_idx] {
+                MutationTypes::ByteInsert => self.byte_insert()?,
+                MutationTypes::ByteOverwrite => self.byte_overwrite()?,
+                MutationTypes::ByteDelete => self.byte_delete()?,
+                MutationTypes::BitFlip => self.bit_flip()?,
+                MutationTypes::PadMessage => self.pad_message()?,
+                MutationTypes::ProtocolChange => self.protocol_change()?,
+                MutationTypes::UniProtocol => self.uni_protocol()?,
+                MutationTypes::DuplicateMessage => self.duplicate_message()?,
+                MutationTypes::ShuffleMessages => self.shuffle_messages()?,
+                MutationTypes::SpliceMessage => self.splice_message(corpus)?,
+                MutationTypes::PatchHeaderLen => self.patch_nlmsghdr_len()?,
+                MutationTypes::PatchHeaderType => self.patch_nlmsghdr_type()?,
+                MutationTypes::PatchHeaderFlags => self.patch_nlmsghdr_flags()?,
+            };
+
+            // Failed to apply mutation, try again
+            if !success {
+                continue;
+            }
+
+            // Successfully applied mutation, check if last round is done, if so
+            // hash the input and make sure it's not in the DB
+            rounds -= 1;
+            if rounds == 0 {
+                // Hash the input
+                let hash = self.hash_input();
+
+                // Check if we've seen it
+                if !self.recent_inputs.contains(&hash) {
+                    self.insert_recent(hash);
                 }
-                MutationTypes::ByteOverwrite => {
-                    self.byte_overwrite()?;
-                }
-                MutationTypes::ByteDelete => {
-                    self.byte_delete()?;
-                }
-                MutationTypes::BitFlip => {
-                    self.bit_flip()?;
-                }
-                MutationTypes::ProtocolChange => {
-                    self.protocol_change()?;
+                // We have seen this before, add another mutation round
+                else {
+                    rounds += 1;
                 }
             }
         }
@@ -411,54 +453,94 @@ impl Mutator for NetlinkMutator {
 /// in the fn mutate() function
 impl NetlinkMutator {
     fn generate_random_input(&mut self) -> Result<(), LucidErr> {
+        // Constants for us to use for netlink message stuff
+        const NLMSGHDR_SIZE: usize = 16; // Size of nlmsghdr
+        const NLATTR_MAX: usize = 32; // Arbitrary limit I picked
+        const NLATTRHDR_SIZE: usize = 4; // Size of nlattr
+        const NLATTR_ALIGN: usize = 4; // Alignment of the payloads
+        const NLATTR_PAYLOAD_MAX: usize = 128; // Arbitrary limit I picked
+
         // Determine how many messages we'll use, has to be at least 1?
         let num_msgs = self.rand_one_incl(MAX_NUM_MSGS);
 
         // For each of those messages, generate payloads and place them in
         // a message buf slot
-        let mut total_len = METADATA_SIZE;
         for i in 0..num_msgs {
-            // Get message size
-            let mut msg_len = self.rand_incl(MAX_MSG_PAYLOAD_SIZE);
-
-            // Determine if we'll align
-            if ALIGN_ON {
-                let align = self.rand_perc();
-
-                // If we're aligning, do that now
-                if align <= ALIGN_RATE {
-                    // Round up to next multiple of ALIGN_LEN
-                    msg_len = (msg_len + (ALIGN_LEN - 1)) & !(ALIGN_LEN - 1);
-
-                    // Make sure we didn't do an oopsie
-                    if msg_len > MAX_MSG_PAYLOAD_SIZE {
-                        msg_len = MAX_MSG_PAYLOAD_SIZE;
-                    }
-                }
-            }
-
-            // Clean slate the vector for the message
+            // Clear that message buffer
             self.msg_bufs[i].clear();
 
-            // Place those bytes in the message
-            for _ in 0..msg_len {
-                let byte = self.rand_byte();
-                self.msg_bufs[i].push(byte);
+            // Zero out the nlmsghdr
+            for _ in 0..NLMSGHDR_SIZE {
+                self.msg_bufs[i].push(0);
             }
 
+            // Generate random values for the header members
+            let msg_type = self.rand() as u16;
+            let flags = self.rand() as u16;
+            let seq = self.rand() as u32;
+            let pid = self.rand() as u32;
+
+            // Write header fields, save length update to the very end
+            self.msg_bufs[i][4..6].copy_from_slice(&msg_type.to_le_bytes());
+            self.msg_bufs[i][6..8].copy_from_slice(&flags.to_le_bytes());
+            self.msg_bufs[i][8..12].copy_from_slice(&seq.to_le_bytes());
+            self.msg_bufs[i][12..16].copy_from_slice(&pid.to_le_bytes());
+
+            // Track how many more bytes we have
+            let mut remaining = MAX_MSG_PAYLOAD_SIZE - NLMSGHDR_SIZE;
+
+            // Pick a number of netlink attributes to use
+            let num_attrs = self.rand_one_incl(NLATTR_MAX);
+
+            // For each nlattr attempt to create the nlattr and its payload
+            for _ in 0..num_attrs {
+                // Make sure we have enough for at least header
+                if remaining <= NLATTRHDR_SIZE {
+                    break;
+                }
+
+                // Pre-remove remaining
+                remaining -= NLATTRHDR_SIZE;
+
+                // Pick length of this nlattr payload
+                let mut payload_len = self.rand_incl(NLATTR_PAYLOAD_MAX / NLATTR_ALIGN);
+
+                // Always aligned now
+                payload_len *= NLATTR_ALIGN;
+
+                // If we don't have enough room for this payload, just quit
+                if payload_len > remaining {
+                    payload_len = 0;
+                }
+
+                // Put the nlattr struct together now
+                let nla_len = NLATTRHDR_SIZE + payload_len;
+                let nla_type = self.rand() as u16;
+                self.msg_bufs[i].extend_from_slice(&nla_len.to_le_bytes());
+                self.msg_bufs[i].extend_from_slice(&nla_type.to_le_bytes());
+
+                // Fill in the random payload
+                for _ in 0..payload_len {
+                    let byte = self.rand_byte();
+                    self.msg_bufs[i].push(byte);
+                }
+
+                // Update remaining
+                remaining -= payload_len;
+            }
+
+            // Now we can go back and patch up the nlmsghdr length
+            let msg_len = self.msg_bufs[i].len() as u32;
+            self.msg_bufs[i][0..4].copy_from_slice(&msg_len.to_le_bytes());
+
             // Update length
-            self.netlink_input.msg_lens[i] = msg_len as u32;
+            self.netlink_input.msg_lens[i] = msg_len;
 
             // Pick a protocol for this message
             self.netlink_input.protocols[i] = self.rand_idx(NUM_PROTOCOLS) as u32;
-
-            // Update total size
-            total_len += msg_len; // Payload length
-            total_len += METADATA_SIZE // Metadata length
         }
 
-        // Update metadata fields
-        self.netlink_input.total_len = total_len as u32;
+        // Update num_msgs metadata field
         self.netlink_input.num_msgs = num_msgs as u32;
 
         // Now that everything is updated, we can serialize this input into
@@ -470,8 +552,29 @@ impl NetlinkMutator {
         Ok(())
     }
 
-    /// LENGTH CHANGING: Insert bytes into message payloads randomly
-    fn byte_insert(&mut self) -> Result<(), LucidErr> {
+    /// Hash the current input in the buffer
+    fn hash_input(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.core.input.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Insert current input into our database bookeeping
+    fn insert_recent(&mut self, hash: u64) {
+        if self.recent_inputs.contains(&hash) {
+            return;
+        }
+        if self.recent_order.len() >= INPUT_DB_SIZE {
+            if let Some(old) = self.recent_order.pop_front() {
+                self.recent_inputs.remove(&old);
+            }
+        }
+        self.recent_inputs.insert(hash);
+        self.recent_order.push_back(hash);
+    }
+
+    /// LENGTH_CHANGE: Insert bytes into message payloads randomly
+    fn byte_insert(&mut self) -> Result<bool, LucidErr> {
         // Deserialize the core input buf into our data structure
         self.netlink_input
             .deserialize(&self.core.input, &mut self.msg_bufs)?;
@@ -490,7 +593,7 @@ impl NetlinkMutator {
 
         // If ceiling is zero, bail early
         if ceiling == 0 {
-            return Ok(());
+            return Ok(false);
         }
 
         // Determine how many bytes we're going to insert now
@@ -546,11 +649,11 @@ impl NetlinkMutator {
         self.netlink_input
             .serialize(&mut self.core.input, &self.msg_bufs)?;
 
-        Ok(())
+        Ok(true)
     }
 
     /// NO_LENGTH: Overwrite bytes in message payloads randomly
-    fn byte_overwrite(&mut self) -> Result<(), LucidErr> {
+    fn byte_overwrite(&mut self) -> Result<bool, LucidErr> {
         // Deserialize the core input buf into our data structure
         self.netlink_input
             .deserialize(&self.core.input, &mut self.msg_bufs)?;
@@ -561,7 +664,7 @@ impl NetlinkMutator {
         // If zero-length just bail for now
         let msg_len = self.netlink_input.msg_lens[msg_idx] as usize;
         if msg_len == 0 {
-            return Ok(());
+            return Ok(false);
         }
 
         // Pick ceiling for number of bytes to mutate
@@ -586,11 +689,11 @@ impl NetlinkMutator {
         self.netlink_input
             .serialize(&mut self.core.input, &self.msg_bufs)?;
 
-        Ok(())
+        Ok(true)
     }
 
     // LENGTH_CHANGING: Delete bytes in message payloads randomly
-    fn byte_delete(&mut self) -> Result<(), LucidErr> {
+    fn byte_delete(&mut self) -> Result<bool, LucidErr> {
         // Deserialize the core input buf into our data structure
         self.netlink_input
             .deserialize(&self.core.input, &mut self.msg_bufs)?;
@@ -600,12 +703,12 @@ impl NetlinkMutator {
 
         // Get message length, if it's zero just bail early
         let mut msg_len = self.netlink_input.msg_lens[msg_idx] as usize;
-        if msg_len == 0 {
-            return Ok(());
+        if msg_len == 0 || msg_len == 1 {
+            return Ok(false);
         }
 
-        // Determine how many bytes we can delete
-        let slack = msg_len;
+        // Determine how many bytes we can delete, always leave 1
+        let slack = msg_len - 1;
 
         // Pick the largest ceiling we can
         let ceiling = std::cmp::min(slack, BYTE_CORRUPT);
@@ -664,11 +767,56 @@ impl NetlinkMutator {
         self.netlink_input
             .serialize(&mut self.core.input, &self.msg_bufs)?;
 
-        Ok(())
+        Ok(true)
+    }
+
+    /// LENGTH_CHANGE: Pad the message out with a random amount of data
+    fn pad_message(&mut self) -> Result<bool, LucidErr> {
+        self.netlink_input
+            .deserialize(&self.core.input, &mut self.msg_bufs)?;
+
+        // Pick a message
+        let msg_idx = self.rand_idx(self.netlink_input.num_msgs as usize);
+        let msg_len = self.netlink_input.msg_lens[msg_idx] as usize;
+
+        // Can't extend, bail
+        if msg_len == MAX_MSG_PAYLOAD_SIZE {
+            return Ok(false);
+        }
+
+        // Choose addition length
+        let mut add_len = self.rand_incl(MAX_MSG_PAYLOAD_SIZE - msg_len) + msg_len;
+
+        // Optionally align up
+        add_len = self.rand_align_up(add_len);
+
+        // Make sure we didn't do an oopsie
+        if add_len > MAX_MSG_PAYLOAD_SIZE {
+            add_len = MAX_MSG_PAYLOAD_SIZE;
+        }
+
+        // Determine if same byte value or random
+        let fixed = self.rand_bool();
+        let mut byte = self.rand_byte();
+
+        // Extend buffer with bytes
+        while self.msg_bufs[msg_idx].len() < add_len {
+            if !fixed {
+                byte = self.rand_byte();
+            }
+            self.msg_bufs[msg_idx].push(byte);
+        }
+        self.netlink_input.msg_lens[msg_idx] = add_len as u32;
+
+        // Re-serialize
+        self.netlink_input
+            .serialize(&mut self.core.input, &self.msg_bufs)?;
+
+        Ok(true)
     }
 
     /// NO_LENGTH: Flip bits in message payloads randomly
-    fn bit_flip(&mut self) -> Result<(), LucidErr> {
+    fn bit_flip(&mut self) -> Result<bool, LucidErr> {
         // Deserialize the core input buf into our data structure
         self.netlink_input
             .deserialize(&self.core.input, &mut self.msg_bufs)?;
@@ -679,7 +827,7 @@ impl NetlinkMutator {
         // Get message length, if zero just bail
         let msg_len = self.netlink_input.msg_lens[msg_idx] as usize;
         if msg_len == 0 {
-            return Ok(());
+            return Ok(false);
         }
 
         // Ceiling for number of bits we can flip
@@ -704,11 +852,11 @@ impl NetlinkMutator {
         self.netlink_input
             .serialize(&mut self.core.input, &self.msg_bufs)?;
 
-        Ok(())
+        Ok(true)
     }
 
     /// NO_LENGTH: Change the protocol of random messages
-    fn protocol_change(&mut self) -> Result<(), LucidErr> {
+    fn protocol_change(&mut self) -> Result<bool, LucidErr> {
         // Deserialize the core input buf into our data structure
         self.netlink_input
             .deserialize(&self.core.input, &mut self.msg_bufs)?;
@@ -732,7 +880,324 @@ impl NetlinkMutator {
         self.netlink_input
             .serialize(&mut self.core.input, &self.msg_bufs)?;
 
-        Ok(())
+        Ok(true)
+    }
+
+    /// NO_LENGTH: Make every message the same protocol
+    fn uni_protocol(&mut self) -> Result<bool, LucidErr> {
+        // Deserialize the core input buf into our data structure
+        self.netlink_input
+            .deserialize(&self.core.input, &mut self.msg_bufs)?;
+
+        // If we only have one message, just bail
+        if self.netlink_input.num_msgs < 2 {
+            return Ok(false);
+        }
+
+        // Get the protocol of the first message
+        let protocol = self.netlink_input.protocols[0];
+
+        // For all the messages, set the protocol
+        for i in 0..self.netlink_input.num_msgs as usize {
+            self.netlink_input.protocols[i] = protocol;
+        }
+
+        // Re-serialize into the input buffer
+        self.netlink_input
+            .serialize(&mut self.core.input, &self.msg_bufs)?;
+
+        Ok(true)
+    }
+
+    // LENGTH_CHANGING: Randomly duplicate a message in the input
+    fn duplicate_message(&mut self) -> Result<bool, LucidErr> {
+        // Deserialize the core input buf into our data structure
+        self.netlink_input
+            .deserialize(&self.core.input, &mut self.msg_bufs)?;
+
+        // Pick a message to copy
+        let src_idx = self.rand_idx(self.netlink_input.num_msgs as usize);
+
+        // Determine where we can copy it to
+        let mut ceiling = self.netlink_input.num_msgs as usize;
+
+        // If we have less than the max number of messages, make sure we can
+        // also just append the new message
+        if (self.netlink_input.num_msgs as usize) < MAX_NUM_MSGS {
+            ceiling += 1;
+        }
+
+        // Pick a message slot to overwrite/append, no NOPs
+        let mut dst_idx = self.rand_idx(ceiling);
+        while dst_idx == src_idx {
+            dst_idx = self.rand_idx(ceiling);
+        }
+
+        // Determine if we're appending
+        let append = dst_idx == self.netlink_input.num_msgs as usize;
+
+        // Copy source to the scratch message
+        self.scratch_msgs[0].clear();
+        self.scratch_msgs[0].extend_from_slice(&self.msg_bufs[src_idx]);
+
+        // Copy the scratch to the dst
+        self.msg_bufs[dst_idx].clear();
+        self.msg_bufs[dst_idx].extend_from_slice(&self.scratch_msgs[0]);
+
+        // Update the metadata
+        self.netlink_input.protocols[dst_idx] = self.netlink_input.protocols[src_idx];
+
+        // Update the lengths
+        self.netlink_input.msg_lens[dst_idx] = self.netlink_input.msg_lens[src_idx];
+
+        // If we appended, add new message count
+        if append {
+            self.netlink_input.num_msgs += 1;
+        }
+
+        // Re-serialize into the input buffer
+        self.netlink_input
+            .serialize(&mut self.core.input, &self.msg_bufs)?;
+
+        Ok(true)
+    }
+
+    /// NO_LENGTH: Shuffle the order of the messages
+    fn shuffle_messages(&mut self) -> Result<bool, LucidErr> {
+        // Deserialize the core input buf into our data structure
+        self.netlink_input
+            .deserialize(&self.core.input, &mut self.msg_bufs)?;
+
+        let num_msgs = self.netlink_input.num_msgs as usize;
+
+        // If we only have one message or max messages, just bail
+        if num_msgs == 1 || num_msgs == MAX_NUM_MSGS {
+            return Ok(false);
+        }
+
+        // Where we keep the new order
+        let mut new_order = [0usize; MAX_NUM_MSGS];
+        for (i, slot) in new_order.iter_mut().take(num_msgs).enumerate() {
+            *slot = i;
+        }
+
+        // Shuffe the indices
+        for i in (1..num_msgs).rev() {
+            let j = self.rand_idx(i + 1);
+            new_order.swap(i, j);
+        }
+
+        // New metadata
+        let mut new_protocols = [0u32; MAX_NUM_MSGS];
+        let mut new_lens = [0u32; MAX_NUM_MSGS];
+
+        // Iterate through the new order and copy all of those over
+        for i in 0..num_msgs {
+            // Calc src_idx
+            let src_idx = new_order[i];
+
+            // Get src and dst
+            let src = &self.msg_bufs[src_idx];
+            let dst = &mut self.scratch_msgs[i];
+
+            // Clear dst
+            dst.clear();
+
+            // Copy it over
+            dst.extend_from_slice(src);
+
+            // Update metadata
+            new_protocols[i] = self.netlink_input.protocols[src_idx];
+            new_lens[i] = self.netlink_input.msg_lens[src_idx];
+        }
+
+        // Now place the messages back in the shuffled order
+        for i in 0..num_msgs {
+            let dst = &mut self.msg_bufs[i];
+            dst.clear();
+            dst.extend_from_slice(&self.scratch_msgs[i]);
+
+            self.netlink_input.protocols[i] = new_protocols[i];
+            self.netlink_input.msg_lens[i] = new_lens[i];
+        }
+
+        // Re-serialize into the input buffer
+        self.netlink_input
+            .serialize(&mut self.core.input, &self.msg_bufs)?;
+
+        Ok(true)
+    }
+
+    /// LENGTH_CHANGE: Splice a message in from another input
+    fn splice_message(&mut self, corpus: &mut Corpus) -> Result<bool, LucidErr> {
+        // Deserialize the core input buf into our data structure
+        self.netlink_input
+            .deserialize(&self.core.input, &mut self.msg_bufs)?;
+
+        // If we only have one input in the corpus, bail
+        if corpus.num_inputs() < 2 {
+            return Ok(false);
+        }
+
+        // Get the donor message
+        let donor_idx = self.rand_idx(self.netlink_input.num_msgs as usize);
+
+        // Save it off
+        self.scratch_msgs[0].clear();
+        self.scratch_msgs[0].extend_from_slice(&self.msg_bufs[donor_idx]);
+
+        // Save metadata
+        let donor_len = self.netlink_input.msg_lens[donor_idx];
+        let donor_protocol = self.netlink_input.protocols[donor_idx];
+
+        // Get a recipient input
+        let recipient = corpus.get_input_bias_new(self.get_rng()).unwrap();
+        self.copy_input(recipient);
+
+        // Deserialize it
+        self.netlink_input
+            .deserialize(&self.core.input, &mut self.msg_bufs)?;
+
+        // Determine where to place, make append possible
+        let mut ceiling = self.netlink_input.num_msgs as usize;
+        if (self.netlink_input.num_msgs as usize) < MAX_NUM_MSGS {
+            ceiling += 1;
+        }
+
+        let target_idx = self.rand_idx(ceiling);
+
+        // Place the input there
+        self.msg_bufs[target_idx].clear();
+        self.msg_bufs[target_idx].extend_from_slice(&self.scratch_msgs[0]);
+        self.netlink_input.msg_lens[target_idx] = donor_len;
+        self.netlink_input.protocols[target_idx] = donor_protocol;
+
+        // Determine if we added a new input (append)
+        if self.netlink_input.num_msgs as usize == target_idx {
+            self.netlink_input.num_msgs += 1;
+        }
+
+        // Re-serialize into the input buffer
+        self.netlink_input
+            .serialize(&mut self.core.input, &self.msg_bufs)?;
+
+        Ok(true)
+    }
+
+    /// NO_LENGTH: Patches the nlmsg_hdr->len field to be correct
+    fn patch_nlmsghdr_len(&mut self) -> Result<bool, LucidErr> {
+        self.netlink_input
+            .deserialize(&self.core.input, &mut self.msg_bufs)?;
+
+        // Iterate through each message in our input
+        for i in 0..self.netlink_input.num_msgs as usize {
+            let len = self.netlink_input.msg_lens[i];
+
+            // If we have at least enough bytes to hold the length, patch it
+            if self.msg_bufs[i].len() >= 4 {
+                self.msg_bufs[i][0..4].copy_from_slice(&len.to_ne_bytes());
+            }
+        }
+
+        self.netlink_input
+            .serialize(&mut self.core.input, &self.msg_bufs)?;
+
+        Ok(true)
+    }
+
+    /// NO_LENGTH: Patches the nlmsg_hdr->type field to be somewhat in range
+    fn patch_nlmsghdr_type(&mut self) -> Result<bool, LucidErr> {
+        // Deserialize current input into structured representation
+        self.netlink_input
+            .deserialize(&self.core.input, &mut self.msg_bufs)?;
+
+        // Get number of messages
+        let num_msgs = self.netlink_input.num_msgs as usize;
+
+        // This protocol order has to match the harness for lf_protocols
+        const MAX_NLMSG_TYPES: [u32; 4] = [
+            123,  // NETLINK_ROUTE
+            40,   // NETLINK_XFRM
+            3089, // NETLINK_NETFILTER (nf_tables: (10 << 8) | 255)
+            20,   // NETLINK_CRYPTO
+        ];
+
+        // Iterate through each message and if theres room, update type
+        for i in 0..num_msgs {
+            let proto_idx = self.netlink_input.protocols[i] as usize;
+
+            if proto_idx < MAX_NLMSG_TYPES.len() && self.msg_bufs[i].len() >= 6 {
+                // Generate a new nlmsg_type under the ceiling
+                let new_type = self.rand_idx(MAX_NLMSG_TYPES[proto_idx] as usize) as u16;
+
+                // Overwrite nlmsg_type at offset 4
+                self.msg_bufs[i][4..6].copy_from_slice(&new_type.to_le_bytes());
+            }
+        }
+
+        // Re-serialize back into the flat buffer
+        self.netlink_input
+            .serialize(&mut self.core.input, &self.msg_bufs)?;
+
+        Ok(true)
+    }
+
+    /// NO_LENGTH: Patches the nlmsg_hdr->flags field with somewhat valid vals
+    fn patch_nlmsghdr_flags(&mut self) -> Result<bool, LucidErr> {
+        // Deserialize current input into structured representation
+        self.netlink_input
+            .deserialize(&self.core.input, &mut self.msg_bufs)?;
+
+        // Netlink message flag values, thanks ChagGPT, Grok, Claude
+        const FLAGS: [u16; 14] = [
+            0x0001, // NLM_F_REQUEST
+            0x0002, // NLM_F_MULTI
+            0x0004, // NLM_F_ACK
+            0x0008, // NLM_F_ECHO
+            0x0010, // NLM_F_ROOT
+            0x0020, // NLM_F_MATCH
+            0x0040, // NLM_F_ATOMIC
+            0x0080, // NLM_F_CREATE
+            0x0100, // NLM_F_DUMP
+            0x0200, // NLM_F_DUMP_FILTERED
+            0x0400, // NLM_F_APPEND
+            0x0800, // NLM_F_NONREC
+            0x1000, // NLM_F_BULK
+            0xFFFF, // chaos combo
+        ];
+
+        // Iterate through each message and patch the flag values
+        for i in 0..self.netlink_input.num_msgs as usize {
+            // If we don't have the length, just continue
+            if self.msg_bufs[i].len() < 8 {
+                continue;
+            }
+
+            // Get the current flag value
+            let mut curr = u16::from_le_bytes([self.msg_bufs[i][6], self.msg_bufs[i][7]]);
+
+            // Randomly nuke it 50% of the time
+            if self.rand_bool() {
+                curr = 0;
+            }
+
+            // Roll up to 8 times
+            let num_rolls = self.rand_one_incl(8);
+
+            // For the number of rolls, do random OR'ing
+            for _ in 0..num_rolls {
+                curr |= FLAGS[self.rand_idx(FLAGS.len())];
+            }
+
+            // Patch that in
+            self.msg_bufs[i][6..8].copy_from_slice(&curr.to_le_bytes());
+        }
+
+        // Re-serialize back into the flat buffer
+        self.netlink_input
+            .serialize(&mut self.core.input, &self.msg_bufs)?;
+
+        Ok(true)
     }
 
     /// Generate a random value based on max, not inclusive

@@ -187,7 +187,7 @@ impl Mutator for ToyMutator {
     /// 2. Randomly select an input from the corpus or generate one from scratch
     /// 3. Select the number of mutation rounds (stack)
     /// 4. Randomly select mutation strategies and apply them for n rounds
-    fn mutate(&mut self, corpus: &Corpus) -> Result<(), LucidErr> {
+    fn mutate(&mut self, corpus: &mut Corpus) -> Result<(), LucidErr> {
         // Clear current input
         self.core.clear_input();
         self.last_mutation.clear();
@@ -208,7 +208,7 @@ impl Mutator for ToyMutator {
         let idx = self.rand() % num_inputs;
 
         // Get the input
-        let chosen = corpus.get_input(idx).unwrap();
+        let chosen = corpus.get_input_by_idx(idx).unwrap();
 
         // Copy the input over
         self.core.input.extend_from_slice(chosen);
@@ -295,7 +295,7 @@ impl Mutator for ToyMutator {
         }
 
         // Sanity check
-        if self.core.input.is_empty() || self.input_len() <= self.core.max_size {
+        if self.core.input.is_empty() || self.input_len() > self.core.max_size {
             return Err(LucidErr::from("Input was empty or larger than max size"));
         }
 
@@ -663,7 +663,7 @@ impl ToyMutator {
         let new_idx = self.rand() % corpus.num_inputs();
 
         // Get reference to new input
-        let Some(new_input) = corpus.get_input(new_idx) else {
+        let Some(new_input) = corpus.get_input_by_idx(new_idx) else {
             return; // No inputs in corpus?
         };
 

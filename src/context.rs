@@ -23,7 +23,7 @@ use crate::redqueen::{lucid_report_cmps, redqueen_pass, Redqueen};
 use crate::snapshot::{restore_snapshot, take_snapshot, Snapshot};
 use crate::stats::{CorpusStats, SnapshotStats, Stats};
 use crate::syscall::lucid_syscall;
-use crate::{fault, finding, mega_panic, prompt_warn};
+use crate::{fault, finding, mega_panic, prompt, prompt_warn};
 
 /// Magic number member of the LucidContext, chosen by ChatGPT, that we use to
 /// ensure that the context pointer we receive during context switches is
@@ -1033,7 +1033,7 @@ pub fn reset_bochs(context: &mut LucidContext) -> Result<(), LucidErr> {
 /// Mutator to generate a new input.
 fn generate_input(context: &mut LucidContext) -> Result<(), LucidErr> {
     // First try to get an entry in the Redqueen queue
-    if let Some(input) = context.redqueen.test_queue.pop() {
+    if let Some(input) = context.redqueen.test_queue.pop_front() {
         // Memcpy the input into the mutator's buffer
         context.mutator.copy_input(&input);
 
@@ -1042,7 +1042,7 @@ fn generate_input(context: &mut LucidContext) -> Result<(), LucidErr> {
     }
     // If it was empty, have the mutator create a new input
     else {
-        context.mutator.mutate(&context.corpus)?;
+        context.mutator.mutate(&mut context.corpus)?;
 
         // Update the fuzzing stage
         context.fuzzing_stage = FuzzingStage::Fuzzing;
@@ -1126,7 +1126,9 @@ pub fn handle_timeout(context: &mut LucidContext) {
 /// input to the corpus, get a new edge-count, update the coverage statistics,
 /// place the current input into Redqueen's queue to process
 pub fn handle_new_coverage(context: &mut LucidContext, old_edge_count: usize) -> usize {
-    context.corpus.save_input(context.mutator.get_input_ref());
+    // We don't know yet if we hit an new edge pair or if we just set a hit count
+    // record
+    let mut save_input = false;
 
     // Take the new edge count
     let new_edge_count = context.coverage.get_edge_count();
@@ -1141,25 +1143,36 @@ pub fn handle_new_coverage(context: &mut LucidContext, old_edge_count: usize) ->
             new_edge_count,
             new_edge_count - old_edge_count
         );
+
+        // Save this every time
+        save_input = true;
     }
     // If the edgecount is the same, that means we likely just found a new
     // hit count for an edge pair
     else {
-        finding!(
-            context.fuzzer_id,
-            "{} increased edge-pair hit count",
-            context.fuzzing_stage
-        );
+        // Check to see if we're starved for new coverage, if we are, save
+        if context.stats.starved_for(std::time::Duration::from_secs(
+            context.config.starved_threshold,
+        )) {
+            save_input = true;
+            finding!(
+                context.fuzzer_id,
+                "{} increased edge-pair hit count",
+                context.fuzzing_stage
+            );
+        }
     }
 
-    // Update stats
-    context.stats.new_coverage(new_edge_count);
-
-    // Save this input into the Redqueen process queue
-    context
-        .redqueen
-        .process_queue
-        .push(context.mutator.get_input());
+    // If we consider this new coverage, save input, update stats, and send it
+    // off to Redqueen for processing
+    if save_input {
+        context.corpus.save_input(context.mutator.get_input_ref());
+        context.stats.new_coverage(new_edge_count);
+        context
+            .redqueen
+            .process_queue
+            .push(context.mutator.get_input());
+    }
 
     // Return new edge count to caller
     new_edge_count
@@ -1229,10 +1242,15 @@ pub fn dry_run(context: &mut LucidContext) -> Result<(), LucidErr> {
 
     // For the number of inputs in the corpus, fuzz one
     for i in 0..context.corpus.num_inputs() {
+        prompt!(
+            "Dry-running input {} of {}...",
+            i + 1,
+            context.corpus.num_inputs()
+        );
         // Place the seed input in the mutator buf
         context
             .mutator
-            .copy_input(context.corpus.get_input(i).unwrap());
+            .copy_input(context.corpus.get_input_by_idx(i).unwrap());
 
         // Run the input through
         let result = fuzz_one(context);
@@ -1382,6 +1400,6 @@ pub fn fuzz_loop(context: &mut LucidContext, id: Option<usize>) -> Result<(), Lu
         }
 
         // Check to see if we should sync the corpus
-        context.corpus.sync();
+        context.corpus.sync(context.mutator.get_rng());
     }
 }

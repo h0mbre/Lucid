@@ -12,23 +12,31 @@ use std::time::Instant;
 
 use crate::config::Config;
 use crate::err::LucidErr;
-use crate::misc::MEG;
 use crate::{finding, finding_warn, prompt_warn};
+
+/// The amount of inputs we can sample from disk from other fuzzers
+const SAMPLE_CORPUS_SIZE: usize = 1000;
+
+/// % of time we choose a newer input over an older input
+const NEW_BIAS_RATE: usize = 75;
 
 /// Holds all of the information and statistics we need in order to manage a
 /// database of inputs, timeouts, and crashes.
 #[derive(Clone)]
 pub struct Corpus {
-    pub inputs_dir: String,     // Where inputs are written to on disk
-    pub crash_dir: String,      // Where crashes are written to on disk
-    pub stats_dir: String,      // Where statistics are written to on disk
-    pub inputs: Vec<Vec<u8>>,   // In memory input database
-    input_hashes: HashSet<u64>, // Database of unique input hashes
-    output_limit: usize,        // The limit in megabytes of what we can save
-    pub id: usize,              // Inherited from the LucidContext
-    last_sync: Instant,         // The last time we synced from disk to memory
-    sync_interval: u64,         // How often we sync the in-memory corpus with the disk
-    pub corpus_size: usize,     // The number of bytes in the corpus
+    pub inputs_dir: String,      // Where inputs are written to on disk
+    pub crash_dir: String,       // Where crashes are written to on disk
+    pub stats_dir: String,       // Where statistics are written to on disk
+    pub inputs: Vec<Vec<u8>>,    // In memory input database
+    input_hashes: HashSet<u64>,  // Database of unique input hashes
+    output_limit: usize,         // The limit in megabytes of what we can save
+    pub id: usize,               // Inherited from the LucidContext
+    last_sync: Instant,          // The last time we synced from disk to memory
+    sync_interval: u64,          // How often we sync the in-memory corpus with the disk
+    pub corpus_size: usize,      // The number of bytes in the corpus
+    sample_inputs: Vec<Vec<u8>>, // Input data base sampled from other fuzzers
+    sample_hashes: HashSet<u64>, // Database of unique sample input hashes
+    prng: usize,                 // pRNG state
 }
 
 impl Corpus {
@@ -36,6 +44,9 @@ impl Corpus {
     pub fn new(config: &Config) -> Result<Self, LucidErr> {
         let mut inputs = Vec::new();
         let mut corpus_size = 0;
+        let prng = 0;
+        let sample_inputs = Vec::new();
+        let sample_hashes = HashSet::new();
 
         // Try to read inputs in from the seeds_dir if we have one
         if config.seeds_dir.is_some() {
@@ -163,22 +174,85 @@ impl Corpus {
             last_sync,
             sync_interval: config.sync_interval as u64,
             corpus_size,
+            sample_inputs,
+            sample_hashes,
+            prng,
         })
     }
 
     /// Return the number of inputs currently in the corpus in memory
     pub fn num_inputs(&self) -> usize {
-        self.inputs.len()
+        self.inputs.len() + self.sample_inputs.len()
     }
 
-    /// Retrieves a reference to an input in the corpus or None if the corpus is
-    /// empty
-    pub fn get_input(&self, idx: usize) -> Option<&[u8]> {
+    /// Get an input by index
+    pub fn get_input_by_idx(&self, idx: usize) -> Option<&[u8]> {
+        // Validate index
+        if idx >= self.inputs.len() + self.sample_inputs.len() {
+            return None;
+        }
+
+        // Grab from normal corpus
         if idx < self.inputs.len() {
             return Some(&self.inputs[idx]);
         }
 
-        None
+        // Return from sample inputs
+        Some(&self.sample_inputs[idx - self.inputs.len()])
+    }
+
+    /// Gets an input from the corpus with pseudo uniform distribution
+    pub fn get_input_uniform(&mut self, prng: usize) -> Option<&[u8]> {
+        // Seed our random
+        self.prng = prng;
+
+        // Determine ceiling index
+        let ceiling = self.inputs.len() + self.sample_inputs.len();
+        if ceiling == 0 {
+            return None;
+        }
+
+        // Pick a random index across both pools
+        let idx = self.rand() % ceiling;
+
+        // If it's in the normal corpus, return that
+        if idx < self.inputs.len() {
+            return Some(&self.inputs[idx]);
+        }
+
+        // Otherwise, adjust and return from the sample pool
+        Some(&self.sample_inputs[idx - self.inputs.len()])
+    }
+
+    /// Gets an input but biases selection towards newer inputs (towards end)
+    pub fn get_input_bias_new(&mut self, prng: usize) -> Option<&[u8]> {
+        // Seed our random
+        self.prng = prng;
+
+        // Determine ceiling index
+        let ceiling = self.inputs.len() + self.sample_inputs.len();
+
+        // If we don't have at least two inputs, just return uniform
+        if ceiling < 2 {
+            return self.get_input_uniform(prng);
+        }
+
+        // Split corpus into halves
+        let old = 0..(ceiling / 2);
+        let new = (ceiling / 2)..ceiling;
+
+        // Determine what pool to pick from
+        let pool = if self.rand() % 100 > NEW_BIAS_RATE {
+            old
+        } else {
+            new
+        };
+
+        // Pick an index into that pool
+        let idx = pool.start + (self.rand() % pool.len());
+
+        // Return that by index
+        self.get_input_by_idx(idx)
     }
 
     /// Save an input to the corpus
@@ -284,35 +358,6 @@ impl Corpus {
         hash
     }
 
-    /// Part of the corpus-syncing process, we add a new input that we found
-    /// during the sync to the in-memory corpus and update our hash set accordingly
-    fn add_new_input(&mut self, hash: u64, content: Vec<u8>) {
-        self.inputs.push(content.clone());
-        self.corpus_size += content.len();
-        self.input_hashes.insert(hash);
-
-        finding!(
-            self.id,
-            "Corpus sync netted new input {:016X} (Corpus: {} inputs, {:.2}MB)",
-            hash,
-            self.inputs.len(),
-            self.corpus_size as f64 / MEG as f64
-        )
-    }
-
-    /// Part of the corpus-syncing process, attempt to read the content of a
-    /// file in the corpus
-    fn process_input_file(&mut self, hash: u64, path: &std::path::Path) {
-        if self.input_hashes.contains(&hash) {
-            return;
-        }
-
-        match std::fs::read(path) {
-            Ok(content) => self.add_new_input(hash, content),
-            Err(e) => finding_warn!(self.id, "Failed to read input file {:016X}: {}", hash, e),
-        }
-    }
-
     /// Part of the corpus-syncing process, take the file name from the on-disk
     /// corpus file and extract the hash portion, example filename:
     /// 8B5BB66137A8AA15.input
@@ -328,36 +373,33 @@ impl Corpus {
         path.is_file() && path.extension().map_or(false, |ext| ext == "input")
     }
 
-    /// Process a single directory entry during the corpus-syncing process
-    fn process_directory_entry(&mut self, entry: std::io::Result<std::fs::DirEntry>) {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(e) => {
-                finding_warn!(self.id, "Failed to read directory entry: {}", e);
-                return;
-            }
-        };
-
-        let path = entry.path();
-        if !self.is_valid_input_file(&path) {
-            return;
-        }
-
-        if let Some(hash) = self.extract_hash_from_filename(&path) {
-            self.process_input_file(hash, &path);
-        }
-    }
-
     /// Thin wrapper around reading the corpus directory entries during the
     /// corpus-syncing process
     fn read_input_directory(&self) -> std::io::Result<std::fs::ReadDir> {
         std::fs::read_dir(&self.inputs_dir)
     }
 
+    /// Copied from mutator core implementation, meh
+    #[inline]
+    fn rand(&mut self) -> usize {
+        // Save off current value
+        let curr = self.prng;
+
+        // Mutate current state with xorshift for next call
+        let rng = &mut self.prng;
+        *rng ^= *rng << 13;
+        *rng ^= *rng >> 17;
+        *rng ^= *rng << 43;
+
+        // Return saved off value
+        curr
+    }
+
     /// During the corpus-syncing process, scan the corpus directory for new
-    /// inputs that we don't have in our in-memory corpus that the other fuzzers
-    /// have found and saved, then ingest them into our in-memory corpus
-    fn sync_inputs_from_disk(&mut self) {
+    /// inputs that we can potentially sample from and ingest them randomly if
+    /// there is more than the sample max
+    fn sample_inputs_from_disk(&mut self) {
+        // Get a list of all the entries in the shared corpus directory
         let entries = match self.read_input_directory() {
             Ok(entries) => entries,
             Err(e) => {
@@ -366,28 +408,110 @@ impl Corpus {
             }
         };
 
+        // Iterate through all the entries and see which ones we don't have, if
+        // we don't have them, they become a candidate to be sampled
+        let mut candidates = Vec::new();
         for entry in entries {
-            self.process_directory_entry(entry);
+            // Skip failed entry results with warning
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    finding_warn!(self.id, "Failed to read directory entry: {}", e);
+                    continue;
+                }
+            };
+
+            // Extract the path
+            let path = entry.path();
+
+            // Make sure it's somewhat valid looking
+            if !self.is_valid_input_file(&path) {
+                continue;
+            }
+
+            // Get the hash for file
+            if let Some(hash) = self.extract_hash_from_filename(&path) {
+                // If this is something we already have, continue
+                if self.input_hashes.contains(&hash) {
+                    continue;
+                }
+
+                // Add this to the candidate pool
+                candidates.push((hash, path));
+            }
+        }
+
+        // Determine what selection mode we're in, if we have more candidates
+        // than the max sample amount, we'll have to randomly select them
+        if candidates.len() > SAMPLE_CORPUS_SIZE {
+            // Randomly pick an input from the candidate pool
+            while self.sample_inputs.len() < SAMPLE_CORPUS_SIZE && !candidates.is_empty() {
+                // Get idx
+                let pick_idx = self.rand() % candidates.len();
+
+                // Remove this candidate from the pool
+                let (hash, path) = candidates.swap_remove(pick_idx);
+
+                // If we already have this hash, skip, this should never happen!
+                if !self.sample_hashes.insert(hash) {
+                    finding_warn!(self.id, "Chosen candidate was in sample DB already");
+                    continue;
+                }
+
+                // Try to read the data now into the sample input database
+                match std::fs::read(&path) {
+                    Ok(content) => self.sample_inputs.push(content),
+                    Err(e) => {
+                        finding_warn!(self.id, "Failed to read input file {:016X}: {}", hash, e)
+                    }
+                }
+            }
+        }
+        // We have enough room to take all candidates in sample
+        else {
+            for (hash, path) in candidates {
+                if !self.sample_hashes.insert(hash) {
+                    continue;
+                }
+
+                match std::fs::read(&path) {
+                    Ok(content) => self.sample_inputs.push(content),
+                    Err(e) => {
+                        finding_warn!(self.id, "Failed to read input file {:016X}: {}", hash, e)
+                    }
+                }
+            }
         }
     }
 
     /// All fuzzers independently save their discovered inputs to the corpus
     /// directory for inputs. Each fuzzer will then have less inputs in their
     /// in-memory corpus than what exists on disk. Every sync_interval, the
-    /// fuzzers will all scan the corpus directory for new inputs that they
-    /// don't have in their in-memory corpus and ingest them
-    pub fn sync(&mut self) {
+    /// fuzzers will all scan the corpus directory for new inputs to potentially
+    /// sample. Every sync they will clear out their sample queue and hashset
+    pub fn sync(&mut self, prng: usize) {
         // Check to see if we've reached re-sync time
         if self.last_sync.elapsed().as_secs() < self.sync_interval {
             return;
         }
 
-        finding!(self.id, "Syncing corpus...");
+        // Set the prng
+        self.prng = prng;
+
+        // Clear the samples
+        self.sample_inputs.clear();
+        self.sample_hashes.clear();
 
         // Read all of the filenames in the corpus directory and add them
         // to the corpus if we don't have the hash in the database, files have
         // this format: `8B5BB66137A8AA15.input`
-        self.sync_inputs_from_disk();
+        self.sample_inputs_from_disk();
         self.last_sync = Instant::now();
+
+        finding!(
+            self.id,
+            "Sampled {} inputs from disk",
+            self.sample_inputs.len()
+        );
     }
 }

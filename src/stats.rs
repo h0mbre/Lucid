@@ -220,6 +220,20 @@ impl Stats {
         }
     }
 
+    /// Returns the duration since the last new coverage was found.
+    /// If no coverage has ever been found, returns None.
+    fn since_last_find(&self) -> Option<Duration> {
+        self.last_find.map(|t| t.elapsed())
+    }
+
+    /// Helper: returns true if we've been starved for coverage longer than `threshold`.
+    pub fn starved_for(&self, threshold: Duration) -> bool {
+        match self.since_last_find() {
+            Some(dur) => dur >= threshold,
+            None => false,
+        }
+    }
+
     /// Converts a Stats structure to a FormattedStats structure so that the
     /// statistics can be printed to the terminal
     fn generate_formatted_stats(&self) -> FormattedStats {
