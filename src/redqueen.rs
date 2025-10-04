@@ -857,7 +857,7 @@ pub fn redqueen_pass(context: &mut LucidContext) -> Result<(), LucidErr> {
 
     // Process each field
     for idx in 0..context.mutator.num_redqueen_fields() {
-        // Seperate the input into redqueen fields
+        // Separates the input into redqueen fields
         context.mutator.extract_redqueen_fields();
 
         // If the field is zero length, just skip
