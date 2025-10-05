@@ -835,22 +835,17 @@ fn create_redqueen_inputs(context: &mut LucidContext, idx: usize) -> Result<(), 
     Ok(())
 }
 
-/// Obtains an execution trace of the current input then colorizes the input
-/// by introducing as much randomness to the input as possible without affecting
-/// the execution trace. Once colorized, pass the input again to Bochs but have
-/// Bochs log all compare operand values by changing the CpuMode to Cmplog. Once
-/// compare operand values have been obtained, apply standard Redqueen
-/// algorithm to patch input operand value candidate positions with its partner
-/// value (and variants)
-pub fn redqueen_pass(context: &mut LucidContext) -> Result<(), LucidErr> {
+/// Loads the current input and attempts to colorize each Redqueen field
+/// independently to identify insertion candidates in the input. This means
+/// that we have to run a CmpLog pass for each field and then reset the
+/// operand map after each of those iterations since the operand values can
+/// change based on the colorized data in the input fields
+fn colorize_pass(context: &mut LucidContext) -> Result<(), LucidErr> {
     // Take backup of original input
     let orig_input = context.mutator.get_input();
 
     // Get the ground truth trace hash
-    let mut trace_hash = 0;
-    if context.config.colorize {
-        (trace_hash, _) = input_trace_hash(context)?;
-    }
+    let (trace_hash, _) = input_trace_hash(context)?;
 
     // Extract redqueen fields so we get a count
     context.mutator.extract_redqueen_fields();
@@ -866,22 +861,59 @@ pub fn redqueen_pass(context: &mut LucidContext) -> Result<(), LucidErr> {
             continue;
         }
 
-        // Colorize the input optionally
-        if context.config.colorize {
-            colorize_input(context, trace_hash, idx)?;
-        }
+        // Colorize the input for this field
+        colorize_input(context, trace_hash, idx)?;
 
-        // Now do a Cmplog pass for the colorized input
+        // Collect operands for the colorized input
         cmplog_pass(context)?;
 
         // Create new inputs to test
         create_redqueen_inputs(context, idx)?;
 
-        // Reset operand map
+        // Reset operand map for next field
         context.redqueen.cmp_operand_map.clear();
 
-        // Restore original input so that the field we changed is reverted
+        // Restore original input
         context.mutator.copy_input(&orig_input);
+    }
+
+    Ok(())
+}
+
+/// No need to run more than one CmpLog pass here as we are not colorizing the
+/// input; thus, no exposed Redqueen fields can have their content change.
+fn default_pass(context: &mut LucidContext) -> Result<(), LucidErr> {
+    // Extract redqueen fields once since input doesn't change
+    context.mutator.extract_redqueen_fields();
+
+    // Collect operands once for the whole input
+    cmplog_pass(context)?;
+
+    // Process each field
+    for idx in 0..context.mutator.num_redqueen_fields() {
+        // If the field is zero length, just skip
+        let field = context.mutator.get_redqueen_field(idx)?;
+        if field.is_empty() {
+            continue;
+        }
+
+        // Create new inputs to test
+        create_redqueen_inputs(context, idx)?;
+    }
+
+    // Clear operand map after all fields processed
+    context.redqueen.cmp_operand_map.clear();
+
+    Ok(())
+}
+
+/// Dispatches to the appropriate style of Redqueen pass based on whether or
+/// not colorization is enabled, see called function comments for more info
+pub fn redqueen_pass(context: &mut LucidContext) -> Result<(), LucidErr> {
+    if context.config.colorize {
+        colorize_pass(context)?;
+    } else {
+        default_pass(context)?;
     }
 
     Ok(())

@@ -286,6 +286,9 @@ pub struct NetlinkMutator {
 impl Mutator for NetlinkMutator {
     /// Create new instance of structure
     fn new(seed: Option<usize>, max_size: usize) -> Self {
+        // Janky but I don't use this mutator anymore and I just noticed this footgun
+        assert!(max_size == MAX_INPUT_SIZE);
+
         // If pRNG seed not provided, make our own
         let rng = if let Some(seed_val) = seed {
             seed_val
@@ -559,7 +562,7 @@ impl NetlinkMutator {
         hasher.finish()
     }
 
-    /// Insert current input into our database bookeeping
+    /// Insert current input into our database bookkeeping
     fn insert_recent(&mut self, hash: u64) {
         if self.recent_inputs.contains(&hash) {
             return;

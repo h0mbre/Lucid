@@ -33,7 +33,7 @@ const DEFAULT_STARVED_THRESHOLD: u64 = 3600;
 /// around in the LucidContext
 #[derive(Clone)]
 pub struct Config {
-    pub input_max_size: usize,
+    pub input_max_size: usize, // The max size
     pub input_signature: String,
     pub verbose: bool,
     pub dryrun: bool,
@@ -49,6 +49,7 @@ pub struct Config {
     pub num_fuzzers: usize,
     pub mutator: String,
     pub starved_threshold: u64,
+    pub default_starved_threshold: u64,
     pub colorize: bool,
 }
 
@@ -326,6 +327,7 @@ pub fn parse_args() -> Result<Config, LucidErr> {
             threshold
         }
     };
+    let default_starved_threshold = starved_threshold;
 
     // Detect opting into colorization
     let colorize = matches.get_flag("colorize");
@@ -351,6 +353,7 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         num_fuzzers,
         mutator,
         starved_threshold,
+        default_starved_threshold,
         colorize,
     })
 }

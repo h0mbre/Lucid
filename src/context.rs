@@ -1126,6 +1126,9 @@ pub fn handle_timeout(context: &mut LucidContext) {
 /// input to the corpus, get a new edge-count, update the coverage statistics,
 /// place the current input into Redqueen's queue to process
 pub fn handle_new_coverage(context: &mut LucidContext, old_edge_count: usize) -> usize {
+    // Minimum threshold we consider for coverage starvation in seconds
+    const MIN_STARVATION_THRESHOLD: u64 = 600; // 10 Minutes
+
     // We don't know yet if we hit an new edge pair or if we just set a hit count
     // record
     let mut save_input = false;
@@ -1146,6 +1149,9 @@ pub fn handle_new_coverage(context: &mut LucidContext, old_edge_count: usize) ->
 
         // Save this every time
         save_input = true;
+
+        // We achieved real new coverage, reset the starvation threshold
+        context.config.starved_threshold = context.config.default_starved_threshold;
     }
     // If the edgecount is the same, that means we likely just found a new
     // hit count for an edge pair
@@ -1160,6 +1166,15 @@ pub fn handle_new_coverage(context: &mut LucidContext, old_edge_count: usize) ->
                 "{} increased edge-pair hit count",
                 context.fuzzing_stage
             );
+
+            // Halve the time to shorten the threshold going forward as long
+            // as it's at least the minimum
+            let curr_threshold = context.config.starved_threshold;
+            if curr_threshold != MIN_STARVATION_THRESHOLD {
+                let new_threshold = curr_threshold / 2;
+                context.config.starved_threshold =
+                    std::cmp::max(new_threshold, MIN_STARVATION_THRESHOLD);
+            }
         }
     }
 
