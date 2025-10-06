@@ -5,7 +5,7 @@
 //! Copyright (c) 2025 h0mbre
 
 /// Many of the data structures in here are never read fully
-#![allow(dead_code)]
+#[allow(dead_code)]
 
 use crate::err::LucidErr;
 
