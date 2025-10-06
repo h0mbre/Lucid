@@ -187,7 +187,7 @@ pub trait Mutator {
     }
 
     /// Default: Helper to clear the input so we don't have to access core
-    fn clear_input(&mut self) {
+    fn _clear_input(&mut self) {
         self.core_mut().clear_input();
     }
 

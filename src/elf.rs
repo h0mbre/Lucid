@@ -4,6 +4,9 @@
 //! SPDX-License-Identifier: MIT
 //! Copyright (c) 2025 h0mbre
 
+/// Many of the data structures in here are never read fully
+#![allow(dead_code)]
+
 use crate::err::LucidErr;
 
 /// Size of a 64-bit ELF headers
