@@ -6,7 +6,8 @@
 
 use std::collections::HashSet;
 use std::fs::File;
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::time::Instant;
 

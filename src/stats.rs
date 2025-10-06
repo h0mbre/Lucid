@@ -311,7 +311,7 @@ impl Stats {
             timeouts: self.timeouts,
             edges: self.edges,
             last_find: format!(
-                "({}h {}m {}s) ({} iters)",
+                "{}h {}m {}s, {} iters",
                 lf_hours, lf_minutes, lf_secs, lf_iters
             ),
             map_coverage: (self.edges as f64 / self.map_size as f64) * 100.0,
