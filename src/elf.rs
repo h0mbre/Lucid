@@ -1,12 +1,13 @@
+#![allow(dead_code)]
 //! This file contains all of the logic necessary for parsing a Bochs ELF and
 //! creating consumable data structures that allow Bochs to be loaded in memory
+//! #![allow(dead_code)] is used on this file because several data structures
+//! never have their members read, but I like having them around for reference
 //!
 //! SPDX-License-Identifier: MIT
 //! Copyright (c) 2025 h0mbre
 
 /// Many of the data structures in here are never read fully
-#[allow(dead_code)]
-
 use crate::err::LucidErr;
 
 /// Size of a 64-bit ELF headers
