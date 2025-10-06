@@ -165,6 +165,7 @@ pub struct Stats {
     pub session_iters: usize,       // Total fuzzcases
     session_start: Option<Instant>, // Start time
     last_find: Option<Instant>,     // Last new coverage find
+    last_find_iters: usize,         // Iters since last new coverage find
     pub crashes: usize,             // Number of crashes
     pub timeouts: usize,            // Number of timeouts
     pub fuzzers: usize,             // Number of fuzzers
@@ -250,6 +251,13 @@ impl Stats {
         let lf_minutes = (lf_elapsed % 3600) / 60;
         let lf_secs = lf_elapsed % 60;
 
+        // Format the last find iters
+        let lf_iters = match self.last_find_iters {
+            0..=999 => format!("{}", self.last_find_iters),
+            1_000..=999_999 => format!("{:.2}K", self.last_find_iters as f64 / 1_000.0),
+            _ => format!("{:.3}M", self.last_find_iters as f64 / 1_000_000.0),
+        };
+
         // For single process
         let batch_elapsed = self.batch_start.unwrap().elapsed();
         let batch_millis = batch_elapsed.as_millis() as f64;
@@ -302,7 +310,10 @@ impl Stats {
             crashes: self.crashes,
             timeouts: self.timeouts,
             edges: self.edges,
-            last_find: format!("{}h {}m {}s", lf_hours, lf_minutes, lf_secs),
+            last_find: format!(
+                "({}h {}m {}s) ({} iters)",
+                lf_hours, lf_minutes, lf_secs, lf_iters
+            ),
             map_coverage: (self.edges as f64 / self.map_size as f64) * 100.0,
             cpu_target,
             cpu_reset,
@@ -456,6 +467,7 @@ impl Stats {
         self.session_start = Some(Instant::now());
         self.batch_start = Some(Instant::now());
         self.last_find = Some(Instant::now());
+        self.last_find_iters = 0;
         self.map_size = map_size;
         self.dirty_block_length = dirty_block_length;
         self.max_input = input_max_size;
@@ -467,6 +479,7 @@ impl Stats {
         // We just completed a single fuzzcase
         self.session_iters += 1;
         self.batch_iters += 1;
+        self.last_find_iters += 1;
 
         // Update the snapshot statistics
         self.dirty_pages = snapshot.dirty_pages;
@@ -517,6 +530,7 @@ impl Stats {
     pub fn new_coverage(&mut self, edges: usize) {
         self.edges = edges;
         self.last_find = Some(Instant::now());
+        self.last_find_iters = 0;
     }
 
     /// Report stats in single-process fuzzing
@@ -633,6 +647,7 @@ impl Stats {
         self.session_start = None;
         self.batch_start = None;
         self.last_find = Some(Instant::now());
+        self.last_find_iters = 0;
         self.map_size = map_size;
         self.dirty_block_length = dirty_block_length;
         self.max_input = max_input_size;
@@ -725,10 +740,18 @@ impl Stats {
         self.session_iters = session_iters;
         self.crashes = crashes;
         self.timeouts = timeouts;
+
+        // New edge record, reset last find
         if edges > self.edges {
             self.edges = edges;
             self.last_find = Some(Instant::now());
+            self.last_find_iters = 0;
         }
+        // No new edge record, add the batch iters to since last
+        else {
+            self.last_find_iters += batch_iters;
+        }
+
         self.dirty_pages = dirty_pages;
         self.memcpys = memcpys;
         self.corpus_entries = corpus_entries;
