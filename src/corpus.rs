@@ -4,9 +4,9 @@
 //! SPDX-License-Identifier: MIT
 //! Copyright (c) 2025 h0mbre
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::fs::File;
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::time::Instant;
@@ -58,29 +58,28 @@ impl Corpus {
                 return Err(LucidErr::from("Unable to read entries from seeds dir"));
             };
 
-            // For each entry, get a path
-            for entry in entries {
-                if entry.is_ok() {
-                    let path = entry.unwrap().path();
+            // Flatten will unwrap all Ok() entries for us and skip Err()
+            for ok_entry in entries.flatten() {
+                // Extract the path from the dir entry
+                let path = ok_entry.path();
 
-                    // Make sure its a regular file
-                    if path.is_file() {
-                        let file = File::open(&path);
-                        if file.is_err() {
-                            continue;
-                        }
-
-                        // Store contents
-                        let mut file_buf = Vec::new();
-                        let result = file.unwrap().read_to_end(&mut file_buf);
-                        if result.is_err() {
-                            continue;
-                        }
-
-                        // Store the input
-                        corpus_size += file_buf.len();
-                        inputs.push(file_buf);
+                // Make sure its a regular file
+                if path.is_file() {
+                    let file = File::open(&path);
+                    if file.is_err() {
+                        continue;
                     }
+
+                    // Store contents
+                    let mut file_buf = Vec::new();
+                    let result = file.unwrap().read_to_end(&mut file_buf);
+                    if result.is_err() {
+                        continue;
+                    }
+
+                    // Store the input
+                    corpus_size += file_buf.len();
+                    inputs.push(file_buf);
                 }
             }
         }
@@ -259,7 +258,7 @@ impl Corpus {
     /// Save an input to the corpus
     /// - Hash the input so we can focus on saving only unique inputs
     /// - Attempt to write the input to disk, but fail and warn the user if
-    /// we have already reached our findings limit
+    ///   we have already reached our findings limit
     ///
     /// It's important to note that if we fail to write the input to disk because
     /// of the findings limit, then we also don't save the input to memory
@@ -303,7 +302,7 @@ impl Corpus {
     /// Save a crash
     /// - Hash the crash so we don't duplicate crashes on disk
     /// - Attempt to write the crash to disk, but fail and warn the user if
-    /// we have already reached our findings limit
+    ///   we have already reached our findings limit
     pub fn save_crash(&mut self, input: &Vec<u8>, filetype: &str) -> u64 {
         // Create a hash for the input data
         let mut hasher = DefaultHasher::new();
@@ -371,7 +370,7 @@ impl Corpus {
     /// Shouldn't be necessary, but check to make sure it's a somewhat sane
     /// file before we try ingesting it during the corpus-syncing process
     fn is_valid_input_file(&self, path: &std::path::Path) -> bool {
-        path.is_file() && path.extension().map_or(false, |ext| ext == "input")
+        path.is_file() && path.extension().is_some_and(|ext| ext == "input")
     }
 
     /// Thin wrapper around reading the corpus directory entries during the

@@ -64,9 +64,9 @@ impl FileTable {
         let data = read(path);
 
         // The metadata and contents are there, it's probably a real file
-        if meta.is_ok() && data.is_ok() {
-            file.metadata = Some(meta.unwrap());
-            file.contents = data.unwrap();
+        if let (Ok(metadata), Ok(contents)) = (meta, data) {
+            file.metadata = Some(metadata);
+            file.contents = contents;
         }
         // Check for the tmpfile possibility
         else if path.contains("tmpfile") {

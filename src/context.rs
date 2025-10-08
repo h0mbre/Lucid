@@ -619,7 +619,7 @@ fn calc_save_size() -> usize {
 /// block of memory. In general, writable memory that we use that we need to
 /// snapshot is all a single contiguous range.
 fn map_save_areas(size: usize, bochs: &Bochs) -> Result<(usize, usize), LucidErr> {
-    assert!(size % PAGE_SIZE == 0);
+    assert!(size.is_multiple_of(PAGE_SIZE));
 
     // Determine where we're mapping this writable memory
     let map_addr = bochs.write_base + bochs.write_length;

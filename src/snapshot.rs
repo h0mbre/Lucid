@@ -54,10 +54,10 @@ impl Snapshot {
     /// Creates a new instance of a Snapshot
     pub fn new(base: usize, length: usize) -> Self {
         // Calculate the number of potential dirty pages, round up
-        let num_pages = (length + PAGE_SIZE - 1) / PAGE_SIZE;
+        let num_pages = length.div_ceil(PAGE_SIZE);
 
         // Calculate the number of bytes we need in the bitmap, round up
-        let bitmap_size = (num_pages + 7) / 8;
+        let bitmap_size = num_pages.div_ceil(8);
 
         // Allocate bitmap
         let dirty_map = vec![0u8; bitmap_size];

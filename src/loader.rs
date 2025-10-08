@@ -172,7 +172,7 @@ fn push_string(stack: &mut Vec<u8>, string: String) {
     // We're adding bytes in reverse because we're adding to index 0 always,
     // we want to pad these strings so that they remain 8-byte aligned so that
     // the stack is easier to reason about
-    if bytes.len() % U64_SIZE > 0 {
+    if !bytes.len().is_multiple_of(U64_SIZE) {
         let pad = U64_SIZE - (bytes.len() % U64_SIZE);
         bytes.resize(bytes.len() + pad, 0x0);
     }
@@ -374,7 +374,7 @@ pub fn load_bochs(config: &Config) -> Result<Bochs, LucidErr> {
     }
 
     // Round the image size up to a page
-    if image_size % PAGE_SIZE > 0 {
+    if !image_size.is_multiple_of(PAGE_SIZE) {
         image_size += PAGE_SIZE - (image_size % PAGE_SIZE);
     }
 

@@ -40,7 +40,7 @@ impl Mmu {
     pub fn new(map_address: usize) -> Result<Self, LucidErr> {
         // Straight-forward
         let length = (DEFAULT_BRK_SIZE + DEFAULT_MMAP_SIZE) as libc::size_t;
-        assert!(length % PAGE_SIZE == 0);
+        assert!(length.is_multiple_of(PAGE_SIZE));
 
         // Try to `mmap` this block
         let result = unsafe {

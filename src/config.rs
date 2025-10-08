@@ -169,12 +169,12 @@ pub fn parse_args() -> Result<Config, LucidErr> {
 
     // Create Bochs args for loading
     let bochs_args = vec![
-        "./lucid_bochs".to_string(),    // argv[0]
-        "-f".to_string(),   // argv[1], config file path option
-        bochs_config,   // argv[2], config file path value
-        "-q".to_string(),   // argv[3], skip prompting, quick start
-        "-r".to_string(),   // argv[4], resume from snapshot directory option
-        bochs_snapshot_dir, // argv[5], resume from snapshot directory value
+        "./lucid_bochs".to_string(), // argv[0]
+        "-f".to_string(),            // argv[1], config file path option
+        bochs_config,                // argv[2], config file path value
+        "-q".to_string(),            // argv[3], skip prompting, quick start
+        "-r".to_string(),            // argv[4], resume from snapshot directory option
+        bochs_snapshot_dir,          // argv[5], resume from snapshot directory value
     ];
 
     // Reverse args
