@@ -18,7 +18,14 @@ Depending on what is stock on your distribution, you may also need to install `l
 - `gui-bochs`: A dynamically linked Bochs binary we use to take snapshots to disk for Lucid to resume from when fuzzing
 - `lucid-bochs`: A `--static-pie` Bochs binary that we load into Lucid for fuzzing built against a custom musl
 - `BIOS-bochs-latest`: Required Bochs file the path to which is required in the `bochsrc_files`
-- `VGABIOS-lgpl-latest`: Required Bochs file the path to which is required in the `bochsrc_files` 
+- `VGABIOS-lgpl-latest`: Required Bochs file the path to which is required in the `bochsrc_files`
+
+## Binary Integrity (SHA-1)
+7b4c089af783c6b48bdefe04ff5e46f949651ae6  lucid-fuzz
+575f28985756131bb637e546438e032507758322  gui-bochs
+ce7b78ba7b813a889e4cbdc41e6e0c61f5ead7af  lucid-bochs
+c654a401c6f4257324640b157a7e16bf334a263c  BIOS-bochs-latest
+35aa458948da1fcb747f70d3536c6de08e15f498  VGABIOS-lgpl-latest
 
 # Workflow Overview
 ### Step 1:
