@@ -10,5 +10,4 @@ cpu: count=1, ips=750000000, reset_on_triple_fault=1, ignore_bad_msrs=1
 cpu: cpuid_limit_winnt=0
 keyboard: user_shortcut=ctrl-alt-del
 memory: guest=64, host=64
-#usb_uhci: enabled=1, port1=mouse
 display_library: sdl2
