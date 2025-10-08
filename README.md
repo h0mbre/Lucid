@@ -128,18 +128,18 @@ These are stats about the entire fuzzing campaign:
 
 ## Perf
 These are stats about the performance of the fuzzing campaign:
--`iters`: Total fuzzing iterations thus far
--`iters/s`: How many iterations per second have been achieved globally 
--`iters/s/f`: How many iterations per second have been achieved *per fuzzer*
+- `iters`: Total fuzzing iterations thus far
+- `iters/s`: How many iterations per second have been achieved globally 
+- `iters/s/f`: How many iterations per second have been achieved *per fuzzer*
 
 ## Cpu
 These are stats about how we are spending our CPU time:
--`target`: CPU time spent executing the target (Bochs)
--`reset`: CPU time spent performing snapshot resets
--`mutator`: CPU time spent in the mutator
--`coverage`: CPU time spent checking the coverage map for new coverage
--`redqueen`: CPU time spent processing inputs through Redqueen
--`misc`: Remainder of CPU time 
+- `target`: CPU time spent executing the target (Bochs)
+- `reset`: CPU time spent performing snapshot resets
+- `mutator`: CPU time spent in the mutator
+- `coverage`: CPU time spent checking the coverage map for new coverage
+- `redqueen`: CPU time spent processing inputs through Redqueen
+- `misc`: Remainder of CPU time 
 
 ## Coverage
 - `edges`: The number of unique edge pairs the fuzzer has discovered
