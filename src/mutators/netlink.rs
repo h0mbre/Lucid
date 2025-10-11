@@ -2,12 +2,18 @@
 //! netlink message generation. This mutator wraps dumb byte buffers in metadata
 //! for the fuzzing harness to dispatch to various netlink message handlers
 //!
+//! This mutator was designed to fuzz a harness discussed on the blog and is
+//! meant to tease out what changes to Lucid were necessary to fuzz realistic
+//! targets, for more information see the blogpost:
+//! https://h0mbre.github.io/Lucid_Dreams_1/
+//!
 //! SPDX-License-Identifier: MIT
 //! Copyright (c) 2025 h0mbre
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque, HashMap};
 use std::hash::{Hash, Hasher};
+use std::time::{Duration, Instant};
 
 use super::{generate_seed, Mutator, MutatorCore};
 use crate::corpus::Corpus;
@@ -29,7 +35,7 @@ const MAX_NUM_MSGS: usize = 16;
 const GEN_SCRATCH_RATE: usize = 1;
 
 /// Number of valid protocol values (used as indexes in harness)
-const NUM_PROTOCOLS: usize = 4;
+const NUM_PROTOCOLS: usize = 3;
 
 /// Are we aligning payload lengths?
 const ALIGN_ON: bool = true;
@@ -51,6 +57,18 @@ const BIT_CORRUPT: usize = 128;
 
 /// How large of an input database we use to track unique inputs
 const INPUT_DB_SIZE: usize = 500_000;
+
+/// How often we reuse an input if it found new coverage
+const REUSE_COUNT: usize = 10;
+
+/// How often we switch to uniform selection to reset baseline in secs
+const UNIFORM_SELECT_INTERVAL: u64 = 3600; // 1 Hour
+
+/// How long we stay in uniform selection mode before switching it off
+const UNIFORM_SELECT_DURATION: u64 = 1200; // 20 Mins
+
+/// How much of the scores we *keep* when decaying
+const DECAY_KEEP: f64 = 0.3;
 
 /// Max size of an input, this is calculated in the harness as follows:
 /*
@@ -83,21 +101,21 @@ const MUTATIONS: [MutationTypes; 13] = [
 ];
 
 /// Represents some of the mutation strategies that AFL++ seems to do in "Havoc"
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum MutationTypes {
-    ByteInsert,
-    ByteOverwrite,
-    ByteDelete,
-    BitFlip,
-    PadMessage,
-    ProtocolChange,
-    UniProtocol,
-    DuplicateMessage,
-    ShuffleMessages,
-    SpliceMessage,
-    PatchHeaderLen,
-    PatchHeaderType,
-    PatchHeaderFlags,
+    ByteInsert = 0,
+    ByteOverwrite = 1,
+    ByteDelete = 2,
+    BitFlip = 3,
+    PadMessage = 4,
+    ProtocolChange = 5,
+    UniProtocol = 6,
+    DuplicateMessage = 7,
+    ShuffleMessages = 8,
+    SpliceMessage = 9,
+    PatchHeaderLen = 10,
+    PatchHeaderType = 11,
+    PatchHeaderFlags = 12,
 }
 
 /// The overall input structure, some metadata followed by nested messages. This
@@ -274,12 +292,18 @@ impl NetlinkInput {
 
 /// Netlink mutator structure
 pub struct NetlinkMutator {
-    core: MutatorCore,                     // Common stuff for all mutators
-    msg_bufs: [Vec<u8>; MAX_NUM_MSGS],     // Pre-allocated message buffers
-    netlink_input: NetlinkInput,           // Structured view for mutation
-    scratch_msgs: [Vec<u8>; MAX_NUM_MSGS], // Used for mutations for zero alloc
-    recent_inputs: HashSet<u64>,           // Set of hashes for inputs
-    recent_order: VecDeque<u64>,           // Order of the hashes inserted in DB
+    core: MutatorCore,                      // Common stuff for all mutators
+    msg_bufs: [Vec<u8>; MAX_NUM_MSGS],      // Pre-allocated message buffers
+    netlink_input: NetlinkInput,            // Structured view for mutation
+    scratch_msgs: [Vec<u8>; MAX_NUM_MSGS],  // Used for mutations for zero alloc
+    recent_inputs: HashSet<u64>,            // Set of hashes for inputs
+    recent_order: VecDeque<u64>,            // Order of the hashes inserted in DB
+    reuse_remaining: usize,                 // Number of reuse attempts left
+    strats_vec: Vec<MutationTypes>,         // Strats used last mutation
+    total_score: usize,                     // Total score 
+    last_switch: Instant,                   // When we mode switched
+    uniform_mode: bool,                     // Whether or not we're in uniform
+    strat_scores: HashMap<MutationTypes, usize>,    // Score database for strats
 }
 
 /// Implementation for this mutator for Mutator trait
@@ -310,12 +334,26 @@ impl Mutator for NetlinkMutator {
                 input: Vec::with_capacity(max_size),
                 max_size,
                 fields: Vec::new(),
+                last_input: None,
+                new_cov: false,
             },
             msg_bufs: msg_bufs_arr,
             netlink_input: NetlinkInput::new(),
             scratch_msgs: scratch_msgs_arr,
             recent_inputs: HashSet::with_capacity(INPUT_DB_SIZE),
             recent_order: VecDeque::with_capacity(INPUT_DB_SIZE),
+            reuse_remaining: 0,
+            strats_vec: Vec::with_capacity(MUTATIONS.len()),
+            
+            // Every strat gets init as 1, so just take the total of that
+            total_score: MUTATIONS.len(),
+            last_switch: Instant::now(),
+
+            // Start in uniform mode
+            uniform_mode: true,
+
+            // Initialize all to 1 so that all can be selected sometimes
+            strat_scores: MUTATIONS.iter().map(|&m| (m, 1)).collect(),
         }
     }
 
@@ -378,27 +416,48 @@ impl Mutator for NetlinkMutator {
 
     /// Main mutation logic for this mutator
     fn mutate(&mut self, corpus: &mut Corpus) -> Result<(), LucidErr> {
-        // Clear the current input
-        self.core.clear_input();
+        // Load the base-input for mutation
+        self.load_base_input(corpus)?;
 
-        // Get the number of inputs in the corpus
-        let num_inputs = corpus.num_inputs();
+        // Score the strategies we used last time
+        self.score_strats();
 
-        // Get a generate from scratch percentage
-        let gen = self.rand_perc();
-
-        // If we don't have any inputs to choose from, create random one
-        if num_inputs == 0 || gen <= GEN_SCRATCH_RATE {
-            self.generate_random_input()?;
-            return Ok(());
+        // Apply mutation strategies based on mode
+        if self.uniform_mode {
+            self.uniform_mutations(corpus)?;
         }
 
-        // Pick a random input from the corpus, bias towards new inputs, can
-        // unwrap here because we checked above that we have > 1 inputs
-        let chosen = corpus.get_input_bias_new(self.get_rng()).unwrap();
+        // Weighted selection
+        else {
+            self.weighted_mutations(corpus)?;
+        }
 
-        // Copy that input into the input buffer
-        self.copy_input(chosen);
+        // Check to see if we should reset selection mode
+        self.check_mode();
+
+        Ok(())
+    }
+}
+
+/// These are private (mostly) mutation methods to this mutator that we use
+/// in the fn mutate() function
+impl NetlinkMutator {
+    // Re-use the last base-input we picked because it achieved new coverage
+    fn reuse_last(&mut self, corpus: &mut Corpus) {
+        // Grab the index
+        let idx = self.core.last_input.unwrap();
+
+        // Grab that input
+        let chosen = corpus.get_input_by_idx(idx);
+
+        // Copy the input over
+        self.copy_input(chosen.unwrap());
+    }
+
+    // Select mutation strategies uniformly
+    fn uniform_mutations(&mut self, corpus: &mut Corpus) -> Result<(), LucidErr> {
+        // Clear the strats vector
+        self.strats_vec.clear();
 
         // Determine how many rounds of mutation we're doing
         let mut rounds = self.rand_one_incl(MAX_STACK);
@@ -407,6 +466,9 @@ impl Mutator for NetlinkMutator {
         while rounds > 0 {
             // Get strategy index
             let strat_idx = self.rand_idx(MUTATIONS.len());
+
+            // Get strat for vector stash
+            let strat = MUTATIONS[strat_idx];
 
             // Match on the mutation and apply it
             let success = match MUTATIONS[strat_idx] {
@@ -430,6 +492,11 @@ impl Mutator for NetlinkMutator {
                 continue;
             }
 
+            // Record the strat deduped, success guaranteed here
+            if !self.strats_vec.contains(&strat) {
+                self.strats_vec.push(strat);
+            }
+
             // Successfully applied mutation, check if last round is done, if so
             // hash the input and make sure it's not in the DB
             rounds -= 1;
@@ -450,11 +517,219 @@ impl Mutator for NetlinkMutator {
 
         Ok(())
     }
-}
 
-/// These are private (mostly) mutation methods to this mutator that we use
-/// in the fn mutate() function
-impl NetlinkMutator {
+    // Pick mutation strategies based on historical scoring data
+    fn weighted_mutations(&mut self, corpus: &mut Corpus) -> Result<(), LucidErr> {
+        // Clear the strats vector
+        self.strats_vec.clear();
+
+        // Determine how many rounds of mutation we're doing
+        let mut rounds = self.rand_one_incl(MAX_STACK);
+
+        // Flatten the score database out deterministically:
+        // 1 - depends on hashmap key entry order which we freeze at ::New()
+        // 2 - sort_by_key is deterministic then based on map key order
+        // 3 - from_fn knows the array length at compile time
+        // 4 - iterates through each index and calls a callback that we 
+        //     defined in the closure
+        let mut sorted: [(MutationTypes, usize); MUTATIONS.len()] =
+            std::array::from_fn(|i| {
+                let m = MUTATIONS[i];
+                let score = *self.strat_scores.get(&m).unwrap_or(&1);
+                (m, score)
+            });
+
+        // Sort it in place by the score, and make it descending w Reverse
+        sorted.sort_by_key(|(_, score)| std::cmp::Reverse(*score)); 
+
+        // For that many rounds, pick a mutation strategy and use it
+        while rounds > 0 {
+            // Select a strategy based on weights
+            let strat = self.pick_weighted_strat(&sorted);
+
+            // Apply mutation
+            let success = match strat {
+                MutationTypes::ByteInsert => self.byte_insert()?,
+                MutationTypes::ByteOverwrite => self.byte_overwrite()?,
+                MutationTypes::ByteDelete => self.byte_delete()?,
+                MutationTypes::BitFlip => self.bit_flip()?,
+                MutationTypes::PadMessage => self.pad_message()?,
+                MutationTypes::ProtocolChange => self.protocol_change()?,
+                MutationTypes::UniProtocol => self.uni_protocol()?,
+                MutationTypes::DuplicateMessage => self.duplicate_message()?,
+                MutationTypes::ShuffleMessages => self.shuffle_messages()?,
+                MutationTypes::SpliceMessage => self.splice_message(corpus)?,
+                MutationTypes::PatchHeaderLen => self.patch_nlmsghdr_len()?,
+                MutationTypes::PatchHeaderType => self.patch_nlmsghdr_type()?,
+                MutationTypes::PatchHeaderFlags => self.patch_nlmsghdr_flags()?,
+            };
+
+            // Failed to apply mutation, try again
+            if !success {
+                continue;
+            }
+
+            // Record the strat deduped
+            if !self.strats_vec.contains(&strat) {
+                self.strats_vec.push(strat);
+            }
+
+            // Successfully applied mutation
+            rounds -= 1;
+            if rounds == 0 {
+                // Hash the input
+                let hash = self.hash_input();
+
+                // Check if we've seen it before
+                if !self.recent_inputs.contains(&hash) {
+                    self.insert_recent(hash);
+                } else {
+                    // We've seen this before, add another mutation round
+                    rounds += 1;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    // Pick a strategy according to database scores where each score is a fraction
+    // of the total_score. So we pick a number between 1 - total_score and 
+    // then see what bucket that fell into and then pick that strat
+    fn pick_weighted_strat(&mut self, sorted: &[(MutationTypes, usize)])
+        -> MutationTypes {
+        // Should always have scores as we start in uniform mode
+        assert!(self.total_score > 0);
+    
+        // Pick a random choice within the total_score 
+        let roll = self.rand_one_incl(self.total_score);
+        let mut acc = 0;
+    
+        // Traverse in order and pick based on cumulative score
+        for (strat, score) in sorted.iter() {
+            acc += *score;
+            if roll <= acc {
+                return *strat;
+            }
+        }
+
+        // I think this is unreachable?
+        unreachable!();
+    }
+
+    // Load a base-input into the input buffer in core
+    fn load_base_input(&mut self, corpus: &mut Corpus) -> Result<(), LucidErr> {
+        // Clear the current input
+        self.clear_input();
+
+        // Short circuit if the last input got new coverage, re-use it
+        if self.new_coverage() {
+            // Found new coverage, reset the reuse counter
+            self.reuse_remaining = REUSE_COUNT;
+        }
+
+        // We have reuse attempts remaining to reuse the last input, reuse input
+        // and then decrement budget
+        if self.reuse_remaining > 0 {
+            self.reuse_last(corpus);
+            self.reuse_remaining -= 1;
+        }
+
+        // Last input didn't lead to new coverage
+        else {
+            // Get the number of inputs in the corpus
+            let num_inputs = corpus.num_inputs();
+
+            // Get a generate from scratch percentage
+            let gen = self.rand_perc();
+
+            // If we don't have any inputs to choose from, create random one
+            if num_inputs == 0 || gen <= GEN_SCRATCH_RATE {
+                self.generate_random_input()?;
+                return Ok(());
+            }
+
+            // Pick a random input from the corpus, bias towards new inputs, can
+            // unwrap here because we checked above that we have > 1 inputs
+            let (idx, chosen) = corpus.get_input_bias_new(self.get_rng());
+
+            // Set this as the last used base input
+            self.core.last_input = Some(idx);
+
+            // Copy that input into the input buffer
+            self.copy_input(chosen.unwrap());
+        }
+
+        // Success
+        Ok(())
+    }
+
+    // Score the strategies from the last mutation 
+    fn score_strats(&mut self) {
+        // No new coverage, return early no one gets credit
+        if !self.new_coverage() {
+            return;
+        }
+
+        // Only score in uniform mode for now
+        if !self.uniform_mode {
+            return;
+        }
+
+        // Got new coverage, update scores
+        for strat in &self.strats_vec {
+            *self.strat_scores.entry(*strat).or_insert(1) += 1;
+            self.total_score += 1;
+        }
+    }
+
+    // Decay the scores so that we can have new baselines be effective
+    fn decay_scores(&mut self) {
+        // Iterate through all the scores, keep the constant defined amount
+        // but make sure its always at least 1
+        for score in self.strat_scores.values_mut() {
+            *score = (*score as f64 * DECAY_KEEP).round() as usize;
+            if *score == 0 {
+                *score = 1;
+            }
+        }
+
+        // Recalc the total score now
+        self.total_score = self.strat_scores.values().sum();
+    }
+
+    // Check whether or not we should change modes
+    fn check_mode(&mut self) {
+        // Calc elapsed time
+        let elapsed = self.last_switch.elapsed();
+
+        // Get uniform mode
+        let uniform = self.uniform_mode;
+
+        // Calculate the threshold we're dealing with, could be time we've 
+        // been in uniform mode or time since last uniform mode switch
+        let threshold = if uniform {
+            Duration::from_secs(UNIFORM_SELECT_DURATION)
+        } else {
+            Duration::from_secs(UNIFORM_SELECT_INTERVAL)
+        };
+
+        // Check if threshold met in uniform mode and turn it off
+        if uniform && elapsed > threshold {
+            self.uniform_mode = false;
+            self.last_switch = Instant::now();
+        }
+
+        // Check if we need to switch to uniform mode
+        else if !uniform && elapsed > threshold {
+            self.uniform_mode = true;
+            self.last_switch = Instant::now();
+
+            // Decay the scores in the database
+            self.decay_scores();
+        }
+    }
+
     fn generate_random_input(&mut self) -> Result<(), LucidErr> {
         // Constants for us to use for netlink message stuff
         const NLMSGHDR_SIZE: usize = 16; // Size of nlmsghdr
@@ -1054,8 +1329,8 @@ impl NetlinkMutator {
         let donor_protocol = self.netlink_input.protocols[donor_idx];
 
         // Get a recipient input
-        let recipient = corpus.get_input_bias_new(self.get_rng()).unwrap();
-        self.copy_input(recipient);
+        let (_, recipient) = corpus.get_input_bias_new(self.get_rng());
+        self.copy_input(recipient.unwrap());
 
         // Deserialize it
         self.netlink_input

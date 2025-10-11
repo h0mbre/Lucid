@@ -202,14 +202,14 @@ impl Corpus {
     }
 
     /// Gets an input from the corpus with pseudo uniform distribution
-    pub fn get_input_uniform(&mut self, prng: usize) -> Option<&[u8]> {
+    pub fn get_input_uniform(&mut self, prng: usize) -> (usize, Option<&[u8]>) {
         // Seed our random
         self.prng = prng;
 
         // Determine ceiling index
         let ceiling = self.inputs.len() + self.sample_inputs.len();
         if ceiling == 0 {
-            return None;
+            return (0, None);
         }
 
         // Pick a random index across both pools
@@ -217,15 +217,15 @@ impl Corpus {
 
         // If it's in the normal corpus, return that
         if idx < self.inputs.len() {
-            return Some(&self.inputs[idx]);
+            return (idx, Some(&self.inputs[idx]));
         }
 
         // Otherwise, adjust and return from the sample pool
-        Some(&self.sample_inputs[idx - self.inputs.len()])
+        (idx, Some(&self.sample_inputs[idx - self.inputs.len()]))
     }
 
     /// Gets an input but biases selection towards newer inputs (towards end)
-    pub fn get_input_bias_new(&mut self, prng: usize) -> Option<&[u8]> {
+    pub fn get_input_bias_new(&mut self, prng: usize) -> (usize, Option<&[u8]>) {
         // Seed our random
         self.prng = prng;
 
@@ -252,7 +252,7 @@ impl Corpus {
         let idx = pool.start + (self.rand() % pool.len());
 
         // Return that by index
-        self.get_input_by_idx(idx)
+        (idx, self.get_input_by_idx(idx))
     }
 
     /// Save an input to the corpus

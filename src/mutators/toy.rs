@@ -148,6 +148,8 @@ impl Mutator for ToyMutator {
                 input: Vec::with_capacity(max_size),
                 max_size,
                 fields: Vec::new(),
+                last_input: None,
+                new_cov: false,
             },
             last_mutation: Vec::with_capacity(MAX_STACK),
         }

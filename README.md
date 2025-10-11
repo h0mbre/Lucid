@@ -1,7 +1,37 @@
 # Lucid
-Lucid is an educational fuzzing project which aims to create a Bochs emulator based snapshot fuzzer capable of fuzzing traditionally hard to fuzz targets such as kernels and browsers. Lucid is based on a fuzzer originally conceived of and developed by [Brandon Falk](https://twitter.com/gamozolabs). Lucid utilizes changes to musl in order to affect Bochs' behavior and achieve a functional sandbox that will allow Lucid to run Bochs within its virtual address space without being able to interact directly with the operating system. The goal of the sandbox is to achieve determinism. 
+Lucid is an educational fuzzing project which aims to create a Bochs emulator based snapshot fuzzer capable of fuzzing traditionally hard to fuzz targets such as kernels and browsers. Lucid is based on a fuzzer originally conceived of and developed by [Brandon Falk](https://twitter.com/gamozolabs). 
 
-Once Bochs has been built with the custom musl as a `-static-pie`, the fuzzer can load the Bochs ELF into its memory and have it run your target.
+# Design and Architecture 
+Lucid achieves deterministic fuzzing by creating a complete sandbox for the Bochs emulator. It loads a `--static-pie` Bochs ELF into its own process space and context switches between executing Lucid (for fuzzer tasks) and Bochs (for executing the fuzzing target) using inline assembly.
+
+Lucid achieves this sandbox by building Bochs against a custom version of musl that does not emit `syscall` instructions. Instead, musl functions emit calls into Lucid's syscall emulation layer, denying Bochs access to the underlying operating system. 
+
+Below is a diagram demonstrating Lucid's architecture:
+```text
++------------------------------------------------------------------+
+|  Lucid (Process/Virtual Address Space)                           |
+|                                                                  |
+|  +------------------------------------------------------------+  |
+|  |  Bochs x86-64 Emulator (--static-pie)                      |  |
+|  |                                                            |  |
+|  |  +------------------+                                      |  |
+|  |  |  Fuzzing Target  |                                      |  |
+|  |  |                  |                                      |  |
+|  |  +------------------+                                      |  |
+|  |                                                            |  |
+|  +------------------------------------------------------------+  |
+|          | ^                                                     |
+|          | |                                                     |
+|          | | Syscalls via custom musl                            |
+|          | |                                                     |
+|          v |                                                     |
+|  +---------------------------------+                             |
+|  |  Lucid Syscall Emulation Logic  |                             |
+|  |                                 |                             |
+|  +---------------------------------+                             |
+|                                                                  |
++------------------------------------------------------------------+ 
+```
 
 # Build
 I've made building the binaries that Lucid depends on extremely simple with Docker. This has been tested on Ubuntu 22.04 and Ubuntu 24.04. 
@@ -38,7 +68,16 @@ Use the built `gui-bochs` Bochs binary in `bins` and run your harness. If your h
 Now with the saved-to-disk Bochs state, we are able to resume execution in the fuzzer. We do this by pointing Lucid at the `lucid-bochs` Bochs binary. Use the `--bochs-snapshot-dir` command line argument to tell `lucid-fuzz` where to find the snapshot saved on disk from `Step 2`.
 
 ### Step 4:
-The fuzzer should be able to resume the saved state of Bochs and continue execution from where it left off. This allows you to manipulate the user input and explore new code via fuzzing. You will need to adequately anticipate all possible code paths your input can cause as you will need to identify an appropriate choke-point to call back into the fuzzer to reset the snapshot via the special NOP instruction (`xchg bx, bx`). You will also need to implement your fuzzing target with crash oracles. 
+The fuzzer should be able to resume the saved state of Bochs and continue execution from where it left off. This allows you to manipulate the user input and explore new code via fuzzing. You will need to adequately anticipate all possible code paths your input can cause as you will need to identify an appropriate choke-point to call back into the fuzzer to reset the snapshot via the special NOP instruction (`xchg bx, bx`). You will also need to implement your fuzzing target with crash oracles.
+
+# Workflow Quickstart
+1. Clone and build 
+```bash
+git clone https://github.com/h0mbre/Lucid
+cd Lucid && ./build-bins.sh
+```
+2. Run your target system in `gui-bochs` and reach the `xchg dx, dx` NOP instruction in your harness to save Bochs state to disk
+3. Point `lucid-fuzz` at saved-to-disk Bochs snapshot so `lucid-bochs` can begin emulating the target for fuzzing
 
 # `lucid-fuzz` Usage
 ## `--help`
@@ -110,7 +149,21 @@ struct fuzz_input {
 
 ## Example Usage
 ```terminal
-./lucid-fuzz --input-max-size 65672 --input-signature 0x13371337133713371338133813381338 --verbose --bochs-image ~/Lucid/bins/lucid-bochs --output-dir /tmp/findings --output-limit 1000 --icount-timeout 500 --fuzzers 8 --stat-interval 5 --seeds-dir ~/seeds/ --dryrun --mutator toy --bochs-config /tmp/bochsrc_nogui.txt --bochs-snapshot-dir /tmp/lucid_snapshot/
+./lucid-fuzz \
+    --input-max-size 65672 \
+    --input-signature 0x13371337133713371338133813381338 \
+    --verbose \
+    --bochs-image ~/Lucid/bins/lucid-bochs \
+    --output-dir /tmp/findings \
+    --output-limit 1000 \
+    --icount-timeout 500 \
+    --fuzzers 8 \
+    --stat-interval 5 \
+    --seeds-dir ~/seeds/ \
+    --dryrun \
+    --mutator toy \
+    --bochs-config /tmp/bochsrc_nogui.txt \
+    --bochs-snapshot-dir /tmp/lucid_snapshot/
 ```
 
 # Documentation
@@ -156,7 +209,7 @@ These are stats about how we are spending our CPU time:
 ## Snapshot
 - `dirty pages`: The number of pages we've marked dirty for differential resets
 - `dirty / total`: Ratio between dirtied pages and writable pages in Bochs
-- `reset memcpys`: The number of `memcpy` invocations needed to reset the dirty pages (after merging)
+- `reset memcpys`: The number of `memcpy` invocations needed to reset the dirty pages (after merging neighboring page ranges)
 
 ## Corpus
 - `inputs`: Number of total inputs in the corpus globally

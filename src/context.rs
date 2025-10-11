@@ -1392,6 +1392,7 @@ pub fn fuzz_loop(context: &mut LucidContext, id: Option<usize>) -> Result<(), Lu
         };
 
         // Act on result
+        let mut new_cov = false;
         match fuzzing_result {
             FuzzingResult::Crash => {
                 handle_crash(context);
@@ -1401,9 +1402,13 @@ pub fn fuzz_loop(context: &mut LucidContext, id: Option<usize>) -> Result<(), Lu
             }
             FuzzingResult::NewCoverage => {
                 old_edge_count = handle_new_coverage(context, old_edge_count);
+                new_cov = true;
             }
             _ => (),
         }
+
+        // Set flag on mutator
+        context.mutator.found_coverage(new_cov);
 
         // Update stats
         let (snapshot_stats, corpus_stats) = generate_stats_update(context);

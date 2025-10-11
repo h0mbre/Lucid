@@ -34,10 +34,12 @@ fn generate_seed() -> usize {
 /// Shared state for all mutators, each implementation embeds this
 #[derive(Clone, Default)]
 pub(crate) struct MutatorCore {
-    pub rng: usize,           // Random generator seed/state
-    pub input: Vec<u8>,       // Current input buffer (empty by default)
-    pub max_size: usize,      // Maximum input size
-    pub fields: Vec<Vec<u8>>, // RedQueen fields
+    pub rng: usize,                // Random generator seed/state
+    pub input: Vec<u8>,            // Current input buffer (empty by default)
+    pub max_size: usize,           // Maximum input size
+    pub fields: Vec<Vec<u8>>,      // RedQueen fields
+    pub last_input: Option<usize>, // Corpus index of last base-input used
+    pub new_cov: bool,             // Flag for last fuzzing iteration result
 }
 
 impl MutatorCore {
@@ -84,6 +86,16 @@ impl MutatorCore {
     /// Clear the current input
     fn clear_input(&mut self) {
         self.input.clear();
+    }
+
+    /// Last input the mutator generated found/did not find new coverage
+    fn found_coverage(&mut self, found: bool) {
+        self.new_cov = found;
+    }
+
+    /// Used by mutator implementations to get bool value
+    fn new_coverage(&self) -> bool {
+        self.new_cov
     }
 }
 
@@ -187,8 +199,18 @@ pub trait Mutator {
     }
 
     /// Default: Helper to clear the input so we don't have to access core
-    fn _clear_input(&mut self) {
+    fn clear_input(&mut self) {
         self.core_mut().clear_input();
+    }
+
+    /// Default: Set new coverage flag (called from context.rs)
+    fn found_coverage(&mut self, found: bool) {
+        self.core_mut().found_coverage(found);
+    }
+
+    /// Default: Getter for new coverage flag (called from mutators)
+    fn new_coverage(&self) -> bool {
+        self.core().new_coverage()
     }
 
     /// Custom: Perform one round of mutation on input.
