@@ -35,7 +35,7 @@ const MAX_NUM_MSGS: usize = 16;
 const GEN_SCRATCH_RATE: usize = 1;
 
 /// Number of valid protocol values (used as indexes in harness)
-const NUM_PROTOCOLS: usize = 3;
+const NUM_PROTOCOLS: usize = 4;
 
 /// Are we aligning payload lengths?
 const ALIGN_ON: bool = true;
@@ -69,6 +69,9 @@ const UNIFORM_SELECT_DURATION: u64 = 1200; // 20 Mins
 
 /// How much of the scores we *keep* when decaying
 const DECAY_KEEP: f64 = 0.3;
+
+/// How long we wait until we switch modes for the first time
+const INITIAL_UNIFORM_DURATION: u64 = 9000; // 2.5 Hours
 
 /// Max size of an input, this is calculated in the harness as follows:
 /*
@@ -304,6 +307,7 @@ pub struct NetlinkMutator {
     last_switch: Instant,                   // When we mode switched
     uniform_mode: bool,                     // Whether or not we're in uniform
     strat_scores: HashMap<MutationTypes, usize>,    // Score database for strats
+    start: Instant,                         // Start time of the mutator
 }
 
 /// Implementation for this mutator for Mutator trait
@@ -354,6 +358,9 @@ impl Mutator for NetlinkMutator {
 
             // Initialize all to 1 so that all can be selected sometimes
             strat_scores: MUTATIONS.iter().map(|&m| (m, 1)).collect(),
+
+            // Starting now
+            start: Instant::now(),
         }
     }
 
@@ -432,8 +439,12 @@ impl Mutator for NetlinkMutator {
             self.weighted_mutations(corpus)?;
         }
 
-        // Check to see if we should reset selection mode
-        self.check_mode();
+        // See if we've been running long enough to potentiall switch modes
+        let elapsed = self.start.elapsed();
+        if elapsed > Duration::from_secs(INITIAL_UNIFORM_DURATION) {
+            // Check to see if we should reset selection mode
+            self.check_mode();
+        }
 
         Ok(())
     }
