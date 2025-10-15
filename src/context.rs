@@ -35,6 +35,7 @@ const SCRATCH_STACK_LEN: usize = 0x21000;
 
 /// This represents the reason why a VM has exited execution and is now trying
 /// to context-switch for event handling
+#[repr(i32)]
 #[derive(Clone, Copy, Debug)]
 pub enum VmExit {
     NoExit = 0,
@@ -172,7 +173,7 @@ pub struct RegisterBank {
 /// CpuMode represents what type of execution is taking place on the Bochs side
 /// during a fuzzing iteration, this affects how instructions are simulated in
 /// Bochs
-#[repr(C)]
+#[repr(i32)]
 #[derive(Clone, Copy)]
 pub enum CpuMode {
     Fuzzing = 0,   // Normal fuzzing mode (fast as possible)
