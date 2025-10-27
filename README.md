@@ -38,8 +38,43 @@ I've made building the binaries that Lucid depends on extremely simple with Dock
 
 Depending on what is stock on your distribution, you may also need to install `libsdl2-dev` and its dependencies to run the dynamically linked Bochs image we call `gui-bochs` in order to save Bochs snapshots to disk. See the Docker file `Step 9` for more details. The build process may take a while since we have to build all of musl from scratch; however, with at least 8 cores, build time seems to be under 5 minutes on my machine. 
 
-## Commands
-1. Install docker on your distribution
+## Docker Installation (Ubuntu)
+1. Update and install prerequisites:
+```bash
+sudo apt update
+sudo apt install ca-certificates curl gnupg lsb-release
+```
+2. Add Docker's GPG key:
+```bash
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+```
+3. Setup the repository
+```bash
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+  $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+```
+4. Install Docker Engine
+```bash
+sudo apt update
+sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+5. Verify
+```bash
+sudo docker run hello-world
+```
+6. Add user to the docker group so you don't need `root`
+```bash
+sudo usermod -aG docker $USER
+```
+7. Refresh the shell with the new docker group
+```bash
+newgrp docker
+```
+
+## Build Commands
+1. Install docker on your distribution, see "Docker Installation" above for Ubuntu
 2. `git clone https://github.com/h0mbre/Lucid`
 3. `cd Lucid && ./build-bins.sh`
 
@@ -51,11 +86,21 @@ Depending on what is stock on your distribution, you may also need to install `l
 - `VGABIOS-lgpl-latest`: Required Bochs file the path to which is required in the `bochsrc_files`
 
 ## Binary Integrity (SHA-1)
-- 7b4c089af783c6b48bdefe04ff5e46f949651ae6  `lucid-fuzz`
-- 575f28985756131bb637e546438e032507758322  `gui-bochs`
-- ce7b78ba7b813a889e4cbdc41e6e0c61f5ead7af  `lucid-bochs`
-- c654a401c6f4257324640b157a7e16bf334a263c  `BIOS-bochs-latest`
-- 35aa458948da1fcb747f70d3536c6de08e15f498  `VGABIOS-lgpl-latest`
+- `lucid-fuzz`  7b4c089af783c6b48bdefe04ff5e46f949651ae6
+- `gui-bochs`  575f28985756131bb637e546438e032507758322
+- `lucid-bochs`  ce7b78ba7b813a889e4cbdc41e6e0c61f5ead7af
+- `BIOS-bochs-latest`  c654a401c6f4257324640b157a7e16bf334a263c
+- `VGABIOS-lgpl-latest`  35aa458948da1fcb747f70d3536c6de08e15f498
+
+## Build Troubleshooting
+The only failure mode I've seen thus far is if a certificate in the 3rd party tool build process has expired. This has happened before and made building `musl-cross-make` fail when `ftp.barfooze.de` had an expired certificate. To fix this, add this line to the `Dockerfile` to ignore expired SSL certificates when using `wget` inside of the container:
+```
+RUN git clone https://github.com/richfelker/musl-cross-make.git && \
+    cd musl-cross-make && \
+    git checkout 26bb55104559325b5e840911742220268f556d7a && \
+    echo "check_certificate = off" > ~/.wgetrc && \
+    make TARGET=x86_64-linux-musl install -j$(nproc)
+```
 
 # Workflow Overview
 ### Step 1:
