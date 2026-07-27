@@ -86,21 +86,16 @@ newgrp docker
 - `VGABIOS-lgpl-latest`: Required Bochs file the path to which is required in the `bochsrc_files`
 
 ## Binary Integrity (SHA-1)
-- `lucid-fuzz`  7b4c089af783c6b48bdefe04ff5e46f949651ae6
-- `gui-bochs`  575f28985756131bb637e546438e032507758322
-- `lucid-bochs`  ce7b78ba7b813a889e4cbdc41e6e0c61f5ead7af
+- `lucid-fuzz`  26e843f44f34dfd7fa472cf21724317ba41ca974
+- `gui-bochs`  f264c3e8933072abc839042f1dca3afe511ea1dd
+- `lucid-bochs`  167b6aa4fda5bf1e62a7933291ff5cd52ad8c4c0
 - `BIOS-bochs-latest`  c654a401c6f4257324640b157a7e16bf334a263c
 - `VGABIOS-lgpl-latest`  35aa458948da1fcb747f70d3536c6de08e15f498
 
 ## Build Troubleshooting
-The only failure mode I've seen thus far is if a certificate in the 3rd party tool build process has expired. This has happened before and made building `musl-cross-make` fail when `ftp.barfooze.de` had an expired certificate. To fix this, add this line to the `Dockerfile` to ignore expired SSL certificates when using `wget` inside of the container:
-```
-RUN git clone https://github.com/richfelker/musl-cross-make.git && \
-    cd musl-cross-make && \
-    git checkout 26bb55104559325b5e840911742220268f556d7a && \
-    echo "check_certificate = off" > ~/.wgetrc && \
-    make TARGET=x86_64-linux-musl install -j$(nproc)
-```
+`musl-cross-make` depends on several third-party download endpoints. One of its pinned inputs, GNU `config.sub`, was previously fetched from an unreliable Savannah GitWeb endpoint. Lucid now includes an unmodified copy in `vendor/config.sub`, and the Docker build verifies it against the SHA-1 already pinned by `musl-cross-make` before continuing.
+
+Other third-party downloads can still fail if an upstream server is unavailable or has a broken or expired TLS certificate.
 
 # Workflow Overview
 ### Step 1:

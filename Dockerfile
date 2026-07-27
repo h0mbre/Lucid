@@ -27,7 +27,7 @@ RUN cd musl-cross-make && \
     cd sources && \
     sha1sum -c ../hashes/config.sub.3d5db9ebe860.sha1 && \
     cd .. && \
-    make TARGET=x86_64-linux-musl install -j$(nproc)
+    make TARGET=x86_64-linux-musl GNU_SITE=https://ftp.gnu.org/gnu install -j$(nproc)
 
 # ------------------------------------------------------------
 # 3. Apply Lucid patches to musl-1.2.4
