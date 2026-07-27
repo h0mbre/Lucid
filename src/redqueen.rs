@@ -751,7 +751,7 @@ fn create_redqueen_inputs(context: &mut LucidContext, idx: usize) -> Result<(), 
     let mut partner_map: HashMap<Operand, Operand> = HashMap::new();
 
     // Iterate through hashmap of <RIP, [(operands), ...]
-    for (_rip, operands) in context.redqueen.cmp_operand_map.iter() {
+    for operands in context.redqueen.cmp_operand_map.values() {
         // For each set of operands, create a new entry in the partner map
         for (lhs, rhs) in operands {
             let lhs_val = match lhs.len() {

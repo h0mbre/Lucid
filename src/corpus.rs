@@ -50,9 +50,7 @@ impl Corpus {
         let sample_hashes = HashSet::new();
 
         // Try to read inputs in from the seeds_dir if we have one
-        if config.seeds_dir.is_some() {
-            let seeds_dir = config.seeds_dir.as_ref().unwrap().clone();
-
+        if let Some(seeds_dir) = config.seeds_dir.as_ref() {
             // Read the directory
             let Ok(entries) = std::fs::read_dir(seeds_dir) else {
                 return Err(LucidErr::from("Unable to read entries from seeds dir"));

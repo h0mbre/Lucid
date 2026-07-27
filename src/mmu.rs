@@ -153,15 +153,16 @@ impl Mmu {
 
     /// Search MMU memory for pattern
     pub fn search_memory(&self, pattern: &[u8]) -> Vec<usize> {
-        assert!(self.map_length > pattern.len());
+        assert!(self.map_length >= pattern.len());
         let mut needles = Vec::new();
 
         // Determine the last index to search from
         let last_idx = self.map_length - pattern.len();
 
         // Iterate through memory looking for pattern
-        let mut curr = self.map_base;
-        for _ in 0..last_idx {
+        for offset in 0..=last_idx {
+            let curr = self.map_base + offset;
+
             // Make a slice from current position
             let curr_slice =
                 unsafe { std::slice::from_raw_parts(curr as *const u8, pattern.len()) };
@@ -170,9 +171,6 @@ impl Mmu {
             if curr_slice == pattern {
                 needles.push(curr);
             }
-
-            // Increment current
-            curr += 1;
         }
 
         needles

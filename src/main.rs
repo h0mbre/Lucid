@@ -128,8 +128,8 @@ fn main() {
     start_bochs(&mut lucid_context);
 
     // Check to see if any faults occurred during Bochs execution
-    if lucid_context.err.is_some() {
-        fatal!(lucid_context.err.unwrap());
+    if let Some(err) = lucid_context.err.as_ref() {
+        fatal!(err);
     }
 
     // Register input dimensions

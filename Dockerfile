@@ -17,7 +17,16 @@ RUN apt update && apt install -y \
 # ------------------------------------------------------------
 RUN git clone https://github.com/richfelker/musl-cross-make.git && \
     cd musl-cross-make && \
-    git checkout 26bb55104559325b5e840911742220268f556d7a && \
+    git checkout 26bb55104559325b5e840911742220268f556d7a
+
+# Preseed musl-cross-make's pinned config.sub. The upstream GitWeb endpoint
+# used by this revision is unreliable, while its checksum is already pinned
+# by musl-cross-make itself.
+COPY vendor/config.sub /lucid/musl-cross-make/sources/config.sub
+RUN cd musl-cross-make && \
+    cd sources && \
+    sha1sum -c ../hashes/config.sub.3d5db9ebe860.sha1 && \
+    cd .. && \
     make TARGET=x86_64-linux-musl install -j$(nproc)
 
 # ------------------------------------------------------------
@@ -112,10 +121,10 @@ RUN cd Bochs/bochs && \
     cp bochs /lucid/build/gui-bochs
 
 # ------------------------------------------------------------
-# 11. Install latest stable Rust toolchain
+# 11. Install pinned Rust toolchain
 # ------------------------------------------------------------
 RUN apt update && apt install -y curl && \
-    curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable && \
+    curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain 1.97.0 && \
     . "$HOME/.cargo/env" && \
     echo 'source $HOME/.cargo/env' >> /root/.bashrc
 

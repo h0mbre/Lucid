@@ -517,12 +517,12 @@ impl LucidContext {
 
         // Build and return the execution context so we can fuzz!
         Ok(LucidContext {
-            context_switch: context_switch as usize,
+            context_switch: context_switch as *const () as usize,
             exec_mode: ExecMode::Lucid,
             exit_reason: VmExit::NoExit,
             scratch_rsp,
-            lucid_syscall: lucid_syscall as usize,
-            lucid_report_cmps: lucid_report_cmps as usize,
+            lucid_syscall: lucid_syscall as *const () as usize,
+            lucid_report_cmps: lucid_report_cmps as *const () as usize,
             save_inst,
             save_size,
             lucid_save_area,
@@ -1080,8 +1080,8 @@ pub fn run_fuzzcase(context: &mut LucidContext) -> Result<(), LucidErr> {
     resume_bochs(context);
 
     // Check to see if there was an error during Bochs execution
-    if context.err.is_some() {
-        return Err(context.err.as_ref().unwrap().clone());
+    if let Some(err) = context.err.as_ref() {
+        return Err(err.clone());
     }
 
     Ok(())

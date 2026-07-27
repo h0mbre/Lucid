@@ -1,0 +1,17 @@
+GNU config.sub
+==============
+
+This directory contains an unmodified, pinned copy of GNU `config.sub` used
+to make Lucid's musl-cross-make Docker build independent of Savannah's GitWeb
+availability.
+
+Copyright: 1992-2016 Free Software Foundation, Inc.
+License: GPL-3.0-or-later with the exception included in the file's header
+Upstream: git://git.git.savannah.gnu.org/config.git
+Commit: 3d5db9ebe8607382d17d60faf8853c944fc5f353
+Upstream date: 2016-03-30
+SHA-1: 7d66e32bb3cce017e1cc9bef59fb6f8271fb7fec
+
+`config.sub` is a separate third-party work and is not covered by Lucid's
+root MIT license. Its complete GPLv3 license is in `COPYING.GPLv3`; the
+additional distribution exception is reproduced in `config.sub` itself.
