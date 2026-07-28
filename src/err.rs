@@ -2,7 +2,7 @@
 //! the future
 //!
 //! SPDX-License-Identifier: MIT
-//! Copyright (c) 2025 h0mbre
+//! Copyright (c) 2026 h0mbre
 
 #[derive(Debug, Clone)]
 pub struct LucidErr {

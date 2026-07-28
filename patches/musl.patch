@@ -87,7 +87,7 @@
  	register long r8 __asm__("r8") = a5;
 --- musl-1.2.4/include/lucid.h	1969-12-31 19:00:00.000000000 -0500
 +++ musl-1.2.4/include/lucid.h	2024-07-24 12:26:11.062841954 -0400
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,169 @@
 +#ifndef LUCID_H
 +#define LUCID_H
 +
@@ -143,6 +143,7 @@
 +    FUZZING = 0,    // Normal fuzzing mode
 +    CMPLOG = 1,     // Report compare instruction operands to Lucid
 +    TRACE_HASH = 2, // Hash all PCs as we execute them 
++    TRACE_COV = 3,  // Report all executed PCs to Lucid
 +} CpuMode;
 +
 +// A fake TLS structure that Bochs will access instead of the real TLS
@@ -201,6 +202,7 @@
 +    size_t dirty_block_start;
 +    size_t dirty_block_length;
 +    int new_dirty_page;
++    size_t lucid_report_pcs;
 +
 +    /* Opaque Members */
 +} lucid_ctx_t;
@@ -233,6 +235,13 @@
 +// Create an instance of the function pointer
 +extern lucid_report_cmps_p g_lucid_report_cmps;
 +
++// Define a function pointer type for reporting batches of executed PCs
++typedef void (*lucid_report_pcs_p)(lucid_ctx_t *ctx, const uint64_t *pcs,
++    size_t count);
++
++// Create an instance of the function pointer
++extern lucid_report_pcs_p g_lucid_report_pcs;
++
 +// Take a snapshot of Bochs for Lucid
 +extern void lucid_take_snapshot(void);
 +
@@ -259,7 +268,7 @@
  #ifndef START
  #define START "_dlstart"
  #endif
-@@ -20,6 +22,53 @@
+@@ -20,6 +22,58 @@
  
  hidden void _dlstart_c(size_t *sp, size_t *dynv)
  {
@@ -282,6 +291,10 @@
 +		// Initialize function pointer to lucid_report_cmps
 +		g_lucid_report_cmps =
 +			(lucid_report_cmps_p)g_lucid_ctx->lucid_report_cmps;
++
++		// Initialize function pointer to lucid_report_pcs
++		g_lucid_report_pcs =
++			(lucid_report_pcs_p)g_lucid_ctx->lucid_report_pcs;
 +
 +		// Check these offsets, we depend on these
 +		if ((offsetof(lucid_ctx_t, context_switch) != 0x0) 	||
@@ -308,6 +321,7 @@
 +		g_lucid_ctx = NULL;
 +		g_lucid_syscall = NULL;
 +		g_lucid_report_cmps = NULL;
++		g_lucid_report_pcs = NULL;
 +	}
 +
  	size_t i, aux[AUX_CNT], dyn[DYN_CNT];
@@ -397,7 +411,7 @@
  	mov %fs:8,%rdx
 --- musl-1.2.4/src/lucid/lucid.c	1969-12-31 19:00:00.000000000 -0500
 +++ musl-1.2.4/src/lucid/lucid.c	2024-07-24 12:27:33.763889861 -0400
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,84 @@
 +#include <lucid.h>
 +
 +// Define the global execution context pointer
@@ -408,6 +422,9 @@
 +
 +// Define the function pointer
 +lucid_report_cmps_p g_lucid_report_cmps = NULL;
++
++// Define the PC reporting function pointer
++lucid_report_pcs_p g_lucid_report_pcs = NULL;
 +
 +// Call into Lucid to take snapshot of current Bochs state
 +__attribute__((optimize(0))) void lucid_take_snapshot(void) {

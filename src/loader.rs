@@ -2,7 +2,7 @@
 //! ELF into memory as well as set up a program stack
 //!
 //! SPDX-License-Identifier: MIT
-//! Copyright (c) 2025 h0mbre
+//! Copyright (c) 2026 h0mbre
 
 use std::fs::read;
 

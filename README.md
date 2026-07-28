@@ -246,6 +246,19 @@ These are stats about how we are spending our CPU time:
 - `last find`: Wall-clock and iterations since the last time we set a campaign record globally for edges discovered
 - `map`: The percentage of the coverage map we have used 
 
+When an input discovers a genuinely new edge, Lucid replays it once in
+`TraceCov` mode and records every guest virtual PC executed during that replay.
+Hit-count-only corpus additions are not traced. The resulting coverage database
+is stored under the campaign output directory:
+
+- `coverage/fuzzer-N.coverage`: PCs newly observed by fuzzer `N`
+- `coverage/global.coverage`: the manager's consolidated campaign PCs
+
+These files are headerless sequences of little-endian `u64` values. Each PC is
+stored at most once per file; ordering is not significant. In multi-process
+campaigns the manager merges worker files at the normal statistics reporting
+interval. A single-process campaign updates the global file immediately.
+
 ## Snapshot
 - `dirty pages`: The number of pages we've marked dirty for differential resets
 - `dirty / total`: Ratio between dirtied pages and writable pages in Bochs

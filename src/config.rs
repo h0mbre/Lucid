@@ -3,7 +3,7 @@
 //! we can parse args appropriately. We use the `clap` crate and parse args here
 //!
 //! SPDX-License-Identifier: MIT
-//! Copyright (c) 2025 h0mbre
+//! Copyright (c) 2026 h0mbre
 
 use clap::{Arg, ArgAction, Command};
 

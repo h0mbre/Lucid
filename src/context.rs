@@ -5,7 +5,7 @@
 //! r15 -- Pointer to a LucidContext
 //!
 //! SPDX-License-Identifier: MIT
-//! Copyright (c) 2025 h0mbre
+//! Copyright (c) 2026 h0mbre
 
 use std::arch::{asm, global_asm};
 
@@ -23,6 +23,7 @@ use crate::redqueen::{lucid_report_cmps, redqueen_pass, Redqueen};
 use crate::snapshot::{restore_snapshot, take_snapshot, Snapshot};
 use crate::stats::{CorpusStats, SnapshotStats, Stats};
 use crate::syscall::lucid_syscall;
+use crate::trace_cov::{lucid_report_pcs, TraceCov};
 use crate::{fault, finding, mega_panic, prompt, prompt_warn};
 
 /// Magic number member of the LucidContext, chosen by ChatGPT, that we use to
@@ -179,6 +180,7 @@ pub enum CpuMode {
     Fuzzing = 0,   // Normal fuzzing mode (fast as possible)
     Cmplog = 1,    // cmp instructions are instrumented (slow)
     TraceHash = 2, // Hash a list of PCs that were executed
+    TraceCov = 3,  // Report all executed PCs to Lucid
 }
 
 /// Represents the different kinds of fuzzing stages we can have, these are
@@ -192,6 +194,7 @@ pub enum FuzzingStage {
     Cmplog,
     Colorization,
     Redqueen,
+    TraceCov,
 }
 
 /// Simple helper impl to print the FuzzingStage enum values
@@ -204,6 +207,7 @@ impl std::fmt::Display for FuzzingStage {
             FuzzingStage::Cmplog => write!(f, "Cmplog"),
             FuzzingStage::Colorization => write!(f, "Colorization"),
             FuzzingStage::Redqueen => write!(f, "Redqueen"),
+            FuzzingStage::TraceCov => write!(f, "Coverage Trace"),
         }
     }
 }
@@ -264,6 +268,7 @@ pub struct LucidContext {
     dirty_block_start: usize,  // Address where dirty page range starts
     dirty_block_length: usize, // Length of the dirty page range
     pub new_dirty_page: i32,   // Flag for indicating we found a new dirty page
+    lucid_report_pcs: usize,   // Address of lucid_report_pcs()
 
     // Opaque members, not defined on C side, free to re-arrange these here and
     // not worry about things being broken elsewhere
@@ -292,6 +297,7 @@ pub struct LucidContext {
     pub fuzzing_stage: FuzzingStage, // Dictates logic for running inputs
     pub fuzzer_id: usize,       // The id for the fuzzer process
     pub exec_arch: ExecArch,    // The type of architecture we're using
+    pub trace_cov: TraceCov,     // Full PC tracing and on-disk artifacts
 }
 
 impl LucidContext {
@@ -331,11 +337,12 @@ impl LucidContext {
         matches!(self.exec_arch, ExecArch::SingleProcess)
     }
 
-    /// Update all context fields that have an ID member and
-    pub fn update_id(&mut self, id: usize) {
+    /// Update all context fields that have an ID member
+    pub fn update_id(&mut self, id: usize) -> Result<(), LucidErr> {
         self.fuzzer_id = id;
         self.stats.id = id;
         self.corpus.id = id;
+        self.trace_cov.update_id(id)?;
 
         // Create stat file string
         let stat_dir = &self.corpus.stats_dir;
@@ -343,6 +350,7 @@ impl LucidContext {
 
         // Update this in stats
         self.stats.stat_file = Some(stat_file);
+        Ok(())
     }
 
     /// Get a non-mutable context reference from a raw pointer
@@ -523,6 +531,7 @@ impl LucidContext {
             scratch_rsp,
             lucid_syscall: lucid_syscall as *const () as usize,
             lucid_report_cmps: lucid_report_cmps as *const () as usize,
+            lucid_report_pcs: lucid_report_pcs as *const () as usize,
             save_inst,
             save_size,
             lucid_save_area,
@@ -558,6 +567,7 @@ impl LucidContext {
             fuzzing_stage: FuzzingStage::Setup,
             fuzzer_id: 0,
             exec_arch,
+            trace_cov: TraceCov::new(&config.output_dir, config.num_fuzzers)?,
             dirty_map_addr: snapshot.dirty_map_addr,
             dirty_block_start: snapshot.dirty_block_start,
             dirty_block_length: snapshot.dirty_block_length,
@@ -1090,7 +1100,10 @@ pub fn run_fuzzcase(context: &mut LucidContext) -> Result<(), LucidErr> {
 /// If the fuzzing iteration detects a crash, save the crash to disk in the
 /// corpus crash directory, update the coverage metrics if the crash reached any
 /// new code. As of now, crashes are not saved into the corpus for re-running
-pub fn handle_crash(context: &mut LucidContext) {
+pub fn handle_crash(
+    context: &mut LucidContext,
+    old_edge_count: usize,
+) -> Result<usize, LucidErr> {
     // Save crash
     context
         .corpus
@@ -1103,12 +1116,23 @@ pub fn handle_crash(context: &mut LucidContext) {
     context.stats.crashes += 1;
     let edges = context.coverage.get_edge_count();
     context.stats.new_coverage(edges);
+
+    // Preserve the PCs reached by a crashing input if it found a new edge.
+    if edges != old_edge_count {
+        trace_coverage_input(context, FuzzingResult::Crash)?;
+    }
+
+    // Return the new edge count to the caller
+    Ok(edges)
 }
 
 /// If the fuzzing iteration detects a timeout, save the timeout to disk in the
 /// corpus timeout directory, update the coverage metrics if the timeout reached
 /// any new code. As of now, timeouts are not saved into the corpus for re-running
-pub fn handle_timeout(context: &mut LucidContext) {
+pub fn handle_timeout(
+    context: &mut LucidContext,
+    old_edge_count: usize,
+) -> Result<usize, LucidErr> {
     // Save timeout
     context
         .corpus
@@ -1121,12 +1145,23 @@ pub fn handle_timeout(context: &mut LucidContext) {
     context.stats.timeouts += 1;
     let edges = context.coverage.get_edge_count();
     context.stats.new_coverage(edges);
+
+    // Preserve the PCs reached by a timing-out input if it found a new edge.
+    if edges != old_edge_count {
+        trace_coverage_input(context, FuzzingResult::Timeout)?;
+    }
+
+    // Return the new edge count to the caller
+    Ok(edges)
 }
 
 /// If we detect new coverage during a fuzzing iteration we save the current
 /// input to the corpus, get a new edge-count, update the coverage statistics,
 /// place the current input into Redqueen's queue to process
-pub fn handle_new_coverage(context: &mut LucidContext, old_edge_count: usize) -> usize {
+pub fn handle_new_coverage(
+    context: &mut LucidContext,
+    old_edge_count: usize,
+) -> Result<usize, LucidErr> {
     // Minimum threshold we consider for coverage starvation in seconds
     const MIN_STARVATION_THRESHOLD: u64 = 600; // 10 Minutes
 
@@ -1138,7 +1173,8 @@ pub fn handle_new_coverage(context: &mut LucidContext, old_edge_count: usize) ->
     let new_edge_count = context.coverage.get_edge_count();
 
     // If the edge count differs, we truly found a new edge pair
-    if new_edge_count != old_edge_count {
+    let found_new_edge = new_edge_count != old_edge_count;
+    if found_new_edge {
         finding!(
             context.fuzzer_id,
             "{} increased edge count {} -> {} (+{})",
@@ -1184,6 +1220,11 @@ pub fn handle_new_coverage(context: &mut LucidContext, old_edge_count: usize) ->
     if save_input {
         context.corpus.save_input(context.mutator.get_input_ref());
         context.stats.new_coverage(new_edge_count);
+
+        // Record exact PCs only when the input discovered a real new edge
+        if found_new_edge {
+            trace_coverage_input(context, FuzzingResult::None)?;
+        }
         context
             .redqueen
             .process_queue
@@ -1191,7 +1232,7 @@ pub fn handle_new_coverage(context: &mut LucidContext, old_edge_count: usize) ->
     }
 
     // Return new edge count to caller
-    new_edge_count
+    Ok(new_edge_count)
 }
 
 /// Helper macro to time a function based on the current FuzzingStage, this is
@@ -1249,6 +1290,51 @@ pub fn fuzz_one(context: &mut LucidContext) -> Result<FuzzingResult, LucidErr> {
     Ok(fuzzing_result)
 }
 
+/// Replay the current coverage-increasing input while Bochs reports every PC.
+fn trace_coverage_input(
+    context: &mut LucidContext,
+    expected_result: FuzzingResult,
+) -> Result<(), LucidErr> {
+    // Save the current execution modes and switch Bochs into PC tracing mode
+    let backup_cpu_mode = context.cpu_mode;
+    let backup_stage = context.fuzzing_stage;
+    context.cpu_mode = CpuMode::TraceCov;
+    context.fuzzing_stage = FuzzingStage::TraceCov;
+    context.trace_cov.begin_trace();
+
+    // Replay the current input and collect its PCs
+    let fuzzing_result = fuzz_one(context);
+
+    // Always restore normal execution state, including when the replay fails.
+    context.cpu_mode = backup_cpu_mode;
+    context.fuzzing_stage = backup_stage;
+
+    let result = fuzzing_result?;
+
+    // Terminal results bypass the normal coverage update in fuzz_one(), so
+    // discard the replay's transient map before returning to normal fuzzing.
+    if matches!(result, FuzzingResult::Crash | FuzzingResult::Timeout) {
+        context.coverage.curr_map.fill(0);
+    }
+
+    // Verify that the replay produced the same result as the original input
+    if result != expected_result {
+        return Err(LucidErr::from(&format!(
+            "Coverage trace replay was not deterministic: expected {:?}, got {:?}",
+            expected_result, result
+        )));
+    }
+
+    // Save the new PCs into this fuzzer's coverage database
+    context.trace_cov.finish_trace()?;
+
+    // Single-process fuzzers also own the global coverage database
+    if context.is_single_process() {
+        context.trace_cov.consolidate()?;
+    }
+    Ok(())
+}
+
 /// Execute all of the inputs found in the seeds directory so that we get a
 /// coverage baseline. This function will handle crashes and timeouts in the
 /// same way that it would if they were discovered via fuzzing
@@ -1268,6 +1354,9 @@ pub fn dry_run(context: &mut LucidContext) -> Result<(), LucidErr> {
             .mutator
             .copy_input(context.corpus.get_input_by_idx(i).unwrap());
 
+        // Save the edge count so terminal inputs can detect new coverage.
+        let old_edge_count = context.coverage.get_edge_count();
+
         // Run the input through
         let result = fuzz_one(context);
 
@@ -1275,14 +1364,21 @@ pub fn dry_run(context: &mut LucidContext) -> Result<(), LucidErr> {
         match result {
             Ok(FuzzingResult::Crash) => {
                 prompt_warn!("Dry-run input caused crash!");
-                handle_crash(context);
+                let _ = handle_crash(context, old_edge_count)?;
             }
             Ok(FuzzingResult::Timeout) => {
                 prompt_warn!("Dry-run input caused timeout!");
-                handle_timeout(context);
+                let _ = handle_timeout(context, old_edge_count)?;
+            }
+            Ok(FuzzingResult::NewCoverage) => {
+                // The seed is already in the corpus, but its newly discovered
+                // edges still need to be recorded in the PC database.
+                if context.coverage.get_edge_count() != old_edge_count {
+                    trace_coverage_input(context, FuzzingResult::None)?;
+                }
             }
             Err(e) => return Err(e),
-            _ => (), // We don't care about new coverage or no result here
+            _ => (),
         }
     }
 
@@ -1349,7 +1445,7 @@ pub fn fuzz_loop(context: &mut LucidContext, id: Option<usize>) -> Result<(), Lu
 
     // Update ID if necessary
     if let Some(id_val) = id {
-        context.update_id(id_val);
+        context.update_id(id_val)?;
     }
 
     // Start time-keeping
@@ -1378,6 +1474,9 @@ pub fn fuzz_loop(context: &mut LucidContext, id: Option<usize>) -> Result<(), Lu
     loop {
         // Try to clear out the Redqueen process queue first
         if try_redqueen(context)? {
+            // Redqueen colorization can discover and commit new edges
+            // internally, so keep the outer loop's baseline synchronized.
+            old_edge_count = context.coverage.get_edge_count();
             continue;
         }
 
@@ -1396,13 +1495,13 @@ pub fn fuzz_loop(context: &mut LucidContext, id: Option<usize>) -> Result<(), Lu
         let mut new_cov = false;
         match fuzzing_result {
             FuzzingResult::Crash => {
-                handle_crash(context);
+                old_edge_count = handle_crash(context, old_edge_count)?;
             }
             FuzzingResult::Timeout => {
-                handle_timeout(context);
+                old_edge_count = handle_timeout(context, old_edge_count)?;
             }
             FuzzingResult::NewCoverage => {
-                old_edge_count = handle_new_coverage(context, old_edge_count);
+                old_edge_count = handle_new_coverage(context, old_edge_count)?;
                 new_cov = true;
             }
             _ => (),

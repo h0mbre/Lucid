@@ -2,7 +2,7 @@
 //! during fuzzing
 //!
 //! SPDX-License-Identifier: MIT
-//! Copyright (c) 2025 h0mbre
+//! Copyright (c) 2026 h0mbre
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -326,13 +326,13 @@ fn colorize_input(
             // First try to handle any significant fuzzing results
             match fuzzing_result {
                 FuzzingResult::NewCoverage => {
-                    handle_new_coverage(context, old_edge_count);
+                    let _ = handle_new_coverage(context, old_edge_count)?;
                 }
                 FuzzingResult::Crash => {
-                    handle_crash(context);
+                    let _ = handle_crash(context, old_edge_count)?;
                 }
                 FuzzingResult::Timeout => {
-                    handle_timeout(context);
+                    let _ = handle_timeout(context, old_edge_count)?;
                 }
                 FuzzingResult::None => (),
             }

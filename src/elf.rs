@@ -5,7 +5,7 @@
 //! never have their members read, but I like having them around for reference
 //!
 //! SPDX-License-Identifier: MIT
-//! Copyright (c) 2025 h0mbre
+//! Copyright (c) 2026 h0mbre
 
 use crate::err::LucidErr;
 

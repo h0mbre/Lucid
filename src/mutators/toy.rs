@@ -7,7 +7,7 @@
 //! AFL++ does. Eventually we'll try to just use LibAFL's mutator?
 //!
 //! SPDX-License-Identifier: MIT
-//! Copyright (c) 2025 h0mbre
+//! Copyright (c) 2026 h0mbre
 
 use super::{generate_seed, Mutator, MutatorCore};
 use crate::corpus::Corpus;

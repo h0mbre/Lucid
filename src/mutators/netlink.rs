@@ -8,7 +8,7 @@
 //! https://h0mbre.github.io/Lucid_Dreams_1/
 //!
 //! SPDX-License-Identifier: MIT
-//! Copyright (c) 2025 h0mbre
+//! Copyright (c) 2026 h0mbre
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque, HashMap};

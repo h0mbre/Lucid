@@ -5,7 +5,7 @@
 //! mutator implementation.
 //!
 //! SPDX-License-Identifier: MIT
-//! Copyright (c) 2025 h0mbre
+//! Copyright (c) 2026 h0mbre
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};

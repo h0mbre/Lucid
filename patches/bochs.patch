@@ -240,7 +240,7 @@
    if (setjmp(BX_CPU_THIS_PTR jmp_buf_env)) {
      // can get here only from exception function or VMEXIT
      BX_CPU_THIS_PTR icount++;
-@@ -114,8 +124,15 @@
+@@ -114,8 +124,16 @@
  
  #if BX_SUPPORT_HANDLERS_CHAINING_SPEEDUPS
      for(;;) {
@@ -248,6 +248,7 @@
 +      // Check if we should register a timeout
 +      if ((BX_CPU_THIS_PTR icount - icount_base)>= icount_timeout) {
 +        g_lucid_ctx->timeout = 1;
++        BX_INSTR_TRACE_COV_FLUSH();
 +        lucid_postfuzz_hook();
 +      }
 +#endif /* BX_LUCID */
@@ -1018,7 +1019,7 @@
  #define LOG_THIS BX_CPU_THIS_PTR
  
  void BX_CPP_AttrRegparmN(1) BX_CPU_C::MOV_EwIwM(bxInstruction_c *i)
-@@ -235,6 +236,45 @@
+@@ -235,6 +236,47 @@
    BX_WRITE_16BIT_REG(i->src(), op1_16);
    BX_WRITE_16BIT_REG(i->dst(), op2_16);
  
@@ -1050,12 +1051,14 @@
 +    // Check for crash
 +    if (i->src() == 4 && g_lucid_ctx) {
 +      g_lucid_ctx->crash = 1;
++      BX_INSTR_TRACE_COV_FLUSH();
 +      lucid_postfuzz_hook();
 +    }
 +
 +    // Normal snapshot reset
 +    if (i->src() == 3 && g_lucid_ctx) {
 +      // Call into post-fuzz hook
++      BX_INSTR_TRACE_COV_FLUSH();
 +      lucid_postfuzz_hook();
 +    }
 +  }
@@ -1086,7 +1089,7 @@
  
  #if BX_INSTRUMENTATION
  
-@@ -38,8 +39,66 @@
+@@ -38,8 +39,83 @@
  void bx_instr_debug_promt() {}
  void bx_instr_debug_cmd(const char *cmd) {}
  
@@ -1123,6 +1126,20 @@
 +}
 +
 +#if BX_LUCID
++#define TRACE_COV_BUFFER_CAPACITY (1U << 16)
++
++static uint64_t trace_cov_buffer[TRACE_COV_BUFFER_CAPACITY];
++static size_t trace_cov_buffer_index = 0;
++
++void bx_instr_trace_cov_flush(void) {
++    if (g_lucid_ctx->cpu_mode != TRACE_COV || trace_cov_buffer_index == 0) {
++        return;
++    }
++
++    g_lucid_report_pcs(g_lucid_ctx, trace_cov_buffer, trace_cov_buffer_index);
++    trace_cov_buffer_index = 0;
++}
++
 +void bx_instr_cnear_branch_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip) {
 +    uint32_t hash = dbj2_hash_coverage(branch_eip, new_eip);
 +    update_coverage_map(hash);
@@ -1134,13 +1151,15 @@
 +}
 +
 +void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i, bx_address eip) {
-+    // Check to see if we're in tracing mode
-+    if (g_lucid_ctx->cpu_mode != TRACE_HASH) {
-+        return;
-+    } 
-+
-+    // Update g_lucid_ctx->trace_hash
-+    g_lucid_ctx->trace_hash = dbj2_hash_trace(g_lucid_ctx->trace_hash, eip);
++    if (g_lucid_ctx->cpu_mode == TRACE_HASH) {
++        g_lucid_ctx->trace_hash = dbj2_hash_trace(g_lucid_ctx->trace_hash, eip);
++    }
++    else if (g_lucid_ctx->cpu_mode == TRACE_COV) {
++        trace_cov_buffer[trace_cov_buffer_index++] = (uint64_t)eip;
++        if (trace_cov_buffer_index == TRACE_COV_BUFFER_CAPACITY) {
++            bx_instr_trace_cov_flush();
++        }
++    }
 +}
 +
 +#else
@@ -1148,6 +1167,7 @@
 -void bx_instr_cnear_branch_not_taken(unsigned cpu, bx_address branch_eip) {}
 +void bx_instr_cnear_branch_not_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip) {}
 +void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i, bx_address eip) {}
++void bx_instr_trace_cov_flush(void) {}
 +
 +#endif /* BX_LUCID */
 +
@@ -1184,12 +1204,13 @@
  void bx_instr_ucnear_branch(unsigned cpu, unsigned what, bx_address branch_eip, bx_address new_eip);
  void bx_instr_far_branch(unsigned cpu, unsigned what, Bit16u prev_cs, bx_address prev_eip, Bit16u new_cs, bx_address new_eip);
  
-@@ -56,7 +60,7 @@
+@@ -56,7 +60,8 @@
  void bx_instr_prefetch_hint(unsigned cpu, unsigned what, unsigned seg, bx_address offset);
  void bx_instr_clflush(unsigned cpu, bx_address laddr, bx_phy_address paddr);
  
 -void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i);
 +void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i, bx_address eip);
++void bx_instr_trace_cov_flush(void);
  void bx_instr_after_execution(unsigned cpu, bxInstruction_c *i);
  void bx_instr_repeat_iteration(unsigned cpu, bxInstruction_c *i);
  
@@ -1202,12 +1223,13 @@
  #define BX_INSTR_UCNEAR_BRANCH(cpu_id, what, branch_eip, new_eip) bx_instr_ucnear_branch(cpu_id, what, branch_eip, new_eip)
  #define BX_INSTR_FAR_BRANCH(cpu_id, what, prev_cs, prev_eip, new_cs, new_eip) \
                         bx_instr_far_branch(cpu_id, what, prev_cs, prev_eip, new_cs, new_eip)
-@@ -114,7 +118,7 @@
+@@ -114,7 +118,8 @@
                         bx_instr_prefetch_hint(cpu_id, what, seg, offset)
  
  /* execution */
 -#define BX_INSTR_BEFORE_EXECUTION(cpu_id, i)  bx_instr_before_execution(cpu_id, i)
 +#define BX_INSTR_BEFORE_EXECUTION(cpu_id, i, eip)  bx_instr_before_execution(cpu_id, i, eip);
++#define BX_INSTR_TRACE_COV_FLUSH() bx_instr_trace_cov_flush()
  #define BX_INSTR_AFTER_EXECUTION(cpu_id, i)   bx_instr_after_execution(cpu_id, i)
  #define BX_INSTR_REPEAT_ITERATION(cpu_id, i)  bx_instr_repeat_iteration(cpu_id, i)
  
@@ -1238,12 +1260,13 @@
  #define BX_INSTR_UCNEAR_BRANCH(cpu_id, what, branch_eip, new_eip)
  #define BX_INSTR_FAR_BRANCH(cpu_id, what, prev_cs, prev_eip, new_cs, new_eip)
  
-@@ -173,7 +188,7 @@
+@@ -173,7 +188,8 @@
  #define BX_INSTR_PREFETCH_HINT(cpu_id, what, seg, offset)
  
  /* execution */
 -#define BX_INSTR_BEFORE_EXECUTION(cpu_id, i)
 +#define BX_INSTR_BEFORE_EXECUTION(cpu_id, i, eip)
++#define BX_INSTR_TRACE_COV_FLUSH()
  #define BX_INSTR_AFTER_EXECUTION(cpu_id, i)
  #define BX_INSTR_REPEAT_ITERATION(cpu_id, i)
  

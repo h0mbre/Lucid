@@ -2,7 +2,7 @@
 //! image, loads that image into memory, and starts executing it
 //!
 //! SPDX-License-Identifier: MIT
-//! Copyright (c) 2025 h0mbre
+//! Copyright (c) 2026 h0mbre
 
 mod config;
 mod context;
@@ -19,6 +19,7 @@ mod redqueen;
 mod snapshot;
 mod stats;
 mod syscall;
+mod trace_cov;
 
 use config::parse_args;
 use context::{dry_run, fuzz_loop, register_input, start_bochs, LucidContext};
@@ -243,6 +244,12 @@ fn main() {
                 lucid_context.snapshot.dirty_block_length,
                 lucid_context.config.input_max_size,
             );
+
+            // Roll-up the PCs for every fuzzer into the global database
+            lucid_context
+                .trace_cov
+                .consolidate()
+                .unwrap_or_else(|error| fatal!(error));
 
             // Try to reap any dead fuzzers and exit
             let mut child_exit = false;
