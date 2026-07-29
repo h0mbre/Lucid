@@ -188,8 +188,10 @@ impl TraceCov {
             return Ok(());
         }
 
+        // Reserve the exact byte size of the PC slice to avoid reallocating while serializing
+        let mut bytes = Vec::with_capacity(std::mem::size_of_val(pcs));
+
         // Serialize every PC as an explicitly little-endian u64
-        let mut bytes = Vec::with_capacity(pcs.len() * std::mem::size_of::<u64>());
         for pc in pcs {
             bytes.extend_from_slice(&pc.to_le_bytes());
         }

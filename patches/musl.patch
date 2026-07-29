@@ -87,7 +87,7 @@
  	register long r8 __asm__("r8") = a5;
 --- musl-1.2.4/include/lucid.h	1969-12-31 19:00:00.000000000 -0500
 +++ musl-1.2.4/include/lucid.h	2024-07-24 12:26:11.062841954 -0400
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,171 @@
 +#ifndef LUCID_H
 +#define LUCID_H
 +
@@ -203,6 +203,8 @@
 +    size_t dirty_block_length;
 +    int new_dirty_page;
 +    size_t lucid_report_pcs;
++    uint8_t *icache_addr;
++    size_t icache_size;
 +
 +    /* Opaque Members */
 +} lucid_ctx_t;

@@ -34,6 +34,9 @@ pub const CTX_MAGIC: usize = 0x74DFF25D576D6F4D;
 /// Length of the scratch stack that is used during context switches
 const SCRATCH_STACK_LEN: usize = 0x21000;
 
+/// Length of the external Bochs instruction cache mapping
+const ICACHE_MAPPING_LEN: usize = 64 * 1024 * 1024;
+
 /// This represents the reason why a VM has exited execution and is now trying
 /// to context-switch for event handling
 #[repr(i32)]
@@ -269,6 +272,8 @@ pub struct LucidContext {
     dirty_block_length: usize, // Length of the dirty page range
     pub new_dirty_page: i32,   // Flag for indicating we found a new dirty page
     lucid_report_pcs: usize,   // Address of lucid_report_pcs()
+    icache_addr: usize,        // Address of Bochs' external instruction cache
+    icache_size: usize,        // Size of the external instruction cache mapping
 
     // Opaque members, not defined on C side, free to re-arrange these here and
     // not worry about things being broken elsewhere
@@ -505,6 +510,10 @@ impl LucidContext {
         // Set the stack pointer
         let scratch_rsp = scratch_stack_base + SCRATCH_STACK_LEN - PAGE_SIZE;
 
+        // Create the Bochs instruction cache outside of the snapshot mapping so
+        // decoded instructions can persist across fuzzing iterations
+        let icache_addr = create_icache_mapping()?;
+
         // Create coverage map
         let coverage = CoverageMap::new();
         let coverage_map_addr = coverage.addr();
@@ -532,6 +541,8 @@ impl LucidContext {
             lucid_syscall: lucid_syscall as *const () as usize,
             lucid_report_cmps: lucid_report_cmps as *const () as usize,
             lucid_report_pcs: lucid_report_pcs as *const () as usize,
+            icache_addr,
+            icache_size: ICACHE_MAPPING_LEN,
             save_inst,
             save_size,
             lucid_save_area,
@@ -594,6 +605,30 @@ fn create_scratch_stack() -> Result<usize, LucidErr> {
 
     if result == libc::MAP_FAILED {
         return Err(LucidErr::from("Failed to mmap scratch stack"));
+    }
+
+    Ok(result as usize)
+}
+
+/// Create memory backing for Bochs' instruction cache. This mapping is created
+/// after the snapshot range is finalized so it will not be restored between
+/// fuzzing iterations.
+fn create_icache_mapping() -> Result<usize, LucidErr> {
+    let result = unsafe {
+        libc::mmap(
+            std::ptr::null_mut::<libc::c_void>(),
+            ICACHE_MAPPING_LEN,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_ANONYMOUS | libc::MAP_PRIVATE,
+            -1,
+            0,
+        )
+    };
+
+    if result == libc::MAP_FAILED {
+        return Err(LucidErr::from(
+            "Failed to mmap external Bochs instruction cache",
+        ));
     }
 
     Ok(result as usize)
