@@ -1090,16 +1090,24 @@
  
  #if BX_INSTRUMENTATION
  
-@@ -38,8 +39,93 @@
+@@ -38,8 +39,101 @@
  void bx_instr_debug_promt() {}
  void bx_instr_debug_cmd(const char *cmd) {}
  
-+static inline uint32_t dbj2_hash_coverage(uint64_t src, uint64_t dst) {
-+    uint32_t hash = 5381;
-+    hash = ((hash << 5) + hash) + (uint32_t)(src);
-+    hash = ((hash << 5) + hash) + (uint32_t)(dst);
-+    
-+    return hash & (g_lucid_ctx->coverage_map_size - 1);
++static inline uint32_t hash_coverage(uint64_t src, uint64_t dst) {
++    // Combine the ordered edge endpoints into a single 64-bit value
++    uint64_t hash = src;
++    hash ^= dst + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
++
++    // Use the SplitMix64 finalizer so every address bit influences the index
++    hash ^= hash >> 30;
++    hash *= 0xbf58476d1ce4e5b9ULL;
++    hash ^= hash >> 27;
++    hash *= 0x94d049bb133111ebULL;
++    hash ^= hash >> 31;
++
++    // Truncate the mixed value to an index in the power-of-two coverage map
++    return (uint32_t)(hash & (g_lucid_ctx->coverage_map_size - 1));
 +}
 +
 +static inline uint64_t dbj2_hash_trace(uint64_t src, uint64_t dst) {
@@ -1142,12 +1150,12 @@
 +}
 +
 +void bx_instr_cnear_branch_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip) {
-+    uint32_t hash = dbj2_hash_coverage(branch_eip, new_eip);
++    uint32_t hash = hash_coverage(branch_eip, new_eip);
 +    update_coverage_map(hash);
 +}
 +
 +void bx_instr_cnear_branch_not_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip) {
-+    uint32_t hash = dbj2_hash_coverage(branch_eip, new_eip);
++    uint32_t hash = hash_coverage(branch_eip, new_eip);
 +    update_coverage_map(hash);
 +}
 +
@@ -1157,7 +1165,7 @@
 +        return;
 +    }
 +
-+    uint32_t hash = dbj2_hash_coverage(branch_eip, new_eip);
++    uint32_t hash = hash_coverage(branch_eip, new_eip);
 +    update_coverage_map(hash);
 +}
 +
@@ -1186,7 +1194,7 @@
 -void bx_instr_ucnear_branch(unsigned cpu, unsigned what, bx_address branch_eip, bx_address new_eip) {}
  void bx_instr_far_branch(unsigned cpu, unsigned what, Bit16u prev_cs, bx_address prev_eip, Bit16u new_cs, bx_address new_eip) {}
  
-@@ -54,7 +113,6 @@
+@@ -54,7 +121,6 @@
  void bx_instr_cache_cntrl(unsigned cpu, unsigned what) {}
  void bx_instr_prefetch_hint(unsigned cpu, unsigned what, unsigned seg, bx_address offset) {}
  
