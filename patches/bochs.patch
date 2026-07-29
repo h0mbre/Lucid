@@ -1081,15 +1081,16 @@
                        delete [] buffer;
 --- bochs/instrument/stubs/instrument.cc	2024-07-07 12:54:41.348546047 -0400
 +++ bochs/instrument/stubs/instrument.cc	2024-07-12 18:53:19.599250304 -0400
-@@ -21,6 +21,7 @@
+@@ -21,6 +21,8 @@
  
  
  #include "bochs.h"
++#include "cpu/cpu.h"
 +#include <stdint.h>
  
  #if BX_INSTRUMENTATION
  
-@@ -38,8 +39,83 @@
+@@ -38,8 +39,93 @@
  void bx_instr_debug_promt() {}
  void bx_instr_debug_cmd(const char *cmd) {}
  
@@ -1150,6 +1151,16 @@
 +    update_coverage_map(hash);
 +}
 +
++void bx_instr_ucnear_branch(unsigned cpu, unsigned what, bx_address branch_eip, bx_address new_eip) {
++    // Only record indirect CALL and JMP edges; RET remains intentionally excluded
++    if (what != BX_INSTR_IS_CALL_INDIRECT && what != BX_INSTR_IS_JMP_INDIRECT) {
++        return;
++    }
++
++    uint32_t hash = dbj2_hash_coverage(branch_eip, new_eip);
++    update_coverage_map(hash);
++}
++
 +void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i, bx_address eip) {
 +    if (g_lucid_ctx->cpu_mode == TRACE_HASH) {
 +        g_lucid_ctx->trace_hash = dbj2_hash_trace(g_lucid_ctx->trace_hash, eip);
@@ -1166,12 +1177,13 @@
  void bx_instr_cnear_branch_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip) {}
 -void bx_instr_cnear_branch_not_taken(unsigned cpu, bx_address branch_eip) {}
 +void bx_instr_cnear_branch_not_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip) {}
++void bx_instr_ucnear_branch(unsigned cpu, unsigned what, bx_address branch_eip, bx_address new_eip) {}
 +void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i, bx_address eip) {}
 +void bx_instr_trace_cov_flush(void) {}
 +
 +#endif /* BX_LUCID */
 +
- void bx_instr_ucnear_branch(unsigned cpu, unsigned what, bx_address branch_eip, bx_address new_eip) {}
+-void bx_instr_ucnear_branch(unsigned cpu, unsigned what, bx_address branch_eip, bx_address new_eip) {}
  void bx_instr_far_branch(unsigned cpu, unsigned what, Bit16u prev_cs, bx_address prev_eip, Bit16u new_cs, bx_address new_eip) {}
  
 @@ -54,7 +113,6 @@
