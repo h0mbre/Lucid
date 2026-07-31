@@ -1019,7 +1019,7 @@
  #define LOG_THIS BX_CPU_THIS_PTR
  
  void BX_CPP_AttrRegparmN(1) BX_CPU_C::MOV_EwIwM(bxInstruction_c *i)
-@@ -235,6 +236,47 @@
+@@ -235,6 +236,71 @@
    BX_WRITE_16BIT_REG(i->src(), op1_16);
    BX_WRITE_16BIT_REG(i->dst(), op2_16);
  
@@ -1048,18 +1048,42 @@
 +#if BX_LUCID
 +  // Check for special NOP
 +  if (i->src() == i->dst()) {
-+    // Check for crash
-+    if (i->src() == 4 && g_lucid_ctx) {
-+      g_lucid_ctx->crash = 1;
-+      BX_INSTR_TRACE_COV_FLUSH();
-+      lucid_postfuzz_hook();
++    unsigned operation = 5;
++
++    switch (i->src()) {
++      // These are Lucid lifecycle handlers
++      case 3: // Perform a snapshot reset
++        if (g_lucid_ctx) {
++          BX_INSTR_TRACE_COV_FLUSH();
++          lucid_postfuzz_hook();
++        }
++        break;
++
++      case 4: // Handle a crash
++        if (g_lucid_ctx) {
++          g_lucid_ctx->crash = 1;
++          BX_INSTR_TRACE_COV_FLUSH();
++          lucid_postfuzz_hook();
++        }
++        break;
++
++      // These are IJON tag handlers
++      case 0: operation = 0; break; // SET
++      case 1: operation = 1; break; // MAX
++      case 5: operation = 2; break; // INC
++      case 6: operation = 3; break; // STATE
++      case 7: operation = 4; break; // EVENT
++      default: break;
 +    }
 +
-+    // Normal snapshot reset
-+    if (i->src() == 3 && g_lucid_ctx) {
-+      // Call into post-fuzz hook
-+      BX_INSTR_TRACE_COV_FLUSH();
-+      lucid_postfuzz_hook();
++    // Report an IJON operation using R8 as the tag and R9 as the value
++    if (operation < 5 && g_lucid_ctx) {
++      g_lucid_report_ijon(
++          g_lucid_ctx,
++          operation,
++          (uint64_t) BX_READ_64BIT_REG(BX_64BIT_REG_R8),
++          (uint64_t) BX_READ_64BIT_REG(BX_64BIT_REG_R9),
++          (size_t) RIP);
 +    }
 +  }
 +#endif

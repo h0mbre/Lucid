@@ -246,10 +246,10 @@ These are stats about how we are spending our CPU time:
 - `last find`: Wall-clock and iterations since the last time we set a campaign record globally for edges discovered
 - `map`: The percentage of the coverage map we have used 
 
-When an input discovers a genuinely new edge, Lucid replays it once in
-`TraceCov` mode and records every guest virtual PC executed during that replay.
-Hit-count-only corpus additions are not traced. The resulting coverage database
-is stored under the campaign output directory:
+When an input discovers a new edge or hit-count bucket, Lucid replays it once
+in `TraceCov` mode and records every guest virtual PC executed during that
+replay. The resulting coverage database is stored under the campaign output
+directory:
 
 - `coverage/fuzzer-N.coverage`: PCs newly observed by fuzzer `N`
 - `coverage/global.coverage`: the manager's consolidated campaign PCs
@@ -258,6 +258,25 @@ These files are headerless sequences of little-endian `u64` values. Each PC is
 stored at most once per file; ordering is not significant. In multi-process
 campaigns the manager merges worker files at the normal statistics reporting
 interval. A single-process campaign updates the global file immediately.
+
+## IJON Feedback
+
+Lucid supports five target-defined IJON feedback operations. Instrumented guest
+code places a tag in `R8`, a value in `R9`, and executes the corresponding
+same-register 16-bit `XCHG`. These instructions remain ordinary NOPs outside
+Lucid's patched Bochs:
+
+- `xchg ax, ax`: SET records a previously unseen `(site, tag, value)`.
+- `xchg cx, cx`: MAX records a new maximum for `(site, tag)`.
+- `xchg bp, bp`: INC records a new per-input execution-count maximum.
+- `xchg si, si`: STATE mixes the value into the current input's path state.
+- `xchg di, di`: EVENT records new ordered event-sequence prefixes.
+
+New IJON feedback has the same corpus and Redqueen behavior as new edge
+coverage. TraceCov is only replayed when an input also discovers a new edge or
+hit-count bucket. IJON feedback and ordinary edge coverage are tracked
+independently. All IJON bookkeeping is generic; its tags and values only have
+meaning to the instrumented target.
 
 ## Snapshot
 - `dirty pages`: The number of pages we've marked dirty for differential resets

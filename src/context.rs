@@ -14,6 +14,7 @@ use crate::corpus::Corpus;
 use crate::coverage::CoverageMap;
 use crate::err::LucidErr;
 use crate::files::FileTable;
+use crate::ijon::{lucid_report_ijon, Ijon};
 use crate::loader::Bochs;
 use crate::misc::PAGE_SIZE;
 use crate::misc::{fxrstor64, fxsave64, get_xcr0, xrstor64, xsave64};
@@ -272,6 +273,7 @@ pub struct LucidContext {
     dirty_block_length: usize, // Length of the dirty page range
     pub new_dirty_page: i32,   // Flag for indicating we found a new dirty page
     lucid_report_pcs: usize,   // Address of lucid_report_pcs()
+    lucid_report_ijon: usize,  // Address of lucid_report_ijon()
     icache_addr: usize,        // Address of Bochs' external instruction cache
     icache_size: usize,        // Size of the external instruction cache mapping
 
@@ -302,7 +304,9 @@ pub struct LucidContext {
     pub fuzzing_stage: FuzzingStage, // Dictates logic for running inputs
     pub fuzzer_id: usize,       // The id for the fuzzer process
     pub exec_arch: ExecArch,    // The type of architecture we're using
-    pub trace_cov: TraceCov,     // Full PC tracing and on-disk artifacts
+    pub trace_cov: TraceCov,    // Full PC tracing and on-disk artifacts
+    pub ijon: Ijon,             // Generic IJON-style state feedback
+    pub new_code_coverage: bool, // Did the current input find a new edge or hit count?
 }
 
 impl LucidContext {
@@ -541,6 +545,7 @@ impl LucidContext {
             lucid_syscall: lucid_syscall as *const () as usize,
             lucid_report_cmps: lucid_report_cmps as *const () as usize,
             lucid_report_pcs: lucid_report_pcs as *const () as usize,
+            lucid_report_ijon: lucid_report_ijon as *const () as usize,
             icache_addr,
             icache_size: ICACHE_MAPPING_LEN,
             save_inst,
@@ -579,6 +584,8 @@ impl LucidContext {
             fuzzer_id: 0,
             exec_arch,
             trace_cov: TraceCov::new(&config.output_dir, config.num_fuzzers)?,
+            ijon: Ijon::new(),
+            new_code_coverage: false,
             dirty_map_addr: snapshot.dirty_map_addr,
             dirty_block_start: snapshot.dirty_block_start,
             dirty_block_length: snapshot.dirty_block_length,
@@ -1135,25 +1142,24 @@ pub fn run_fuzzcase(context: &mut LucidContext) -> Result<(), LucidErr> {
 /// If the fuzzing iteration detects a crash, save the crash to disk in the
 /// corpus crash directory, update the coverage metrics if the crash reached any
 /// new code. As of now, crashes are not saved into the corpus for re-running
-pub fn handle_crash(
-    context: &mut LucidContext,
-    old_edge_count: usize,
-) -> Result<usize, LucidErr> {
+pub fn handle_crash(context: &mut LucidContext, _old_edge_count: usize) -> Result<usize, LucidErr> {
     // Save crash
     context
         .corpus
         .save_crash(context.mutator.get_input_ref(), "crash");
 
-    // Update coverage
-    context.coverage.update_coverage();
+    // Update coverage and consume any IJON feedback found by the crash
+    let new_code_coverage = context.coverage.update_coverage();
+    let _ = context.ijon.take_feedback();
 
     // Update stats
     context.stats.crashes += 1;
     let edges = context.coverage.get_edge_count();
     context.stats.new_coverage(edges);
 
-    // Preserve the PCs reached by a crashing input if it found a new edge.
-    if edges != old_edge_count {
+    // Preserve the PCs reached by a crashing input if it found either a new
+    // edge or a new hit-count bucket; IJON-only feedback needs no PC replay.
+    if new_code_coverage {
         trace_coverage_input(context, FuzzingResult::Crash)?;
     }
 
@@ -1166,23 +1172,25 @@ pub fn handle_crash(
 /// any new code. As of now, timeouts are not saved into the corpus for re-running
 pub fn handle_timeout(
     context: &mut LucidContext,
-    old_edge_count: usize,
+    _old_edge_count: usize,
 ) -> Result<usize, LucidErr> {
     // Save timeout
     context
         .corpus
         .save_crash(context.mutator.get_input_ref(), "timeout");
 
-    // Update coverage
-    context.coverage.update_coverage();
+    // Update coverage and consume any IJON feedback found by the timeout
+    let new_code_coverage = context.coverage.update_coverage();
+    let _ = context.ijon.take_feedback();
 
     // Update stats
     context.stats.timeouts += 1;
     let edges = context.coverage.get_edge_count();
     context.stats.new_coverage(edges);
 
-    // Preserve the PCs reached by a timing-out input if it found a new edge.
-    if edges != old_edge_count {
+    // Preserve the PCs reached by a timing-out input if it found either a new
+    // edge or a new hit-count bucket; IJON-only feedback needs no PC replay.
+    if new_code_coverage {
         trace_coverage_input(context, FuzzingResult::Timeout)?;
     }
 
@@ -1207,6 +1215,9 @@ pub fn handle_new_coverage(
     // Take the new edge count
     let new_edge_count = context.coverage.get_edge_count();
 
+    // Consume any semantic feedback reported by the current input
+    let ijon_feedback = context.ijon.take_feedback();
+
     // If the edge count differs, we truly found a new edge pair
     let found_new_edge = new_edge_count != old_edge_count;
     if found_new_edge {
@@ -1225,9 +1236,20 @@ pub fn handle_new_coverage(
         // We achieved real new coverage, reset the starvation threshold
         context.config.starved_threshold = context.config.default_starved_threshold;
     }
-    // If the edgecount is the same, that means we likely just found a new
+    // IJON feedback is intentionally treated like real coverage feedback
+    if let Some(feedback) = ijon_feedback.as_ref() {
+        finding!(
+            context.fuzzer_id,
+            "{} discovered IJON feedback: {}",
+            context.fuzzing_stage,
+            feedback
+        );
+        save_input = true;
+        context.config.starved_threshold = context.config.default_starved_threshold;
+    }
+    // If neither edge nor IJON feedback changed, we likely just found a new
     // hit count for an edge pair
-    else {
+    if !found_new_edge && ijon_feedback.is_none() {
         // Check to see if we're starved for new coverage, if we are, save
         if context.stats.starved_for(std::time::Duration::from_secs(
             context.config.starved_threshold,
@@ -1256,8 +1278,9 @@ pub fn handle_new_coverage(
         context.corpus.save_input(context.mutator.get_input_ref());
         context.stats.new_coverage(new_edge_count);
 
-        // Record exact PCs only when the input discovered a real new edge
-        if found_new_edge {
+        // Record exact PCs for new edges and new hit-count buckets, but avoid
+        // the replay when this input was retained solely for IJON feedback.
+        if context.new_code_coverage {
             trace_coverage_input(context, FuzzingResult::None)?;
         }
         context
@@ -1300,6 +1323,10 @@ pub fn fuzz_one(context: &mut LucidContext) -> Result<FuzzingResult, LucidErr> {
     // Restore Bochs
     time_func!(context, batch_reset, reset_bochs(context))?;
 
+    // Clear all IJON state that belongs to the previous fuzzing iteration
+    context.ijon.begin_run();
+    context.new_code_coverage = false;
+
     // Insert the fuzzcase into the target
     insert_fuzzcase(context);
 
@@ -1316,8 +1343,18 @@ pub fn fuzz_one(context: &mut LucidContext) -> Result<FuzzingResult, LucidErr> {
         fuzzing_result = FuzzingResult::Timeout;
         context.timeout = 0;
     }
-    // Check for coverage increase
-    else if time_func!(context, batch_coverage, context.coverage.update_coverage()) {
+    // Check for ordinary code coverage first and retain that distinction so
+    // IJON-only discoveries can skip the unnecessary TraceCov replay.
+    else {
+        context.new_code_coverage =
+            time_func!(context, batch_coverage, context.coverage.update_coverage());
+    }
+
+    // Treat either ordinary code coverage or semantic IJON feedback as a
+    // finding while remembering which feedback mechanism produced it.
+    if fuzzing_result == FuzzingResult::None
+        && (context.new_code_coverage || context.ijon.has_new_feedback())
+    {
         fuzzing_result = FuzzingResult::NewCoverage;
     }
 
@@ -1406,9 +1443,10 @@ pub fn dry_run(context: &mut LucidContext) -> Result<(), LucidErr> {
                 let _ = handle_timeout(context, old_edge_count)?;
             }
             Ok(FuzzingResult::NewCoverage) => {
-                // The seed is already in the corpus, but its newly discovered
-                // edges still need to be recorded in the PC database.
-                if context.coverage.get_edge_count() != old_edge_count {
+                // The seed is already in the corpus, but any newly discovered
+                // code coverage still needs to be recorded in the PC database.
+                let _ = context.ijon.take_feedback();
+                if context.new_code_coverage {
                     trace_coverage_input(context, FuzzingResult::None)?;
                 }
             }

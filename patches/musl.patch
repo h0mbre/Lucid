@@ -87,7 +87,7 @@
  	register long r8 __asm__("r8") = a5;
 --- musl-1.2.4/include/lucid.h	1969-12-31 19:00:00.000000000 -0500
 +++ musl-1.2.4/include/lucid.h	2024-07-24 12:26:11.062841954 -0400
-@@ -0,0 +1,171 @@
+@@ -0,0 +1,179 @@
 +#ifndef LUCID_H
 +#define LUCID_H
 +
@@ -203,6 +203,7 @@
 +    size_t dirty_block_length;
 +    int new_dirty_page;
 +    size_t lucid_report_pcs;
++    size_t lucid_report_ijon;
 +    uint8_t *icache_addr;
 +    size_t icache_size;
 +
@@ -244,6 +245,13 @@
 +// Create an instance of the function pointer
 +extern lucid_report_pcs_p g_lucid_report_pcs;
 +
++// Define a function pointer type for reporting IJON feedback
++typedef void (*lucid_report_ijon_p)(lucid_ctx_t *ctx, size_t operation,
++    uint64_t tag, uint64_t value, size_t rip);
++
++// Create an instance of the function pointer
++extern lucid_report_ijon_p g_lucid_report_ijon;
++
 +// Take a snapshot of Bochs for Lucid
 +extern void lucid_take_snapshot(void);
 +
@@ -270,7 +278,7 @@
  #ifndef START
  #define START "_dlstart"
  #endif
-@@ -20,6 +22,58 @@
+@@ -20,6 +22,63 @@
  
  hidden void _dlstart_c(size_t *sp, size_t *dynv)
  {
@@ -298,6 +306,10 @@
 +		g_lucid_report_pcs =
 +			(lucid_report_pcs_p)g_lucid_ctx->lucid_report_pcs;
 +
++		// Initialize function pointer to lucid_report_ijon
++		g_lucid_report_ijon =
++			(lucid_report_ijon_p)g_lucid_ctx->lucid_report_ijon;
++
 +		// Check these offsets, we depend on these
 +		if ((offsetof(lucid_ctx_t, context_switch) != 0x0) 	||
 +			(offsetof(lucid_ctx_t, exec_mode) != 0x8)		||
@@ -324,6 +336,7 @@
 +		g_lucid_syscall = NULL;
 +		g_lucid_report_cmps = NULL;
 +		g_lucid_report_pcs = NULL;
++		g_lucid_report_ijon = NULL;
 +	}
 +
  	size_t i, aux[AUX_CNT], dyn[DYN_CNT];
@@ -413,7 +426,7 @@
  	mov %fs:8,%rdx
 --- musl-1.2.4/src/lucid/lucid.c	1969-12-31 19:00:00.000000000 -0500
 +++ musl-1.2.4/src/lucid/lucid.c	2024-07-24 12:27:33.763889861 -0400
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,87 @@
 +#include <lucid.h>
 +
 +// Define the global execution context pointer
@@ -427,6 +440,9 @@
 +
 +// Define the PC reporting function pointer
 +lucid_report_pcs_p g_lucid_report_pcs = NULL;
++
++// Define the IJON reporting function pointer
++lucid_report_ijon_p g_lucid_report_ijon = NULL;
 +
 +// Call into Lucid to take snapshot of current Bochs state
 +__attribute__((optimize(0))) void lucid_take_snapshot(void) {

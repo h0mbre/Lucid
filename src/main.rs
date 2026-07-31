@@ -11,6 +11,7 @@ mod coverage;
 mod elf;
 mod err;
 mod files;
+mod ijon;
 mod loader;
 mod misc;
 mod mmu;
