@@ -11,7 +11,7 @@
 //! Copyright (c) 2026 h0mbre
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashSet, VecDeque, HashMap};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
@@ -295,19 +295,19 @@ impl NetlinkInput {
 
 /// Netlink mutator structure
 pub struct NetlinkMutator {
-    core: MutatorCore,                      // Common stuff for all mutators
-    msg_bufs: [Vec<u8>; MAX_NUM_MSGS],      // Pre-allocated message buffers
-    netlink_input: NetlinkInput,            // Structured view for mutation
-    scratch_msgs: [Vec<u8>; MAX_NUM_MSGS],  // Used for mutations for zero alloc
-    recent_inputs: HashSet<u64>,            // Set of hashes for inputs
-    recent_order: VecDeque<u64>,            // Order of the hashes inserted in DB
-    reuse_remaining: usize,                 // Number of reuse attempts left
-    strats_vec: Vec<MutationTypes>,         // Strats used last mutation
-    total_score: usize,                     // Total score 
-    last_switch: Instant,                   // When we mode switched
-    uniform_mode: bool,                     // Whether or not we're in uniform
-    strat_scores: HashMap<MutationTypes, usize>,    // Score database for strats
-    start: Instant,                         // Start time of the mutator
+    core: MutatorCore,                           // Common stuff for all mutators
+    msg_bufs: [Vec<u8>; MAX_NUM_MSGS],           // Pre-allocated message buffers
+    netlink_input: NetlinkInput,                 // Structured view for mutation
+    scratch_msgs: [Vec<u8>; MAX_NUM_MSGS],       // Used for mutations for zero alloc
+    recent_inputs: HashSet<u64>,                 // Set of hashes for inputs
+    recent_order: VecDeque<u64>,                 // Order of the hashes inserted in DB
+    reuse_remaining: usize,                      // Number of reuse attempts left
+    strats_vec: Vec<MutationTypes>,              // Strats used last mutation
+    total_score: usize,                          // Total score
+    last_switch: Instant,                        // When we mode switched
+    uniform_mode: bool,                          // Whether or not we're in uniform
+    strat_scores: HashMap<MutationTypes, usize>, // Score database for strats
+    start: Instant,                              // Start time of the mutator
 }
 
 /// Implementation for this mutator for Mutator trait
@@ -348,7 +348,7 @@ impl Mutator for NetlinkMutator {
             recent_order: VecDeque::with_capacity(INPUT_DB_SIZE),
             reuse_remaining: 0,
             strats_vec: Vec::with_capacity(MUTATIONS.len()),
-            
+
             // Every strat gets init as 1, so just take the total of that
             total_score: MUTATIONS.len(),
             last_switch: Instant::now(),
@@ -433,7 +433,6 @@ impl Mutator for NetlinkMutator {
         if self.uniform_mode {
             self.uniform_mutations(corpus)?;
         }
-
         // Weighted selection
         else {
             self.weighted_mutations(corpus)?;
@@ -541,17 +540,16 @@ impl NetlinkMutator {
         // 1 - depends on hashmap key entry order which we freeze at ::New()
         // 2 - sort_by_key is deterministic then based on map key order
         // 3 - from_fn knows the array length at compile time
-        // 4 - iterates through each index and calls a callback that we 
+        // 4 - iterates through each index and calls a callback that we
         //     defined in the closure
-        let mut sorted: [(MutationTypes, usize); MUTATIONS.len()] =
-            std::array::from_fn(|i| {
-                let m = MUTATIONS[i];
-                let score = *self.strat_scores.get(&m).unwrap_or(&1);
-                (m, score)
-            });
+        let mut sorted: [(MutationTypes, usize); MUTATIONS.len()] = std::array::from_fn(|i| {
+            let m = MUTATIONS[i];
+            let score = *self.strat_scores.get(&m).unwrap_or(&1);
+            (m, score)
+        });
 
         // Sort it in place by the score, and make it descending w Reverse
-        sorted.sort_by_key(|(_, score)| std::cmp::Reverse(*score)); 
+        sorted.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
 
         // For that many rounds, pick a mutation strategy and use it
         while rounds > 0 {
@@ -605,17 +603,16 @@ impl NetlinkMutator {
     }
 
     // Pick a strategy according to database scores where each score is a fraction
-    // of the total_score. So we pick a number between 1 - total_score and 
+    // of the total_score. So we pick a number between 1 - total_score and
     // then see what bucket that fell into and then pick that strat
-    fn pick_weighted_strat(&mut self, sorted: &[(MutationTypes, usize)])
-        -> MutationTypes {
+    fn pick_weighted_strat(&mut self, sorted: &[(MutationTypes, usize)]) -> MutationTypes {
         // Should always have scores as we start in uniform mode
         assert!(self.total_score > 0);
-    
-        // Pick a random choice within the total_score 
+
+        // Pick a random choice within the total_score
         let roll = self.rand_one_incl(self.total_score);
         let mut acc = 0;
-    
+
         // Traverse in order and pick based on cumulative score
         for (strat, score) in sorted.iter() {
             acc += *score;
@@ -645,7 +642,6 @@ impl NetlinkMutator {
             self.reuse_last(corpus);
             self.reuse_remaining -= 1;
         }
-
         // Last input didn't lead to new coverage
         else {
             // Get the number of inputs in the corpus
@@ -675,7 +671,7 @@ impl NetlinkMutator {
         Ok(())
     }
 
-    // Score the strategies from the last mutation 
+    // Score the strategies from the last mutation
     fn score_strats(&mut self) {
         // No new coverage, return early no one gets credit
         if !self.new_coverage() {
@@ -717,7 +713,7 @@ impl NetlinkMutator {
         // Get uniform mode
         let uniform = self.uniform_mode;
 
-        // Calculate the threshold we're dealing with, could be time we've 
+        // Calculate the threshold we're dealing with, could be time we've
         // been in uniform mode or time since last uniform mode switch
         let threshold = if uniform {
             Duration::from_secs(UNIFORM_SELECT_DURATION)
@@ -730,7 +726,6 @@ impl NetlinkMutator {
             self.uniform_mode = false;
             self.last_switch = Instant::now();
         }
-
         // Check if we need to switch to uniform mode
         else if !uniform && elapsed > threshold {
             self.uniform_mode = true;

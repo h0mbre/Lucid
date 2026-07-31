@@ -162,8 +162,6 @@ Options:
           File path for the Bochs snapshot dir created with GUI Bochs
       --mutator <MUTATOR>
           Name of mutator to use, eg 'toy' in /mutators
-      --starved-threshold <SECONDS>
-          Duration in seconds to consider the fuzzer 'starved' of new coverage
       --colorize
           Enable Redqueen operand colorization
   -h, --help
@@ -245,6 +243,9 @@ These are stats about how we are spending our CPU time:
 - `edges`: The number of unique edge pairs the fuzzer has discovered
 - `last find`: Wall-clock and iterations since the last time we set a campaign record globally for edges discovered
 - `map`: The percentage of the coverage map we have used 
+
+Lucid treats both a newly discovered edge and a newly reached hit-count bucket
+as new coverage. Inputs that produce either are retained immediately.
 
 When an input discovers a new edge or hit-count bucket, Lucid replays it once
 in `TraceCov` mode and records every guest virtual PC executed during that

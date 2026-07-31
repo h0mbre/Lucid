@@ -1205,13 +1205,6 @@ pub fn handle_new_coverage(
     context: &mut LucidContext,
     old_edge_count: usize,
 ) -> Result<usize, LucidErr> {
-    // Minimum threshold we consider for coverage starvation in seconds
-    const MIN_STARVATION_THRESHOLD: u64 = 600; // 10 Minutes
-
-    // We don't know yet if we hit an new edge pair or if we just set a hit count
-    // record
-    let mut save_input = false;
-
     // Take the new edge count
     let new_edge_count = context.coverage.get_edge_count();
 
@@ -1229,52 +1222,31 @@ pub fn handle_new_coverage(
             new_edge_count,
             new_edge_count - old_edge_count
         );
-
-        // Save this every time
-        save_input = true;
-
-        // We achieved real new coverage, reset the starvation threshold
-        context.config.starved_threshold = context.config.default_starved_threshold;
     }
-    // IJON feedback is intentionally treated like real coverage feedback
-    if let Some(feedback) = ijon_feedback.as_ref() {
+
+    // A new hit-count bucket is ordinary coverage even when no new edge was hit
+    if context.new_code_coverage && !found_new_edge {
         finding!(
             context.fuzzer_id,
-            "{} discovered IJON feedback: {}",
-            context.fuzzing_stage,
-            feedback
+            "{} increased edge-pair hit count",
+            context.fuzzing_stage
         );
-        save_input = true;
-        context.config.starved_threshold = context.config.default_starved_threshold;
     }
-    // If neither edge nor IJON feedback changed, we likely just found a new
-    // hit count for an edge pair
-    if !found_new_edge && ijon_feedback.is_none() {
-        // Check to see if we're starved for new coverage, if we are, save
-        if context.stats.starved_for(std::time::Duration::from_secs(
-            context.config.starved_threshold,
-        )) {
-            save_input = true;
+
+    // IJON feedback is intentionally treated like real coverage feedback
+    if !context.new_code_coverage {
+        if let Some(feedback) = ijon_feedback.as_ref() {
             finding!(
                 context.fuzzer_id,
-                "{} increased edge-pair hit count",
-                context.fuzzing_stage
+                "{} discovered IJON feedback: {}",
+                context.fuzzing_stage,
+                feedback
             );
-
-            // Halve the time to shorten the threshold going forward as long
-            // as it's at least the minimum
-            let curr_threshold = context.config.starved_threshold;
-            if curr_threshold != MIN_STARVATION_THRESHOLD {
-                let new_threshold = curr_threshold / 2;
-                context.config.starved_threshold =
-                    std::cmp::max(new_threshold, MIN_STARVATION_THRESHOLD);
-            }
         }
     }
 
-    // If we consider this new coverage, save input, update stats, and send it
-    // off to Redqueen for processing
-    if save_input {
+    // Save input, update stats, and send it off to Redqueen for processing
+    if context.new_code_coverage || ijon_feedback.is_some() {
         context.corpus.save_input(context.mutator.get_input_ref());
         context.stats.new_coverage(new_edge_count);
 

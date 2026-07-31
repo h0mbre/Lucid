@@ -26,9 +26,6 @@ const MEG: usize = 1_000_000;
 /// Default batch time for stat reporting in milliseconds
 const DEFAULT_BATCH_TIME: u128 = 2_000;
 
-/// Default time to consider fuzzer starved for code coverage in seconds
-const DEFAULT_STARVED_THRESHOLD: u64 = 3600;
-
 /// Struct that contains all of the configurable information we need to pass
 /// around in the LucidContext
 #[derive(Clone)]
@@ -48,8 +45,6 @@ pub struct Config {
     pub icount_timeout: usize,
     pub num_fuzzers: usize,
     pub mutator: String,
-    pub starved_threshold: u64,
-    pub default_starved_threshold: u64,
     pub colorize: bool,
 }
 
@@ -130,10 +125,6 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         .long("mutator")
         .value_name("MUTATOR")
         .help("Name of mutator to use, eg 'toy' in /mutators"))
-    .arg(Arg::new("starved-threshold")
-        .long("starved-threshold")
-        .value_name("SECONDS")
-        .help("Duration in seconds to consider the fuzzer 'starved' of new coverage"))
     .arg(Arg::new("colorize")
         .long("colorize")
         .help("Enable Redqueen operand colorization")
@@ -322,25 +313,6 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         Some(mutator_str) => mutator_str.to_string(),
     };
 
-    // See if a starved threshold was provided
-    let threshold_str = matches.get_one::<String>("starved-threshold");
-    let starved_threshold = match threshold_str {
-        None => {
-            prompt_warn!(
-                "No starved-threshold provided, defaulting to: {} secs",
-                DEFAULT_STARVED_THRESHOLD
-            );
-            DEFAULT_STARVED_THRESHOLD
-        }
-        Some(str_repr) => {
-            let Ok(threshold) = str_repr.parse::<u64>() else {
-                return Err(LucidErr::from("Invalid --starved-threshold"));
-            };
-            threshold
-        }
-    };
-    let default_starved_threshold = starved_threshold;
-
     // Detect opting into colorization
     let colorize = matches.get_flag("colorize");
     if colorize {
@@ -364,8 +336,6 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         icount_timeout,
         num_fuzzers,
         mutator,
-        starved_threshold,
-        default_starved_threshold,
         colorize,
     })
 }

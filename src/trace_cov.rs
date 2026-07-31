@@ -18,13 +18,13 @@ const PC_SIZE: u64 = std::mem::size_of::<u64>() as u64;
 
 /// Per-process trace collection and manager-side campaign consolidation.
 pub struct TraceCov {
-    trace_dir: PathBuf,           // Directory that holds all PC databases
-    worker_id: usize,             // ID for this fuzzer process
-    worker_count: usize,          // Total number of fuzzer processes
-    current_trace: HashSet<u64>,  // PCs reported during the current replay
-    worker_seen: HashSet<u64>,    // PCs already saved by this fuzzer
-    global_seen: HashSet<u64>,    // PCs already saved in the global database
-    worker_offsets: Vec<u64>,     // Last processed file offset for each fuzzer
+    trace_dir: PathBuf,          // Directory that holds all PC databases
+    worker_id: usize,            // ID for this fuzzer process
+    worker_count: usize,         // Total number of fuzzer processes
+    current_trace: HashSet<u64>, // PCs reported during the current replay
+    worker_seen: HashSet<u64>,   // PCs already saved by this fuzzer
+    global_seen: HashSet<u64>,   // PCs already saved in the global database
+    worker_offsets: Vec<u64>,    // Last processed file offset for each fuzzer
 }
 
 impl TraceCov {
@@ -217,16 +217,9 @@ impl TraceCov {
 }
 
 /// Called by patched Bochs whenever its static PC batch is full or flushed.
-pub extern "C" fn lucid_report_pcs(
-    contextp: *mut LucidContext,
-    pcs: *const u64,
-    count: usize,
-) {
+pub extern "C" fn lucid_report_pcs(contextp: *mut LucidContext, pcs: *const u64, count: usize) {
     // Validate every value received across the Bochs callback boundary
-    if !LucidContext::is_valid(contextp)
-        || pcs.is_null()
-        || count == 0
-        || count > PC_BATCH_CAPACITY
+    if !LucidContext::is_valid(contextp) || pcs.is_null() || count == 0 || count > PC_BATCH_CAPACITY
     {
         mega_panic!("Invalid PC trace report\n");
     }
