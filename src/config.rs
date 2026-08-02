@@ -45,6 +45,7 @@ pub struct Config {
     pub icount_timeout: usize,
     pub num_fuzzers: usize,
     pub mutator: String,
+    pub redqueen: bool,
     pub colorize: bool,
 }
 
@@ -125,9 +126,14 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         .long("mutator")
         .value_name("MUTATOR")
         .help("Name of mutator to use, eg 'toy' in /mutators"))
+    .arg(Arg::new("redqueen")
+        .long("redqueen")
+        .help("Enable Redqueen comparison-guided input processing")
+        .action(ArgAction::SetTrue))
     .arg(Arg::new("colorize")
         .long("colorize")
         .help("Enable Redqueen operand colorization")
+        .requires("redqueen")
         .action(ArgAction::SetTrue))
     .get_matches();
 
@@ -313,7 +319,8 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         Some(mutator_str) => mutator_str.to_string(),
     };
 
-    // Detect opting into colorization
+    // Detect opting into Redqueen and its optional colorization pass
+    let redqueen = matches.get_flag("redqueen");
     let colorize = matches.get_flag("colorize");
     if colorize {
         prompt_warn!("Colorization is enabled, this is VERY slow");
@@ -336,6 +343,7 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         icount_timeout,
         num_fuzzers,
         mutator,
+        redqueen,
         colorize,
     })
 }

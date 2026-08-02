@@ -162,6 +162,8 @@ Options:
           File path for the Bochs snapshot dir created with GUI Bochs
       --mutator <MUTATOR>
           Name of mutator to use, eg 'toy' in /mutators
+      --redqueen
+          Enable Redqueen comparison-guided input processing
       --colorize
           Enable Redqueen operand colorization
   -h, --help
@@ -260,8 +262,30 @@ stored at most once per file; ordering is not significant. In multi-process
 campaigns the manager merges worker files at the normal statistics reporting
 interval. A single-process campaign updates the global file immediately.
 
-## IJON Feedback
+## Snapshot
+- `dirty pages`: The number of pages we've marked dirty for differential resets
+- `dirty / total`: Ratio between dirtied pages and writable pages in Bochs
+- `reset memcpys`: The number of `memcpy` invocations needed to reset the dirty pages (after merging neighboring page ranges)
 
+## Corpus
+- `inputs`: Number of total inputs in the corpus globally
+- `corpus size`: Disk size of all corpus inputs
+- `max input`: Size-limit of input
+
+# Special Feedbacks
+## Redqueen
+Redqueen processing is disabled by default. Pass `--redqueen` to enqueue
+coverage-producing inputs for comparison-guided processing. Mutators that do
+not expose Redqueen fields receive no benefit from enabling it and should
+normally leave it disabled.
+
+The optional `--colorize` pass is substantially slower and requires
+`--redqueen`:
+```terminal
+./lucid-fuzz ... --redqueen --colorize
+```
+
+## IJON
 Lucid supports five target-defined IJON feedback operations. Instrumented guest
 code places a tag in `R8`, a value in `R9`, and executes the corresponding
 same-register 16-bit `XCHG`. These instructions remain ordinary NOPs outside
@@ -278,16 +302,6 @@ coverage. TraceCov is only replayed when an input also discovers a new edge or
 hit-count bucket. IJON feedback and ordinary edge coverage are tracked
 independently. All IJON bookkeeping is generic; its tags and values only have
 meaning to the instrumented target.
-
-## Snapshot
-- `dirty pages`: The number of pages we've marked dirty for differential resets
-- `dirty / total`: Ratio between dirtied pages and writable pages in Bochs
-- `reset memcpys`: The number of `memcpy` invocations needed to reset the dirty pages (after merging neighboring page ranges)
-
-## Corpus
-- `inputs`: Number of total inputs in the corpus globally
-- `corpus size`: Disk size of all corpus inputs
-- `max input`: Size-limit of input
 
 # Contributors
 People who have had a hand in the project one way or another thus far:

@@ -1255,10 +1255,12 @@ pub fn handle_new_coverage(
         if context.new_code_coverage {
             trace_coverage_input(context, FuzzingResult::None)?;
         }
-        context
-            .redqueen
-            .process_queue
-            .push(context.mutator.get_input());
+        if context.config.redqueen {
+            context
+                .redqueen
+                .process_queue
+                .push(context.mutator.get_input());
+        }
     }
 
     // Return new edge count to caller
