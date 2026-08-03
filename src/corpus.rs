@@ -6,9 +6,9 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::time::Instant;
 
 use crate::config::Config;
@@ -20,6 +20,9 @@ const SAMPLE_CORPUS_SIZE: usize = 1000;
 
 /// % of time we choose a newer input over an older input
 const NEW_BIAS_RATE: usize = 75;
+
+/// Size of each PC in an input coverage sidecar.
+const PC_SIZE: usize = std::mem::size_of::<u64>();
 
 /// Holds all of the information and statistics we need in order to manage a
 /// database of inputs, timeouts, and crashes.
@@ -297,6 +300,67 @@ impl Corpus {
         hash
     }
 
+    /// Save the PCs this input newly discovered beside the input itself.
+    pub fn save_input_pcs(&mut self, hash: u64, pcs: &[u64]) {
+        // Inputs that only gained a hit-count bucket remain local to this fuzzer
+        if pcs.is_empty() {
+            return;
+        }
+
+        // Never publish a sidecar unless the matching input was saved first
+        let input_path =
+            std::path::Path::new(&self.inputs_dir).join(format!("{:016X}.input", hash));
+        if !input_path.exists() {
+            return;
+        }
+
+        // Another fuzzer may have already published this exact input
+        let pcs_path = std::path::Path::new(&self.inputs_dir).join(format!("{:016X}.pcs", hash));
+        if pcs_path.exists() {
+            return;
+        }
+
+        // Serialize the sorted PC set using the same little-endian u64 format
+        // used by the campaign TraceCov databases
+        let mut bytes = Vec::with_capacity(std::mem::size_of_val(pcs));
+        for pc in pcs {
+            bytes.extend_from_slice(&pc.to_le_bytes());
+        }
+
+        // Sidecars count against the same on-disk findings limit as inputs
+        if bytes.len() > self.output_limit {
+            finding_warn!(
+                self.id,
+                "Unable to save input PC sidecar, output_limit exhausted!"
+            );
+            return;
+        }
+
+        // Publish with rename so syncing fuzzers never observe a partial PC set
+        let tmp_path = std::path::Path::new(&self.inputs_dir)
+            .join(format!("{:016X}.pcs.{}.tmp", hash, self.id));
+        let result = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp_path)
+            .and_then(|mut file| file.write_all(&bytes))
+            .and_then(|_| std::fs::rename(&tmp_path, &pcs_path));
+
+        match result {
+            Ok(_) => self.output_limit -= bytes.len(),
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp_path);
+                finding_warn!(
+                    self.id,
+                    "Unable to save input PC sidecar {:016X}, error: {}",
+                    hash,
+                    e
+                );
+            }
+        }
+    }
+
     /// Save a crash
     /// - Hash the crash so we don't duplicate crashes on disk
     /// - Attempt to write the crash to disk, but fail and warn the user if
@@ -358,7 +422,7 @@ impl Corpus {
 
     /// Part of the corpus-syncing process, take the file name from the on-disk
     /// corpus file and extract the hash portion, example filename:
-    /// 8B5BB66137A8AA15.input
+    /// 8B5BB66137A8AA15.pcs
     fn extract_hash_from_filename(&self, path: &std::path::Path) -> Option<u64> {
         path.file_stem()
             .and_then(|stem| stem.to_str())
@@ -367,8 +431,8 @@ impl Corpus {
 
     /// Shouldn't be necessary, but check to make sure it's a somewhat sane
     /// file before we try ingesting it during the corpus-syncing process
-    fn is_valid_input_file(&self, path: &std::path::Path) -> bool {
-        path.is_file() && path.extension().is_some_and(|ext| ext == "input")
+    fn is_valid_pc_file(&self, path: &std::path::Path) -> bool {
+        path.is_file() && path.extension().is_some_and(|ext| ext == "pcs")
     }
 
     /// Thin wrapper around reading the corpus directory entries during the
@@ -396,7 +460,7 @@ impl Corpus {
     /// During the corpus-syncing process, scan the corpus directory for new
     /// inputs that we can potentially sample from and ingest them randomly if
     /// there is more than the sample max
-    fn sample_inputs_from_disk(&mut self) {
+    fn sample_inputs_from_disk(&mut self, seen_pcs: &HashSet<u64>) {
         // Get a list of all the entries in the shared corpus directory
         let entries = match self.read_input_directory() {
             Ok(entries) => entries,
@@ -423,7 +487,7 @@ impl Corpus {
             let path = entry.path();
 
             // Make sure it's somewhat valid looking
-            if !self.is_valid_input_file(&path) {
+            if !self.is_valid_pc_file(&path) {
                 continue;
             }
 
@@ -434,8 +498,43 @@ impl Corpus {
                     continue;
                 }
 
+                // Decode this input's newly discovered PCs and skip it when this
+                // fuzzer has already observed every one of them
+                let bytes = match std::fs::read(&path) {
+                    Ok(bytes) if bytes.len() % PC_SIZE == 0 => bytes,
+                    Ok(_) => {
+                        finding_warn!(self.id, "Ignoring malformed PC sidecar {:016X}", hash);
+                        continue;
+                    }
+                    Err(e) => {
+                        finding_warn!(
+                            self.id,
+                            "Failed to read input PC sidecar {:016X}: {}",
+                            hash,
+                            e
+                        );
+                        continue;
+                    }
+                };
+                let has_unseen_pc = bytes.chunks_exact(PC_SIZE).any(|bytes| {
+                    let pc = u64::from_le_bytes(bytes.try_into().unwrap());
+                    !seen_pcs.contains(&pc)
+                });
+                if !has_unseen_pc {
+                    continue;
+                }
+
+                // The sidecar is the publication marker, so derive and verify
+                // the matching input path only after its PCs pass the filter
+                let input_path =
+                    std::path::Path::new(&self.inputs_dir).join(format!("{:016X}.input", hash));
+                if !input_path.is_file() {
+                    finding_warn!(self.id, "PC sidecar {:016X} has no input", hash);
+                    continue;
+                }
+
                 // Add this to the candidate pool
-                candidates.push((hash, path));
+                candidates.push((hash, input_path));
             }
         }
 
@@ -487,7 +586,7 @@ impl Corpus {
     /// in-memory corpus than what exists on disk. Every sync_interval, the
     /// fuzzers will all scan the corpus directory for new inputs to potentially
     /// sample. Every sync they will clear out their sample queue and hashset
-    pub fn sync(&mut self, prng: usize) {
+    pub fn sync(&mut self, prng: usize, seen_pcs: &HashSet<u64>) {
         // Check to see if we've reached re-sync time
         if self.last_sync.elapsed().as_secs() < self.sync_interval {
             return;
@@ -500,10 +599,9 @@ impl Corpus {
         self.sample_inputs.clear();
         self.sample_hashes.clear();
 
-        // Read all of the filenames in the corpus directory and add them
-        // to the corpus if we don't have the hash in the database, files have
-        // this format: `8B5BB66137A8AA15.input`
-        self.sample_inputs_from_disk();
+        // Scan PC sidecars and sample only inputs that carry a PC this fuzzer
+        // has not observed, files have this format: `8B5BB66137A8AA15.pcs`
+        self.sample_inputs_from_disk(seen_pcs);
         self.last_sync = Instant::now();
 
         finding!(
@@ -513,3 +611,4 @@ impl Corpus {
         );
     }
 }
+

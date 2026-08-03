@@ -75,7 +75,7 @@ impl TraceCov {
     }
 
     /// Append PCs newly observed by this worker to its raw little-endian blob.
-    pub fn finish_trace(&mut self) -> Result<usize, LucidErr> {
+    pub fn finish_trace(&mut self) -> Result<Vec<u64>, LucidErr> {
         // Keep only PCs that have not already been saved by this fuzzer
         let mut new_pcs: Vec<u64> = self
             .current_trace
@@ -86,7 +86,12 @@ impl TraceCov {
         // Sort the PCs for stable output and append them to the database
         new_pcs.sort_unstable();
         Self::append_pcs(&self.worker_path(self.worker_id), &new_pcs)?;
-        Ok(new_pcs.len())
+        Ok(new_pcs)
+    }
+
+    /// Return the PCs already observed by this fuzzer.
+    pub fn seen_pcs(&self) -> &HashSet<u64> {
+        &self.worker_seen
     }
 
     /// Merge each worker's append-only blob into the manager-owned global blob.

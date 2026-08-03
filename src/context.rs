@@ -1247,13 +1247,14 @@ pub fn handle_new_coverage(
 
     // Save input, update stats, and send it off to Redqueen for processing
     if context.new_code_coverage || ijon_feedback.is_some() {
-        context.corpus.save_input(context.mutator.get_input_ref());
+        let input_hash = context.corpus.save_input(context.mutator.get_input_ref());
         context.stats.new_coverage(new_edge_count);
 
         // Record exact PCs for new edges and new hit-count buckets, but avoid
         // the replay when this input was retained solely for IJON feedback.
         if context.new_code_coverage {
-            trace_coverage_input(context, FuzzingResult::None)?;
+            let new_pcs = trace_coverage_input(context, FuzzingResult::None)?;
+            context.corpus.save_input_pcs(input_hash, &new_pcs);
         }
         if context.config.redqueen {
             context
@@ -1340,7 +1341,7 @@ pub fn fuzz_one(context: &mut LucidContext) -> Result<FuzzingResult, LucidErr> {
 fn trace_coverage_input(
     context: &mut LucidContext,
     expected_result: FuzzingResult,
-) -> Result<(), LucidErr> {
+) -> Result<Vec<u64>, LucidErr> {
     // Save the current execution modes and switch Bochs into PC tracing mode
     let backup_cpu_mode = context.cpu_mode;
     let backup_stage = context.fuzzing_stage;
@@ -1372,13 +1373,13 @@ fn trace_coverage_input(
     }
 
     // Save the new PCs into this fuzzer's coverage database
-    context.trace_cov.finish_trace()?;
+    let new_pcs = context.trace_cov.finish_trace()?;
 
     // Single-process fuzzers also own the global coverage database
     if context.is_single_process() {
         context.trace_cov.consolidate()?;
     }
-    Ok(())
+    Ok(new_pcs)
 }
 
 /// Execute all of the inputs found in the seeds directory so that we get a
@@ -1567,6 +1568,8 @@ pub fn fuzz_loop(context: &mut LucidContext, id: Option<usize>) -> Result<(), Lu
         }
 
         // Check to see if we should sync the corpus
-        context.corpus.sync(context.mutator.get_rng());
+        context
+            .corpus
+            .sync(context.mutator.get_rng(), context.trace_cov.seen_pcs());
     }
 }
