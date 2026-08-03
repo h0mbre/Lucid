@@ -611,4 +611,3 @@ impl Corpus {
         );
     }
 }
-
