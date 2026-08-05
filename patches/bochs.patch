@@ -1267,17 +1267,27 @@
  #define BX_INSTR_UCNEAR_BRANCH(cpu_id, what, branch_eip, new_eip) bx_instr_ucnear_branch(cpu_id, what, branch_eip, new_eip)
  #define BX_INSTR_FAR_BRANCH(cpu_id, what, prev_cs, prev_eip, new_cs, new_eip) \
                         bx_instr_far_branch(cpu_id, what, prev_cs, prev_eip, new_cs, new_eip)
-@@ -114,7 +118,8 @@
+@@ -114,7 +118,18 @@
                         bx_instr_prefetch_hint(cpu_id, what, seg, offset)
  
  /* execution */
 -#define BX_INSTR_BEFORE_EXECUTION(cpu_id, i)  bx_instr_before_execution(cpu_id, i)
-+#define BX_INSTR_BEFORE_EXECUTION(cpu_id, i, eip)  bx_instr_before_execution(cpu_id, i, eip);
++#if BX_LUCID
++#define BX_INSTR_BEFORE_EXECUTION(cpu_id, i, eip) do { \
++  if (__builtin_expect(g_lucid_ctx->cpu_mode >= TRACE_HASH, 0)) \
++    bx_instr_before_execution(cpu_id, i, eip); \
++} while (0)
++#define BX_INSTR_TRACE_COV_FLUSH() bx_instr_trace_cov_flush()
++// The Lucid stub has no after-execution feedback, so avoid a call after every instruction.
++#define BX_INSTR_AFTER_EXECUTION(cpu_id, i)   do {} while (0)
++#else
++#define BX_INSTR_BEFORE_EXECUTION(cpu_id, i, eip) bx_instr_before_execution(cpu_id, i, eip)
 +#define BX_INSTR_TRACE_COV_FLUSH() bx_instr_trace_cov_flush()
  #define BX_INSTR_AFTER_EXECUTION(cpu_id, i)   bx_instr_after_execution(cpu_id, i)
++#endif /* BX_LUCID */
  #define BX_INSTR_REPEAT_ITERATION(cpu_id, i)  bx_instr_repeat_iteration(cpu_id, i)
  
-@@ -135,6 +139,17 @@
+@@ -135,6 +144,17 @@
  /* vmexit callback */
  #define BX_INSTR_VMEXIT(cpu_id, reason, qualification) bx_instr_vmexit(cpu_id, reason, qualification)
  
@@ -1295,7 +1305,7 @@
  #else
  
  /* initialization/deinitialization of instrumentalization */
-@@ -154,7 +169,7 @@
+@@ -154,7 +174,7 @@
  
  /* branch resolution */
  #define BX_INSTR_CNEAR_BRANCH_TAKEN(cpu_id, branch_eip, new_eip)
@@ -1304,7 +1314,7 @@
  #define BX_INSTR_UCNEAR_BRANCH(cpu_id, what, branch_eip, new_eip)
  #define BX_INSTR_FAR_BRANCH(cpu_id, what, prev_cs, prev_eip, new_cs, new_eip)
  
-@@ -173,7 +188,8 @@
+@@ -173,7 +193,8 @@
  #define BX_INSTR_PREFETCH_HINT(cpu_id, what, seg, offset)
  
  /* execution */
@@ -1314,7 +1324,7 @@
  #define BX_INSTR_AFTER_EXECUTION(cpu_id, i)
  #define BX_INSTR_REPEAT_ITERATION(cpu_id, i)
  
-@@ -194,4 +209,7 @@
+@@ -194,4 +214,7 @@
  /* vmexit callback */
  #define BX_INSTR_VMEXIT(cpu_id, reason, qualification)
  

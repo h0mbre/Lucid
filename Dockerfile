@@ -68,8 +68,11 @@ RUN cd Bochs && patch -p0 < /lucid/patches/bochs.patch
 RUN cd Bochs/bochs && \
     CC="/lucid/musl-cross-make/output/bin/x86_64-linux-musl-gcc" \
     CXX="/lucid/musl-cross-make/output/bin/x86_64-linux-musl-g++" \
-    CFLAGS="-Wall -O3 -fomit-frame-pointer --static-pie -fPIE -DBX_LUCID" \
-    CXXFLAGS="-Wall -O3 -fomit-frame-pointer --static-pie -fPIE -DBX_LUCID" \
+    AR="/lucid/musl-cross-make/output/bin/x86_64-linux-musl-gcc-ar" \
+    RANLIB="/lucid/musl-cross-make/output/bin/x86_64-linux-musl-gcc-ranlib" \
+    CFLAGS="-Wall -O3 -flto -fno-semantic-interposition -fomit-frame-pointer --static-pie -fPIE -DBX_LUCID" \
+    CXXFLAGS="-Wall -O3 -flto -fno-semantic-interposition -fomit-frame-pointer --static-pie -fPIE -DBX_LUCID" \
+    LDFLAGS="-flto" \
     ./configure \
         --enable-fpu \
         --enable-all-optimizations \
@@ -83,6 +86,7 @@ RUN cd Bochs/bochs && \
         --enable-instrumentation="instrument/stubs" \
         --disable-large-ramfile \
         --with-nogui && \
+    sed -i 's/ -export-dynamic / /' Makefile && \
     make -j$(nproc) && \
     mkdir -p /lucid/build && \
     cp bochs /lucid/build/lucid-bochs
