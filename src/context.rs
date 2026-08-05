@@ -1142,7 +1142,7 @@ pub fn run_fuzzcase(context: &mut LucidContext) -> Result<(), LucidErr> {
 /// If the fuzzing iteration detects a crash, save the crash to disk in the
 /// corpus crash directory, update the coverage metrics if the crash reached any
 /// new code. As of now, crashes are not saved into the corpus for re-running
-pub fn handle_crash(context: &mut LucidContext, _old_edge_count: usize) -> Result<usize, LucidErr> {
+pub fn handle_crash(context: &mut LucidContext, old_edge_count: usize) -> Result<usize, LucidErr> {
     // Save crash
     context
         .corpus
@@ -1157,9 +1157,10 @@ pub fn handle_crash(context: &mut LucidContext, _old_edge_count: usize) -> Resul
     let edges = context.coverage.get_edge_count();
     context.stats.new_coverage(edges);
 
-    // Preserve the PCs reached by a crashing input if it found either a new
-    // edge or a new hit-count bucket; IJON-only feedback needs no PC replay.
-    if new_code_coverage {
+    // TraceCov is deliberately reserved for inputs that increase the edge
+    // count. Hit-count-only crashes are still saved, but do not pay for a
+    // second full target execution merely to rediscover already-known PCs.
+    if new_code_coverage && edges != old_edge_count {
         trace_coverage_input(context, FuzzingResult::Crash)?;
     }
 
@@ -1172,7 +1173,7 @@ pub fn handle_crash(context: &mut LucidContext, _old_edge_count: usize) -> Resul
 /// any new code. As of now, timeouts are not saved into the corpus for re-running
 pub fn handle_timeout(
     context: &mut LucidContext,
-    _old_edge_count: usize,
+    old_edge_count: usize,
 ) -> Result<usize, LucidErr> {
     // Save timeout
     context
@@ -1188,9 +1189,9 @@ pub fn handle_timeout(
     let edges = context.coverage.get_edge_count();
     context.stats.new_coverage(edges);
 
-    // Preserve the PCs reached by a timing-out input if it found either a new
-    // edge or a new hit-count bucket; IJON-only feedback needs no PC replay.
-    if new_code_coverage {
+    // Apply the same edge-only TraceCov rule to timeouts. The timeout artifact
+    // remains retained even when it only changes an edge hit-count bucket.
+    if new_code_coverage && edges != old_edge_count {
         trace_coverage_input(context, FuzzingResult::Timeout)?;
     }
 
@@ -1250,9 +1251,10 @@ pub fn handle_new_coverage(
         let input_hash = context.corpus.save_input(context.mutator.get_input_ref());
         context.stats.new_coverage(new_edge_count);
 
-        // Record exact PCs for new edges and new hit-count buckets, but avoid
-        // the replay when this input was retained solely for IJON feedback.
-        if context.new_code_coverage {
+        // PC sidecars exist to synchronize genuinely new code between workers.
+        // Hit-count-only inputs remain useful in the local corpus, but tracing
+        // them would only add an expensive second target execution.
+        if found_new_edge {
             let new_pcs = trace_coverage_input(context, FuzzingResult::None)?;
             context.corpus.save_input_pcs(input_hash, &new_pcs);
         }
@@ -1342,6 +1344,8 @@ fn trace_coverage_input(
     context: &mut LucidContext,
     expected_result: FuzzingResult,
 ) -> Result<Vec<u64>, LucidErr> {
+    let trace_start = start_timer();
+
     // Save the current execution modes and switch Bochs into PC tracing mode
     let backup_cpu_mode = context.cpu_mode;
     let backup_stage = context.fuzzing_stage;
@@ -1355,6 +1359,7 @@ fn trace_coverage_input(
     // Always restore normal execution state, including when the replay fails.
     context.cpu_mode = backup_cpu_mode;
     context.fuzzing_stage = backup_stage;
+    end_timer(&mut context.stats.batch_tracecov, trace_start);
 
     let result = fuzzing_result?;
 
@@ -1421,7 +1426,8 @@ pub fn dry_run(context: &mut LucidContext) -> Result<(), LucidErr> {
                 // The seed is already in the corpus, but any newly discovered
                 // code coverage still needs to be recorded in the PC database.
                 let _ = context.ijon.take_feedback();
-                if context.new_code_coverage {
+                if context.new_code_coverage && context.coverage.get_edge_count() != old_edge_count
+                {
                     trace_coverage_input(context, FuzzingResult::None)?;
                 }
             }

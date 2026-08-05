@@ -66,6 +66,7 @@ struct SerialStats {
     mutator_time: u64,
     target_time: u64,
     coverage_time: u64,
+    tracecov_time: u64,
     redqueen_time: u64,
     dirty_pages: usize,
     memcpys: usize,
@@ -95,6 +96,7 @@ impl SerialStats {
             mutator_time: stats.batch_mutator.as_millis() as u64,
             target_time: stats.batch_target.as_millis() as u64,
             coverage_time: stats.batch_coverage.as_millis() as u64,
+            tracecov_time: stats.batch_tracecov.as_millis() as u64,
             redqueen_time: stats.batch_redqueen.as_millis() as u64,
             dirty_pages: stats.dirty_pages,
             memcpys: stats.memcpys,
@@ -119,6 +121,7 @@ impl SerialStats {
             mutator_time: self.mutator_time - old.mutator_time,
             target_time: self.target_time - old.target_time,
             coverage_time: self.coverage_time - old.coverage_time,
+            tracecov_time: self.tracecov_time - old.tracecov_time,
             redqueen_time: self.redqueen_time - old.redqueen_time,
             dirty_pages: self.dirty_pages,
             memcpys: self.memcpys,
@@ -146,6 +149,7 @@ struct FormattedStats {
     cpu_reset: f64,
     cpu_mutator: f64,
     cpu_coverage: f64,
+    cpu_tracecov: f64,
     cpu_redqueen: f64,
     cpu_misc: f64,
     dirty_pages: usize,
@@ -190,6 +194,7 @@ pub struct Stats {
     pub batch_mutator: Duration,  // Batch time spent in mutator
     pub batch_target: Duration,   // Batch time spent in target
     pub batch_coverage: Duration, // Batch time spent in coverage
+    pub batch_tracecov: Duration, // Batch time spent replaying new edges for exact PCs
     pub batch_redqueen: Duration, // Batch time spent in redqueen
     pub oldest_batch: Duration,   // Oldest batch duration in multi-process
 
@@ -275,8 +280,11 @@ impl Stats {
         let cpu_reset = (self.batch_reset.as_millis() as f64 / batch_millis) * 100.0;
         let cpu_mutator = (self.batch_mutator.as_millis() as f64 / batch_millis) * 100.0;
         let cpu_coverage = (self.batch_coverage.as_millis() as f64 / batch_millis) * 100.0;
+        let cpu_tracecov = (self.batch_tracecov.as_millis() as f64 / batch_millis) * 100.0;
         let cpu_redqueen = (self.batch_redqueen.as_millis() as f64 / batch_millis) * 100.0;
-        let cpu_misc = 100.0 - (cpu_target + cpu_reset + cpu_mutator + cpu_coverage + cpu_redqueen);
+        let cpu_misc = (100.0
+            - (cpu_target + cpu_reset + cpu_mutator + cpu_coverage + cpu_tracecov + cpu_redqueen))
+            .max(0.0);
 
         // Calculate snapshot dirty page metrics
         let dirty_pages = self.dirty_pages;
@@ -305,6 +313,7 @@ impl Stats {
             cpu_reset,
             cpu_mutator,
             cpu_coverage,
+            cpu_tracecov,
             cpu_redqueen,
             cpu_misc,
             dirty_pages,
@@ -384,6 +393,10 @@ impl Stats {
                 format!("{:.1}%", formatted_stats.cpu_coverage),
             ),
             (
+                "tracecov".to_string(),
+                format!("{:.1}%", formatted_stats.cpu_tracecov),
+            ),
+            (
                 "redqueen".to_string(),
                 format!("{:.1}%", formatted_stats.cpu_redqueen),
             ),
@@ -449,6 +462,18 @@ impl Stats {
         dirty_block_length: usize,
         input_max_size: usize,
     ) {
+        // Dry runs happen before workers enter the fuzzing session. Clear all
+        // batch counters here so pre-fork work is not inherited and reported
+        // once by every child as campaign CPU time.
+        self.batch_iters = 0;
+        self.batch_reset = Duration::new(0, 0);
+        self.batch_mutator = Duration::new(0, 0);
+        self.batch_target = Duration::new(0, 0);
+        self.batch_coverage = Duration::new(0, 0);
+        self.batch_tracecov = Duration::new(0, 0);
+        self.batch_redqueen = Duration::new(0, 0);
+        self.oldest_batch = Duration::new(0, 0);
+
         self.start_str = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         self.session_start = Some(Instant::now());
         self.batch_start = Some(Instant::now());
@@ -531,6 +556,7 @@ impl Stats {
         self.batch_mutator = Duration::new(0, 0);
         self.batch_target = Duration::new(0, 0);
         self.batch_coverage = Duration::new(0, 0);
+        self.batch_tracecov = Duration::new(0, 0);
         self.batch_redqueen = Duration::new(0, 0);
 
         Ok(())
@@ -681,6 +707,7 @@ impl Stats {
         let mut batch_mutator = Duration::new(0, 0);
         let mut batch_target = Duration::new(0, 0);
         let mut batch_coverage = Duration::new(0, 0);
+        let mut batch_tracecov = Duration::new(0, 0);
         let mut batch_redqueen = Duration::new(0, 0);
         let mut oldest_batch = 0;
 
@@ -711,6 +738,7 @@ impl Stats {
             batch_mutator += Duration::from_millis(batch.mutator_time);
             batch_target += Duration::from_millis(batch.target_time);
             batch_coverage += Duration::from_millis(batch.coverage_time);
+            batch_tracecov += Duration::from_millis(batch.tracecov_time);
             batch_redqueen += Duration::from_millis(batch.redqueen_time);
 
             // Save these stats to compare against next time
@@ -750,6 +778,7 @@ impl Stats {
         self.batch_mutator = batch_mutator;
         self.batch_target = batch_target;
         self.batch_coverage = batch_coverage;
+        self.batch_tracecov = batch_tracecov;
         self.batch_redqueen = batch_redqueen;
         self.oldest_batch = Duration::from_millis(oldest_batch);
 
@@ -763,6 +792,7 @@ impl Stats {
         self.batch_mutator = Duration::new(0, 0);
         self.batch_target = Duration::new(0, 0);
         self.batch_coverage = Duration::new(0, 0);
+        self.batch_tracecov = Duration::new(0, 0);
         self.batch_redqueen = Duration::new(0, 0);
         self.oldest_batch = Duration::new(0, 0);
     }
