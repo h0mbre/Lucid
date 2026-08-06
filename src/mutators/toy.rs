@@ -202,6 +202,7 @@ impl Mutator for ToyMutator {
 
         // If we don't have any inputs to choose from, create a random one
         if num_inputs == 0 || gen < GEN_SCRATCH_RATE {
+            self.core.last_input = None;
             self.generate_random_input();
             return Ok(());
         }
@@ -214,6 +215,7 @@ impl Mutator for ToyMutator {
 
         // Copy the input over
         self.core.input.extend_from_slice(chosen);
+        self.core.last_input = Some(idx);
 
         // We have an input, pick a number of rounds of mutation
         let rounds = (self.rand() % MAX_STACK) + 1;

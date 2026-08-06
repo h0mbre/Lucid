@@ -10,7 +10,7 @@
 use std::arch::{asm, global_asm};
 
 use crate::config::Config;
-use crate::corpus::Corpus;
+use crate::corpus::{Corpus, CorpusSaveReason};
 use crate::coverage::CoverageMap;
 use crate::err::LucidErr;
 use crate::files::FileTable;
@@ -1248,7 +1248,22 @@ pub fn handle_new_coverage(
 
     // Save input, update stats, and send it off to Redqueen for processing
     if context.new_code_coverage || ijon_feedback.is_some() {
-        let input_hash = context.corpus.save_input(context.mutator.get_input_ref());
+        // New edges and IJON feedback are permanent corpus entries. An input that
+        // simply increases an edge-to-edge hitcount bucket, will be handled differently.
+        // Hitcount inputs are limited so that they don't dominate the corpus. Any permanent
+        // input (found novel edge-pair or resulted from IJON) has exactly one hitcount child
+        // input that can persist in the corpus, that is continually replaced if it sets
+        // new hitcount records. So this is the parent -> child relationship.
+        let save_reason = if found_new_edge || ijon_feedback.is_some() {
+            CorpusSaveReason::Permanent
+        } else {
+            CorpusSaveReason::Hitcount {
+                parent: context.mutator.get_last_input(),
+            }
+        };
+        let input_hash = context
+            .corpus
+            .save_input(context.mutator.get_input_ref(), save_reason);
         context.stats.new_coverage(new_edge_count);
 
         // PC sidecars exist to synchronize genuinely new code between workers.

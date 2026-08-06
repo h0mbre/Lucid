@@ -198,6 +198,11 @@ pub trait Mutator {
         self.core().get_max_size()
     }
 
+    /// Default: Return the corpus index used as the current mutation base.
+    fn get_last_input(&self) -> Option<usize> {
+        self.core().last_input
+    }
+
     /// Default: Helper to clear the input so we don't have to access core
     fn clear_input(&mut self) {
         self.core_mut().clear_input();

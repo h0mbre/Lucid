@@ -5,7 +5,7 @@
 //! Copyright (c) 2026 h0mbre
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
@@ -24,23 +24,36 @@ const NEW_BIAS_RATE: usize = 75;
 /// Size of each PC in an input coverage sidecar.
 const PC_SIZE: usize = std::mem::size_of::<u64>();
 
+/// Why an input is being admitted to the corpus.
+pub enum CorpusSaveReason {
+    /// Seeds and inputs retained for new edges or semantic feedback.
+    Permanent,
+    /// An input retained only because it increased an edge hit-count bucket.
+    Hitcount {
+        /// Flat corpus index of the input used as the mutation base.
+        parent: Option<usize>,
+    },
+}
+
 /// Holds all of the information and statistics we need in order to manage a
 /// database of inputs, timeouts, and crashes.
 #[derive(Clone)]
 pub struct Corpus {
-    pub inputs_dir: String,      // Where inputs are written to on disk
-    pub crash_dir: String,       // Where crashes are written to on disk
-    pub stats_dir: String,       // Where statistics are written to on disk
-    pub inputs: Vec<Vec<u8>>,    // In memory input database
-    input_hashes: HashSet<u64>,  // Database of unique input hashes
-    output_limit: usize,         // The limit in megabytes of what we can save
-    pub id: usize,               // Inherited from the LucidContext
-    last_sync: Instant,          // The last time we synced from disk to memory
-    sync_interval: u64,          // How often we sync the in-memory corpus with the disk
-    pub corpus_size: usize,      // The number of bytes in the corpus
-    sample_inputs: Vec<Vec<u8>>, // Input data base sampled from other fuzzers
-    sample_hashes: HashSet<u64>, // Database of unique sample input hashes
-    prng: usize,                 // pRNG state
+    pub inputs_dir: String,                 // Where inputs are written to on disk
+    pub crash_dir: String,                  // Where crashes are written to on disk
+    pub stats_dir: String,                  // Where statistics are written to on disk
+    pub inputs: Vec<Vec<u8>>,               // In memory input database
+    input_hashes: HashSet<u64>,             // Database of unique input hashes
+    output_limit: usize,                    // The limit in megabytes of what we can save
+    pub id: usize,                          // Inherited from the LucidContext
+    last_sync: Instant,                     // The last time we synced from disk to memory
+    sync_interval: u64,                     // How often we sync the in-memory corpus with the disk
+    pub corpus_size: usize,                 // The number of bytes in the corpus
+    sample_inputs: Vec<Vec<u8>>,            // Input data base sampled from other fuzzers
+    sample_hashes: HashSet<u64>,            // Database of unique sample input hashes
+    hitcount_inputs: Vec<Vec<u8>>,          // Inputs retained only for hit-count feedback
+    hitcount_children: HashMap<u64, usize>, // Permanent input hash to hit-count child
+    prng: usize,                            // pRNG state
 }
 
 impl Corpus {
@@ -51,6 +64,7 @@ impl Corpus {
         let prng = 0;
         let sample_inputs = Vec::new();
         let sample_hashes = HashSet::new();
+        let hitcount_inputs = Vec::new();
 
         // Try to read inputs in from the seeds_dir if we have one
         if let Some(seeds_dir) = config.seeds_dir.as_ref() {
@@ -177,19 +191,26 @@ impl Corpus {
             corpus_size,
             sample_inputs,
             sample_hashes,
+            hitcount_inputs,
+            hitcount_children: HashMap::new(),
             prng,
         })
     }
 
     /// Return the number of inputs currently in the corpus in memory
     pub fn num_inputs(&self) -> usize {
+        self.inputs.len() + self.sample_inputs.len() + self.hitcount_inputs.len()
+    }
+
+    /// Return the number of permanent local and sampled inputs.
+    fn num_permanent_inputs(&self) -> usize {
         self.inputs.len() + self.sample_inputs.len()
     }
 
     /// Get an input by index
     pub fn get_input_by_idx(&self, idx: usize) -> Option<&[u8]> {
         // Validate index
-        if idx >= self.inputs.len() + self.sample_inputs.len() {
+        if idx >= self.num_inputs() {
             return None;
         }
 
@@ -198,8 +219,14 @@ impl Corpus {
             return Some(&self.inputs[idx]);
         }
 
-        // Return from sample inputs
-        Some(&self.sample_inputs[idx - self.inputs.len()])
+        // Grab from sampled permanent inputs
+        let sample_idx = idx - self.inputs.len();
+        if sample_idx < self.sample_inputs.len() {
+            return Some(&self.sample_inputs[sample_idx]);
+        }
+
+        // Return from the hit-count-only pool
+        Some(&self.hitcount_inputs[sample_idx - self.sample_inputs.len()])
     }
 
     /// Gets an input from the corpus with pseudo uniform distribution
@@ -208,7 +235,7 @@ impl Corpus {
         self.prng = prng;
 
         // Determine ceiling index
-        let ceiling = self.inputs.len() + self.sample_inputs.len();
+        let ceiling = self.num_inputs();
         if ceiling == 0 {
             return (0, None);
         }
@@ -216,13 +243,8 @@ impl Corpus {
         // Pick a random index across both pools
         let idx = self.rand() % ceiling;
 
-        // If it's in the normal corpus, return that
-        if idx < self.inputs.len() {
-            return (idx, Some(&self.inputs[idx]));
-        }
-
-        // Otherwise, adjust and return from the sample pool
-        (idx, Some(&self.sample_inputs[idx - self.inputs.len()]))
+        // Return the selected input from the flattened corpus
+        (idx, self.get_input_by_idx(idx))
     }
 
     /// Gets an input but biases selection towards newer inputs (towards end)
@@ -231,7 +253,7 @@ impl Corpus {
         self.prng = prng;
 
         // Determine ceiling index
-        let ceiling = self.inputs.len() + self.sample_inputs.len();
+        let ceiling = self.num_inputs();
 
         // If we don't have at least two inputs, just return uniform
         if ceiling < 2 {
@@ -263,11 +285,44 @@ impl Corpus {
     ///
     /// It's important to note that if we fail to write the input to disk because
     /// of the findings limit, then we also don't save the input to memory
-    pub fn save_input(&mut self, input: &Vec<u8>) -> u64 {
+    pub fn save_input(&mut self, input: &Vec<u8>, reason: CorpusSaveReason) -> u64 {
         // Create a hash for the input data
         let mut hasher = DefaultHasher::new();
         input.hash(&mut hasher);
         let hash = hasher.finish();
+
+        // Hit-count inputs stay local and in memory. A permanent input owns at
+        // most one hit-count child, while a hit-count child replaces itself.
+        if let CorpusSaveReason::Hitcount { parent } = reason {
+            let permanent_inputs = self.num_permanent_inputs();
+            let permanent_parent = parent
+                .filter(|idx| *idx < permanent_inputs)
+                .and_then(|idx| self.get_input_by_idx(idx))
+                .map(|input| {
+                    let mut hasher = DefaultHasher::new();
+                    input.hash(&mut hasher);
+                    hasher.finish()
+                });
+            let replace_idx = match parent {
+                Some(idx) if idx >= permanent_inputs => Some(idx - permanent_inputs),
+                _ => permanent_parent.and_then(|hash| self.hitcount_children.get(&hash).copied()),
+            };
+
+            if let Some(idx) = replace_idx.filter(|idx| *idx < self.hitcount_inputs.len()) {
+                self.corpus_size -= self.hitcount_inputs[idx].len();
+                self.hitcount_inputs[idx] = input.clone();
+                self.corpus_size += input.len();
+            } else {
+                let child_idx = self.hitcount_inputs.len();
+                self.hitcount_inputs.push(input.clone());
+                self.corpus_size += input.len();
+                if let Some(hash) = permanent_parent {
+                    self.hitcount_children.insert(hash, child_idx);
+                }
+            }
+
+            return hash;
+        }
 
         // Create the file path for the new input
         let file_path = std::path::Path::new(&self.inputs_dir).join(format!("{:016X}.input", hash));

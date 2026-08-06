@@ -652,6 +652,7 @@ impl NetlinkMutator {
 
             // If we don't have any inputs to choose from, create random one
             if num_inputs == 0 || gen <= GEN_SCRATCH_RATE {
+                self.core.last_input = None;
                 self.generate_random_input()?;
                 return Ok(());
             }
