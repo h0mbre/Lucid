@@ -33,6 +33,7 @@ pub struct Snapshot {
     pub regs: RegisterBank, // GPRs for Bochs
     mmu: Mmu,               // The saved state of the MMU
     _files: FileTable,      // Saved file table
+    clock_time: usize,      // Deterministic time returned to Bochs
 
     // Dirty page tracking members
     dirty_map: Vec<u8>,                    // Dirty page bitmap that Bochs updates
@@ -72,6 +73,7 @@ impl Snapshot {
             regs: RegisterBank::default(),
             mmu: Mmu::default(),
             _files: FileTable::default(),
+            clock_time: 0,
             dirty_map,
             dirty_map_addr,
             dirty_block_start: base,
@@ -174,6 +176,9 @@ pub fn take_snapshot(contextp: *mut LucidContext) {
 
     // Snapshot the register state which is currently in register bank
     context.snapshot.regs = context.bochs_regs.clone();
+
+    // Capture the clock time, this gets incremented in syscalls.rs
+    context.snapshot.clock_time = context.clock_time;
 
     // Mprotect the range as non-writable
     let result = unsafe {
@@ -368,6 +373,9 @@ pub fn restore_snapshot(contextp: *mut LucidContext) -> Result<(), LucidErr> {
     // Restore the MMU
     context.mmu.restore(&context.snapshot.mmu);
 
+    // This gets affected by syscalls from Bochs, we do our own manual bookkeeping
+    context.clock_time = context.snapshot.clock_time;
+
     // Check the dirty page flag and walk the bitmap if there are new dirty
     // pages
     if context.new_dirty_page == 1 {
@@ -392,7 +400,7 @@ pub fn restore_snapshot(contextp: *mut LucidContext) -> Result<(), LucidErr> {
         context.new_dirty_page = 0;
     }
 
-    // Restore dirty memory
+    // Restore memory dirtied by the previous input.
     reset_dirty_memory(&context.snapshot.reset_io_vecs);
 
     Ok(())

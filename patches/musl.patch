@@ -87,7 +87,7 @@
  	register long r8 __asm__("r8") = a5;
 --- musl-1.2.4/include/lucid.h	1969-12-31 19:00:00.000000000 -0500
 +++ musl-1.2.4/include/lucid.h	2024-07-24 12:26:11.062841954 -0400
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,184 @@
 +#ifndef LUCID_H
 +#define LUCID_H
 +
@@ -206,6 +206,11 @@
 +    size_t lucid_report_ijon;
 +    uint8_t *icache_addr;
 +    size_t icache_size;
++    size_t vcpu_count;
++    size_t max_vcpus;
++    size_t icache_shared_size;
++    size_t icache_slot_size;
++    size_t smp_icount;
 +
 +    /* Opaque Members */
 +} lucid_ctx_t;

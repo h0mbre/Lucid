@@ -228,7 +228,7 @@
  #endif
  
 +// Place the Lucid snapshot taking code here above potential long jump returns
-+#if BX_LUCID
++#if BX_LUCID && !BX_SUPPORT_SMP
 +  // Keep track of the number of instructions that have been emulated up to now
 +  size_t icount_base = BX_CPU_THIS_PTR icount;
 +
@@ -244,14 +244,14 @@
  
  #if BX_SUPPORT_HANDLERS_CHAINING_SPEEDUPS
      for(;;) {
-+#if BX_LUCID
++#if BX_LUCID && !BX_SUPPORT_SMP
 +      // Check if we should register a timeout
 +      if ((BX_CPU_THIS_PTR icount - icount_base)>= icount_timeout) {
 +        g_lucid_ctx->timeout = 1;
 +        BX_INSTR_TRACE_COV_FLUSH();
 +        lucid_postfuzz_hook();
 +      }
-+#endif /* BX_LUCID */
++#endif /* BX_LUCID && !BX_SUPPORT_SMP */
        // want to allow changing of the instruction inside instrumentation callback
 -      BX_INSTR_BEFORE_EXECUTION(BX_CPU_ID, i);
 +      BX_INSTR_BEFORE_EXECUTION(BX_CPU_ID, i, RIP);
@@ -285,6 +285,20 @@
      RIP += i->ilen();
      BX_CPU_CALL_METHOD(i->execute1, (i)); // might iterate repeat instruction
      BX_CPU_THIS_PTR prev_rip = RIP; // commit new RIP
+@@ -301,1 +318,1 @@
+-  bxInstruction_c *next = i->getNextTrace(BX_CPU_THIS_PTR iCache.traceLinkTimeStamp);
++  bxInstruction_c *next = i->getNextTrace(BX_CPU_THIS_PTR iCache.getTraceLinkTimeStamp());
+@@ -318,7 +335,9 @@
+ 
+   if (entry != NULL) // link traces - handle only hit cases
+   {
+-    i->setNextTrace(entry->i, BX_CPU_THIS_PTR iCache.traceLinkTimeStamp);
++#if !BX_LUCID || !BX_SUPPORT_SMP
++    i->setNextTrace(entry->i, BX_CPU_THIS_PTR iCache.getTraceLinkTimeStamp());
++#endif
+     i = entry->i;
+     BX_EXECUTE_INSTRUCTION(i);
+   }
 --- bochs/cpu/cpu.h	2024-07-07 12:54:41.296545458 -0400
 +++ bochs/cpu/cpu.h	2024-07-03 10:12:52.633845353 -0400
 @@ -4536,7 +4536,7 @@
@@ -1334,7 +1348,7 @@
  #endif
 --- bochs/main.cc	2024-07-07 12:54:41.368546273 -0400
 +++ bochs/main.cc	2024-07-24 12:43:18.185741661 -0400
-@@ -304,8 +304,111 @@
+@@ -304,8 +304,112 @@
  }
  #endif
  
@@ -1342,6 +1356,7 @@
 +#include <sys/mman.h>
 +#define LUCID_PAGE 4096UL
 +#define PAGE_MASK (~(LUCID_PAGE - 1))
++
 +
 +// Handler function for segfaults to check if they are for dirty page tracking
 +void lucid_segv_handler(int signo, siginfo_t *si, void *unused) {
@@ -1446,6 +1461,31 @@
  #ifdef HAVE_LOCALE_H
    // Initialize locale (for isprint() and other functions)
    setlocale (LC_ALL, "");
+@@ -1067,6 +1172,13 @@
+       Bit32u executed = 0, processor = 0;
+       bool run = true;
+ 
++#if BX_LUCID
++      // Snapshot the complete machine once before the deterministic,
++      // single-host-thread SMP scheduler begins executing fuzz input.
++      g_lucid_ctx->smp_icount = 0;
++      lucid_take_snapshot();
++#endif
++
+       if (setjmp(BX_CPU_C::jmp_buf_env)) {
+         // can get here only from exception function or VMEXIT
+         BX_CPU(processor)->icount++;
+@@ -1084,2 +1213,10 @@
++#if BX_LUCID
++         g_lucid_ctx->smp_icount += n;
++         if (g_lucid_ctx->smp_icount >= g_lucid_ctx->icount_timeout) {
++           g_lucid_ctx->timeout = 1;
++           BX_INSTR_TRACE_COV_FLUSH();
++           lucid_postfuzz_hook();
++         }
++#endif
+         if (n == 0) n = quantum; // the CPU was halted
+         executed += n;
 --- bochs/cpu/icache.h
 +++ bochs/cpu/icache.h
 @@ -30,13 +30,62 @@
@@ -1455,7 +1495,7 @@
 +#if BX_LUCID
 +  Bit8u *blacklistedPages;
 +#endif
-
+ 
  public:
    bxPageWriteStampTable(): PHY_MEM_PAGES_IN_4G_SPACE(1024*1024) {
 +#if BX_LUCID
@@ -1508,13 +1548,13 @@
 +    blacklistedPages[index >> 3] |= (1 << (index & 7));
 +  }
 +#endif
-
+ 
    BX_CPP_INLINE static Bit32u hash(bx_phy_address pAddr) {
      // can share writeStamps between multiple pages if >32 bit phy address
 @@ -130,8 +179,7 @@
    }
  }
-
+ 
 -class BOCHSAPI bxICache_c {
 -public:
 +struct bxICacheState_c {
@@ -1532,7 +1572,7 @@
 +#if !BX_LUCID
 +  bxICacheState_c localCache;
 +#endif
-
+ 
  public:
 -  bxICache_c() { flushICacheEntries(); }
 +#if BX_LUCID
@@ -1556,7 +1596,7 @@
 +  {
 +    return cache->traceLinkTimeStamp;
 +  }
-
+ 
    BX_CPP_INLINE static unsigned hash(bx_phy_address pAddr, unsigned fetchModeMask)
    {
 @@ -157,27 +232,27 @@
@@ -1571,39 +1611,39 @@
 +    e->i = &cache->mpool[cache->mpindex];
      e->tlen = 0;
    }
-
+ 
 -  BX_CPP_INLINE void commit_trace(unsigned len) { mpindex += len; }
 +  BX_CPP_INLINE void commit_trace(unsigned len) { cache->mpindex += len; }
-
+ 
    BX_CPP_INLINE void commit_page_split_trace(bx_phy_address paddr, bxICacheEntry_c *e)
    {
 -    mpindex += e->tlen;
 +    cache->mpindex += e->tlen;
-
+ 
      // register page split entry
 -    if (pageSplitIndex[nextPageSplitIndex].ppf != BX_ICACHE_INVALID_PHY_ADDRESS)
 -      pageSplitIndex[nextPageSplitIndex].e->pAddr = BX_ICACHE_INVALID_PHY_ADDRESS;
 +    if (cache->pageSplitIndex[cache->nextPageSplitIndex].ppf != BX_ICACHE_INVALID_PHY_ADDRESS)
 +      cache->pageSplitIndex[cache->nextPageSplitIndex].e->pAddr = BX_ICACHE_INVALID_PHY_ADDRESS;
-
+ 
 -    pageSplitIndex[nextPageSplitIndex].ppf = paddr;
 -    pageSplitIndex[nextPageSplitIndex].e = e;
 +    cache->pageSplitIndex[cache->nextPageSplitIndex].ppf = paddr;
 +    cache->pageSplitIndex[cache->nextPageSplitIndex].e = e;
-
+ 
 -    nextPageSplitIndex = (nextPageSplitIndex+1) & (BX_ICACHE_PAGE_SPLIT_ENTRIES-1);
 +    cache->nextPageSplitIndex = (cache->nextPageSplitIndex+1) & (BX_ICACHE_PAGE_SPLIT_ENTRIES-1);
    }
-
+ 
    BX_CPP_INLINE void handleSMC(bx_phy_address pAddr, Bit32u mask);
 @@ -186,11 +261,17 @@
-
+ 
    BX_CPP_INLINE bxICacheEntry_c* get_entry(bx_phy_address pAddr, unsigned fetchModeMask)
    {
 -    return &(entry[hash(pAddr, fetchModeMask)]);
 +    return &(cache->entry[hash(pAddr, fetchModeMask)]);
    }
-
+ 
    BX_CPP_INLINE bxICacheEntry_c* find_entry(bx_phy_address pAddr, unsigned fetchModeMask)
    {
 +#if BX_LUCID
@@ -1625,31 +1665,31 @@
        return true;
      }
 @@ -211,7 +292,7 @@
-
+ 
  BX_CPP_INLINE void bxICache_c::flushICacheEntries(void)
  {
 -  bxICacheEntry_c* e = entry;
 +  bxICacheEntry_c* e = cache->entry;
    unsigned i;
-
+ 
    for (i=0; i<BxICacheEntries; i++, e++) {
 @@ -219,13 +300,13 @@
      e->traceMask = 0;
    }
-
+ 
 -  nextPageSplitIndex = 0;
 +  cache->nextPageSplitIndex = 0;
    for (i=0;i<BX_ICACHE_PAGE_SPLIT_ENTRIES;i++)
 -    pageSplitIndex[i].ppf = BX_ICACHE_INVALID_PHY_ADDRESS;
 +    cache->pageSplitIndex[i].ppf = BX_ICACHE_INVALID_PHY_ADDRESS;
-
+ 
 -  mpindex = 0;
 +  cache->mpindex = 0;
-
+ 
 -  traceLinkTimeStamp = 0;
 +  cache->traceLinkTimeStamp = 0;
  }
-
+ 
  BX_CPP_INLINE void bxICache_c::handleSMC(bx_phy_address pAddr, Bit32u mask)
 @@ -249,10 +330,10 @@
      // the store touched 1st cache line in the page, check for
@@ -1668,47 +1708,38 @@
      }
 --- bochs/cpu/init.cc
 +++ bochs/cpu/init.cc
-@@ -118,6 +118,20 @@
+@@ -118,6 +118,31 @@
  // BX_CPU_C constructor
  void BX_CPU_C::initialize(void)
  {
 +#if BX_LUCID
 +  size_t writeStampSize = pageWriteStampTable.getStateSize();
-+  size_t requiredSize = writeStampSize + bxICache_c::getStateSize();
++  size_t cacheSlotSize = bxICache_c::getStateSize();
++  size_t sharedSize = (writeStampSize + 63) & ~63;
++  size_t slotSize = (cacheSlotSize + 63) & ~63;
++  size_t requiredSize = sharedSize + BX_SMP_PROCESSORS * slotSize;
 +
 +  if (g_lucid_ctx->icache_addr == NULL ||
++      BX_SMP_PROCESSORS == 0 ||
++      BX_SMP_PROCESSORS > g_lucid_ctx->max_vcpus ||
 +      g_lucid_ctx->icache_size < requiredSize)
 +    BX_PANIC(("Lucid instruction cache mapping is too small"));
 +
-+  pageWriteStampTable.initialize(g_lucid_ctx->icache_addr, writeStampSize);
++  if (BX_CPU_ID == 0) {
++    g_lucid_ctx->vcpu_count = BX_SMP_PROCESSORS;
++    g_lucid_ctx->icache_shared_size = sharedSize;
++    g_lucid_ctx->icache_slot_size = slotSize;
++    pageWriteStampTable.initialize(g_lucid_ctx->icache_addr, writeStampSize);
++  }
++
 +  BX_CPU_THIS_PTR iCache.initialize(
-+      g_lucid_ctx->icache_addr + writeStampSize,
-+      g_lucid_ctx->icache_size - writeStampSize);
++      g_lucid_ctx->icache_addr + sharedSize + BX_CPU_ID * slotSize,
++      cacheSlotSize);
 +#endif
 +
  #if BX_CPU_LEVEL >= 4
    BX_CPU_THIS_PTR cpuid = cpuid_factory(this);
    if (! BX_CPU_THIS_PTR cpuid)
---- bochs/cpu/cpu.cc
-+++ bochs/cpu/cpu.cc
-@@ -316,7 +316,7 @@
-
-   BX_SYNC_TIME_IF_SINGLE_PROCESSOR(0);
-
--  bxInstruction_c *next = i->getNextTrace(BX_CPU_THIS_PTR iCache.traceLinkTimeStamp);
-+  bxInstruction_c *next = i->getNextTrace(BX_CPU_THIS_PTR iCache.getTraceLinkTimeStamp());
-   if (next) {
-     BX_EXECUTE_INSTRUCTION(next);
-     return;
-@@ -335,7 +335,7 @@
-
-   if (entry != NULL) // link traces - handle only hit cases
-   {
--    i->setNextTrace(entry->i, BX_CPU_THIS_PTR iCache.traceLinkTimeStamp);
-+    i->setNextTrace(entry->i, BX_CPU_THIS_PTR iCache.getTraceLinkTimeStamp());
-     i = entry->i;
-     BX_EXECUTE_INSTRUCTION(i);
-   }
 --- bochs/cpu/icache.cc
 +++ bochs/cpu/icache.cc
 @@ -57,4 +57,9 @@
@@ -1720,3 +1751,21 @@
    for (unsigned i=0; i<BX_SMP_PROCESSORS; i++) {
      BX_CPU(i)->async_event |= BX_ASYNC_EVENT_STOP_TRACE;
      BX_CPU(i)->iCache.handleSMC(pAddr, mask);
+   }
+@@ -175,10 +180,15 @@
+ 
+     // try to find a trace starting from current pAddr and merge
+-    if (remainingInPage >= 15) { // avoid merging with page split trace
++    // Lucid SMP keeps every trace within the configured quantum so CPU switch
++    // boundaries do not depend on whether a neighboring trace is already warm.
++#if !BX_LUCID || !BX_SUPPORT_SMP
++    if (remainingInPage >= 15) { // avoid merging with page split trace
+       if (mergeTraces(entry, i, pAddr)) {
+           entry->traceMask |= traceMask;
+           pageWriteStampTable.markICacheMask(pAddr, entry->traceMask);
+           BX_CPU_THIS_PTR iCache.commit_trace(entry->tlen);
+           return entry;
+       }
+     }
++#endif
++

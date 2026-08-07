@@ -35,8 +35,18 @@ pub const CTX_MAGIC: usize = 0x74DFF25D576D6F4D;
 /// Length of the scratch stack that is used during context switches
 const SCRATCH_STACK_LEN: usize = 0x21000;
 
-/// Length of the external Bochs instruction cache mapping
-const ICACHE_MAPPING_LEN: usize = 64 * 1024 * 1024;
+/// Maximum number of guest CPUs supported by Lucid's external Bochs cache.
+pub const MAX_VCPUS: usize = 4;
+
+/// External Bochs instruction-cache arena:
+///
+/// write-stamp table       [icache_shared_size bytes, 64-byte aligned]
+/// vCPU 0 decoded cache    [icache_slot_size bytes, 64-byte aligned]
+/// vCPU 1 decoded cache    [icache_slot_size bytes, 64-byte aligned]
+/// vCPU 2 decoded cache    [icache_slot_size bytes, 64-byte aligned]
+/// vCPU 3 decoded cache    [icache_slot_size bytes, 64-byte aligned]
+/// unused tail             [remaining bytes]
+const ICACHE_MAPPING_LEN: usize = 256 * 1024 * 1024;
 
 /// This represents the reason why a VM has exited execution and is now trying
 /// to context-switch for event handling
@@ -258,24 +268,29 @@ pub struct LucidContext {
     // Defined on C side, these members can be re-arranged without having to
     // address hardcoded offsets in inline assembly, but the C side has to
     // mirror this layout exactly
-    pub tls: Tls,              // Bochs' TLS instance
-    pub fs_reg: usize,         // The %fs reg value that we're faking
-    exit_reason: VmExit,       // Why we're context switching
-    coverage_map_addr: usize,  // Address of the coverage map buffer
-    coverage_map_size: usize,  // Size of the coverage map in members
-    pub trace_hash: usize,     // Hash for all PCs taken during input
-    crash: i32,                // Did we have a crash? Set by Bochs side
-    timeout: i32,              // Did we have a timeout? Set by Bochs side
-    icount_timeout: usize,     // Instruction count we use as timeout barrier
-    pub cpu_mode: CpuMode,     // The current Bochs CPU mode
-    dirty_map_addr: usize,     // Address of the dirty page bitmap
-    dirty_block_start: usize,  // Address where dirty page range starts
-    dirty_block_length: usize, // Length of the dirty page range
-    pub new_dirty_page: i32,   // Flag for indicating we found a new dirty page
-    lucid_report_pcs: usize,   // Address of lucid_report_pcs()
-    lucid_report_ijon: usize,  // Address of lucid_report_ijon()
-    icache_addr: usize,        // Address of Bochs' external instruction cache
-    icache_size: usize,        // Size of the external instruction cache mapping
+    pub tls: Tls,                  // Bochs' TLS instance
+    pub fs_reg: usize,             // The %fs reg value that we're faking
+    exit_reason: VmExit,           // Why we're context switching
+    coverage_map_addr: usize,      // Address of the coverage map buffer
+    coverage_map_size: usize,      // Size of the coverage map in members
+    pub trace_hash: usize,         // Hash for all PCs taken during input
+    crash: i32,                    // Did we have a crash? Set by Bochs side
+    timeout: i32,                  // Did we have a timeout? Set by Bochs side
+    icount_timeout: usize,         // Instruction count we use as timeout barrier
+    pub cpu_mode: CpuMode,         // The current Bochs CPU mode
+    dirty_map_addr: usize,         // Address of the dirty page bitmap
+    dirty_block_start: usize,      // Address where dirty page range starts
+    dirty_block_length: usize,     // Length of the dirty page range
+    pub new_dirty_page: i32,       // Flag for indicating we found a new dirty page
+    lucid_report_pcs: usize,       // Address of lucid_report_pcs()
+    lucid_report_ijon: usize,      // Address of lucid_report_ijon()
+    pub(crate) icache_addr: usize, // Address of Bochs' external instruction cache
+    icache_size: usize,            // Size of the external instruction cache mapping
+    vcpu_count: usize,             // Configured guest CPU count reported by Bochs
+    max_vcpus: usize,              // Number of iCache slots reserved by Lucid
+    icache_shared_size: usize,     // Machine-wide page-write-stamp bytes
+    icache_slot_size: usize,       // Bytes in each per-vCPU decoded cache slot
+    smp_icount: usize,             // Machine-wide instruction count for one input
 
     // Opaque members, not defined on C side, free to re-arrange these here and
     // not worry about things being broken elsewhere
@@ -548,6 +563,11 @@ impl LucidContext {
             lucid_report_ijon: lucid_report_ijon as *const () as usize,
             icache_addr,
             icache_size: ICACHE_MAPPING_LEN,
+            vcpu_count: 0,
+            max_vcpus: MAX_VCPUS,
+            icache_shared_size: 0,
+            icache_slot_size: 0,
+            smp_icount: 0,
             save_inst,
             save_size,
             lucid_save_area,
@@ -752,6 +772,11 @@ fn switch_handler(contextp: *mut LucidContext) {
                 jump_to_bochs(contextp);
             }
             VmExit::ResumeBochs => {
+                // The SMP scheduler charges every guest CPU to one
+                // machine-wide budget. This state lives outside the snapshot
+                // mapping, so clear it explicitly for every execution.
+                let context = LucidContext::from_ptr_mut(contextp);
+                context.smp_icount = 0;
                 restore_bochs_execution(contextp);
             }
             _ => {
@@ -764,6 +789,19 @@ fn switch_handler(contextp: *mut LucidContext) {
         match exit_reason {
             // Take a snapshot of Bochs
             VmExit::TakeSnapshot => {
+                let context = LucidContext::from_ptr(contextp);
+                if context.vcpu_count == 0 || context.vcpu_count > context.max_vcpus {
+                    fault!(
+                        contextp,
+                        LucidErr::from("Bochs reported an invalid guest CPU count")
+                    );
+                }
+                prompt!(
+                    "Bochs guest CPUs: {} (iCache shared: 0x{:X}, slot: 0x{:X})",
+                    context.vcpu_count,
+                    context.icache_shared_size,
+                    context.icache_slot_size
+                );
                 take_snapshot(contextp);
 
                 // Come back to Lucid
@@ -1369,7 +1407,11 @@ fn trace_coverage_input(
     context.trace_cov.begin_trace();
 
     // Replay the current input and collect its PCs
+    let old_edge_count = context.coverage.get_edge_count();
     let fuzzing_result = fuzz_one(context);
+    let new_edge_count = context.coverage.get_edge_count();
+    let replay_code_coverage = context.new_code_coverage;
+    let replay_ijon_feedback = context.ijon.has_new_feedback();
 
     // Always restore normal execution state, including when the replay fails.
     context.cpu_mode = backup_cpu_mode;
@@ -1387,8 +1429,14 @@ fn trace_coverage_input(
     // Verify that the replay produced the same result as the original input
     if result != expected_result {
         return Err(LucidErr::from(&format!(
-            "Coverage trace replay was not deterministic: expected {:?}, got {:?}",
-            expected_result, result
+            "Coverage trace replay was not deterministic: expected {:?}, got {:?} \
+             (edges {} -> {}, code coverage: {}, IJON: {})",
+            expected_result,
+            result,
+            old_edge_count,
+            new_edge_count,
+            replay_code_coverage,
+            replay_ijon_feedback
         )));
     }
 

@@ -33,6 +33,10 @@ Below is a diagram demonstrating Lucid's architecture:
 +------------------------------------------------------------------+ 
 ```
 
+# Bochs SMP Support
+
+Lucid supports Bochs SMP mode for true simulated CPU concurrency and interleaving. Multiple guest CPUs can execute within one fuzzing iteration, allowing targets to exercise concurrent state transitions and CPU interactions while retaining Lucid's deterministic execution and snapshot restoration.
+
 # Build
 I've made building the binaries that Lucid depends on extremely simple with Docker. This has been tested on Ubuntu 22.04 and Ubuntu 24.04. 
 
@@ -78,17 +82,23 @@ newgrp docker
 2. `git clone https://github.com/h0mbre/Lucid`
 3. `cd Lucid && ./build-bins.sh`
 
-`build-bins.sh` should invoke Docker to build an image capable of building every binary we need to use Lucid. The script should output 5 files to a directory in the repository root called `bins`. Those files are:
+`build-bins.sh` should invoke Docker to build an image capable of building every binary we need to use Lucid. The script should output 7 files to a directory in the repository root called `bins`. Those files are:
+
 - `lucid-fuzz`: The Lucid fuzzer binary compiled from Rust
-- `gui-bochs`: A dynamically linked Bochs binary we use to take snapshots to disk for Lucid to resume from when fuzzing
-- `lucid-bochs`: A `--static-pie` Bochs binary that we load into Lucid for fuzzing built against a custom musl
+- `gui-bochs`: A dynamically linked single-CPU Bochs binary we use to take snapshots to disk for Lucid to resume from when fuzzing
+- `lucid-bochs`: A single-CPU `--static-pie` Bochs binary that we load into Lucid for fuzzing built against a custom musl
+- `gui-bochs-smp`: A dynamically linked SMP Bochs binary we use to take SMP snapshots to disk
+- `lucid-bochs-smp`: An SMP `--static-pie` Bochs binary that we load into Lucid for fuzzing built against a custom musl
 - `BIOS-bochs-latest`: Required Bochs file the path to which is required in the `bochsrc_files`
 - `VGABIOS-lgpl-latest`: Required Bochs file the path to which is required in the `bochsrc_files`
 
 ## Binary Integrity (SHA-1)
-- `lucid-fuzz`  26e843f44f34dfd7fa472cf21724317ba41ca974
-- `gui-bochs`  f264c3e8933072abc839042f1dca3afe511ea1dd
-- `lucid-bochs`  167b6aa4fda5bf1e62a7933291ff5cd52ad8c4c0
+
+- `lucid-fuzz`  7ad5ea8212017317734b477c6f415e92e1113e3e
+- `gui-bochs`  d69d5e67e3f16701d1421a6fe57863c07f9d7507
+- `lucid-bochs`  6562a4311b9a39eea50d6db49643b93a424415b7
+- `gui-bochs-smp`  62e5891388fb54ca69cbbbccba2d4e8856db8617
+- `lucid-bochs-smp`  056f6c3df238157b3d7a86e0c992aaf60e416269
 - `BIOS-bochs-latest`  c654a401c6f4257324640b157a7e16bf334a263c
 - `VGABIOS-lgpl-latest`  35aa458948da1fcb747f70d3536c6de08e15f498
 
