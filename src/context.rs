@@ -12,6 +12,7 @@ use std::arch::{asm, global_asm};
 use crate::config::Config;
 use crate::corpus::{Corpus, CorpusSaveReason};
 use crate::coverage::CoverageMap;
+use crate::edge_pc::{lucid_report_edge_pcs, EdgePc};
 use crate::err::LucidErr;
 use crate::files::FileTable;
 use crate::ijon::{lucid_report_ijon, Ijon};
@@ -24,7 +25,6 @@ use crate::redqueen::{lucid_report_cmps, redqueen_pass, Redqueen};
 use crate::snapshot::{restore_snapshot, take_snapshot, Snapshot};
 use crate::stats::{CorpusStats, SnapshotStats, Stats};
 use crate::syscall::lucid_syscall;
-use crate::trace_cov::{lucid_report_pcs, TraceCov};
 use crate::{fault, finding, mega_panic, prompt, prompt_warn};
 
 /// Magic number member of the LucidContext, chosen by ChatGPT, that we use to
@@ -194,7 +194,6 @@ pub enum CpuMode {
     Fuzzing = 0,   // Normal fuzzing mode (fast as possible)
     Cmplog = 1,    // cmp instructions are instrumented (slow)
     TraceHash = 2, // Hash a list of PCs that were executed
-    TraceCov = 3,  // Report all executed PCs to Lucid
 }
 
 /// Represents the different kinds of fuzzing stages we can have, these are
@@ -208,7 +207,6 @@ pub enum FuzzingStage {
     Cmplog,
     Colorization,
     Redqueen,
-    TraceCov,
 }
 
 /// Simple helper impl to print the FuzzingStage enum values
@@ -221,7 +219,6 @@ impl std::fmt::Display for FuzzingStage {
             FuzzingStage::Cmplog => write!(f, "Cmplog"),
             FuzzingStage::Colorization => write!(f, "Colorization"),
             FuzzingStage::Redqueen => write!(f, "Redqueen"),
-            FuzzingStage::TraceCov => write!(f, "Coverage Trace"),
         }
     }
 }
@@ -268,29 +265,30 @@ pub struct LucidContext {
     // Defined on C side, these members can be re-arranged without having to
     // address hardcoded offsets in inline assembly, but the C side has to
     // mirror this layout exactly
-    pub tls: Tls,                  // Bochs' TLS instance
-    pub fs_reg: usize,             // The %fs reg value that we're faking
-    exit_reason: VmExit,           // Why we're context switching
-    coverage_map_addr: usize,      // Address of the coverage map buffer
-    coverage_map_size: usize,      // Size of the coverage map in members
-    pub trace_hash: usize,         // Hash for all PCs taken during input
-    crash: i32,                    // Did we have a crash? Set by Bochs side
-    timeout: i32,                  // Did we have a timeout? Set by Bochs side
-    icount_timeout: usize,         // Instruction count we use as timeout barrier
-    pub cpu_mode: CpuMode,         // The current Bochs CPU mode
-    dirty_map_addr: usize,         // Address of the dirty page bitmap
-    dirty_block_start: usize,      // Address where dirty page range starts
-    dirty_block_length: usize,     // Length of the dirty page range
-    pub new_dirty_page: i32,       // Flag for indicating we found a new dirty page
-    lucid_report_pcs: usize,       // Address of lucid_report_pcs()
-    lucid_report_ijon: usize,      // Address of lucid_report_ijon()
-    pub(crate) icache_addr: usize, // Address of Bochs' external instruction cache
-    icache_size: usize,            // Size of the external instruction cache mapping
-    vcpu_count: usize,             // Configured guest CPU count reported by Bochs
-    max_vcpus: usize,              // Number of iCache slots reserved by Lucid
-    icache_shared_size: usize,     // Machine-wide page-write-stamp bytes
-    icache_slot_size: usize,       // Bytes in each per-vCPU decoded cache slot
-    smp_icount: usize,             // Machine-wide instruction count for one input
+    pub tls: Tls,                     // Bochs' TLS instance
+    pub fs_reg: usize,                // The %fs reg value that we're faking
+    exit_reason: VmExit,              // Why we're context switching
+    coverage_map_addr: usize,         // Address of the coverage map buffer
+    coverage_history_map_addr: usize, // Address of the persistent coverage map
+    coverage_map_size: usize,         // Size of the coverage map in members
+    pub trace_hash: usize,            // Hash for all PCs taken during input
+    crash: i32,                       // Did we have a crash? Set by Bochs side
+    timeout: i32,                     // Did we have a timeout? Set by Bochs side
+    icount_timeout: usize,            // Instruction count we use as timeout barrier
+    pub cpu_mode: CpuMode,            // The current Bochs CPU mode
+    dirty_map_addr: usize,            // Address of the dirty page bitmap
+    dirty_block_start: usize,         // Address where dirty page range starts
+    dirty_block_length: usize,        // Length of the dirty page range
+    pub new_dirty_page: i32,          // Flag for indicating we found a new dirty page
+    lucid_report_edge_pcs: usize,     // Address of lucid_report_edge_pcs()
+    lucid_report_ijon: usize,         // Address of lucid_report_ijon()
+    pub(crate) icache_addr: usize,    // Address of Bochs' external instruction cache
+    icache_size: usize,               // Size of the external instruction cache mapping
+    vcpu_count: usize,                // Configured guest CPU count reported by Bochs
+    max_vcpus: usize,                 // Number of iCache slots reserved by Lucid
+    icache_shared_size: usize,        // Machine-wide page-write-stamp bytes
+    icache_slot_size: usize,          // Bytes in each per-vCPU decoded cache slot
+    smp_icount: usize,                // Machine-wide instruction count for one input
 
     // Opaque members, not defined on C side, free to re-arrange these here and
     // not worry about things being broken elsewhere
@@ -319,7 +317,7 @@ pub struct LucidContext {
     pub fuzzing_stage: FuzzingStage, // Dictates logic for running inputs
     pub fuzzer_id: usize,       // The id for the fuzzer process
     pub exec_arch: ExecArch,    // The type of architecture we're using
-    pub trace_cov: TraceCov,    // Full PC tracing and on-disk artifacts
+    pub edge_pc: EdgePc,        // New edge endpoints and on-disk artifacts
     pub ijon: Ijon,             // Generic IJON-style state feedback
     pub new_code_coverage: bool, // Did the current input find a new edge or hit count?
 }
@@ -366,7 +364,7 @@ impl LucidContext {
         self.fuzzer_id = id;
         self.stats.id = id;
         self.corpus.id = id;
-        self.trace_cov.update_id(id)?;
+        self.edge_pc.update_id(id)?;
 
         // Create stat file string
         let stat_dir = &self.corpus.stats_dir;
@@ -536,6 +534,7 @@ impl LucidContext {
         // Create coverage map
         let coverage = CoverageMap::new();
         let coverage_map_addr = coverage.addr();
+        let coverage_history_map_addr = coverage.history_addr();
         let coverage_map_size = coverage.curr_map.len();
 
         // Get mutator name
@@ -559,7 +558,7 @@ impl LucidContext {
             scratch_rsp,
             lucid_syscall: lucid_syscall as *const () as usize,
             lucid_report_cmps: lucid_report_cmps as *const () as usize,
-            lucid_report_pcs: lucid_report_pcs as *const () as usize,
+            lucid_report_edge_pcs: lucid_report_edge_pcs as *const () as usize,
             lucid_report_ijon: lucid_report_ijon as *const () as usize,
             icache_addr,
             icache_size: ICACHE_MAPPING_LEN,
@@ -588,6 +587,7 @@ impl LucidContext {
             stats: Stats::new(config, snapshot.dirty_block_length, config.input_max_size),
             coverage,
             coverage_map_addr,
+            coverage_history_map_addr,
             coverage_map_size,
             trace_hash: 0,
             input_size_addr: 0,
@@ -603,7 +603,7 @@ impl LucidContext {
             fuzzing_stage: FuzzingStage::Setup,
             fuzzer_id: 0,
             exec_arch,
-            trace_cov: TraceCov::new(&config.output_dir, config.num_fuzzers)?,
+            edge_pc: EdgePc::new(&config.output_dir, config.num_fuzzers)?,
             ijon: Ijon::new(),
             new_code_coverage: false,
             dirty_map_addr: snapshot.dirty_map_addr,
@@ -1195,11 +1195,9 @@ pub fn handle_crash(context: &mut LucidContext, old_edge_count: usize) -> Result
     let edges = context.coverage.get_edge_count();
     context.stats.new_coverage(edges);
 
-    // TraceCov is deliberately reserved for inputs that increase the edge
-    // count. Hit-count-only crashes are still saved, but do not pay for a
-    // second full target execution merely to rediscover already-known PCs.
+    // Save the edge PCs discovered during this input's run
     if new_code_coverage && edges != old_edge_count {
-        trace_coverage_input(context, FuzzingResult::Crash)?;
+        finish_edge_pc_run(context)?;
     }
 
     // Return the new edge count to the caller
@@ -1227,10 +1225,9 @@ pub fn handle_timeout(
     let edges = context.coverage.get_edge_count();
     context.stats.new_coverage(edges);
 
-    // Apply the same edge-only TraceCov rule to timeouts. The timeout artifact
-    // remains retained even when it only changes an edge hit-count bucket.
+    // Save the edges discovered during the input execution
     if new_code_coverage && edges != old_edge_count {
-        trace_coverage_input(context, FuzzingResult::Timeout)?;
+        finish_edge_pc_run(context)?;
     }
 
     // Return the new edge count to the caller
@@ -1304,11 +1301,9 @@ pub fn handle_new_coverage(
             .save_input(context.mutator.get_input_ref(), save_reason);
         context.stats.new_coverage(new_edge_count);
 
-        // PC sidecars exist to synchronize genuinely new code between workers.
-        // Hit-count-only inputs remain useful in the local corpus, but tracing
-        // them would only add an expensive second target execution.
+        // Save edge PCs to the input's disk file for corpus syncing/accounting
         if found_new_edge {
-            let new_pcs = trace_coverage_input(context, FuzzingResult::None)?;
+            let new_pcs = finish_edge_pc_run(context)?;
             context.corpus.save_input_pcs(input_hash, &new_pcs);
         }
         if context.config.redqueen {
@@ -1353,8 +1348,9 @@ pub fn fuzz_one(context: &mut LucidContext) -> Result<FuzzingResult, LucidErr> {
     // Restore Bochs
     time_func!(context, batch_reset, reset_bochs(context))?;
 
-    // Clear all IJON state that belongs to the previous fuzzing iteration
+    // Clear feedback state that belongs to the previous fuzzing iteration
     context.ijon.begin_run();
+    context.edge_pc.begin_run();
     context.new_code_coverage = false;
 
     // Insert the fuzzcase into the target
@@ -1373,8 +1369,8 @@ pub fn fuzz_one(context: &mut LucidContext) -> Result<FuzzingResult, LucidErr> {
         fuzzing_result = FuzzingResult::Timeout;
         context.timeout = 0;
     }
-    // Check for ordinary code coverage first and retain that distinction so
-    // IJON-only discoveries can skip the unnecessary TraceCov replay.
+    // Check ordinary code coverage first and retain that distinction from
+    // semantic IJON feedback.
     else {
         context.new_code_coverage =
             time_func!(context, batch_coverage, context.coverage.update_coverage());
@@ -1392,61 +1388,15 @@ pub fn fuzz_one(context: &mut LucidContext) -> Result<FuzzingResult, LucidErr> {
     Ok(fuzzing_result)
 }
 
-/// Replay the current coverage-increasing input while Bochs reports every PC.
-fn trace_coverage_input(
-    context: &mut LucidContext,
-    expected_result: FuzzingResult,
-) -> Result<Vec<u64>, LucidErr> {
-    let trace_start = start_timer();
+/// Save edge endpoints collected during the current target execution.
+fn finish_edge_pc_run(context: &mut LucidContext) -> Result<Vec<u64>, LucidErr> {
+    let new_pcs = context.edge_pc.finish_run()?;
 
-    // Save the current execution modes and switch Bochs into PC tracing mode
-    let backup_cpu_mode = context.cpu_mode;
-    let backup_stage = context.fuzzing_stage;
-    context.cpu_mode = CpuMode::TraceCov;
-    context.fuzzing_stage = FuzzingStage::TraceCov;
-    context.trace_cov.begin_trace();
-
-    // Replay the current input and collect its PCs
-    let old_edge_count = context.coverage.get_edge_count();
-    let fuzzing_result = fuzz_one(context);
-    let new_edge_count = context.coverage.get_edge_count();
-    let replay_code_coverage = context.new_code_coverage;
-    let replay_ijon_feedback = context.ijon.has_new_feedback();
-
-    // Always restore normal execution state, including when the replay fails.
-    context.cpu_mode = backup_cpu_mode;
-    context.fuzzing_stage = backup_stage;
-    end_timer(&mut context.stats.batch_tracecov, trace_start);
-
-    let result = fuzzing_result?;
-
-    // Terminal results bypass the normal coverage update in fuzz_one(), so
-    // discard the replay's transient map before returning to normal fuzzing.
-    if matches!(result, FuzzingResult::Crash | FuzzingResult::Timeout) {
-        context.coverage.curr_map.fill(0);
-    }
-
-    // Verify that the replay produced the same result as the original input
-    if result != expected_result {
-        return Err(LucidErr::from(&format!(
-            "Coverage trace replay was not deterministic: expected {:?}, got {:?} \
-             (edges {} -> {}, code coverage: {}, IJON: {})",
-            expected_result,
-            result,
-            old_edge_count,
-            new_edge_count,
-            replay_code_coverage,
-            replay_ijon_feedback
-        )));
-    }
-
-    // Save the new PCs into this fuzzer's coverage database
-    let new_pcs = context.trace_cov.finish_trace()?;
-
-    // Single-process fuzzers also own the global coverage database
+    // A single-process fuzzer also owns the global coverage database.
     if context.is_single_process() {
-        context.trace_cov.consolidate()?;
+        context.edge_pc.consolidate()?;
     }
+
     Ok(new_pcs)
 }
 
@@ -1491,7 +1441,7 @@ pub fn dry_run(context: &mut LucidContext) -> Result<(), LucidErr> {
                 let _ = context.ijon.take_feedback();
                 if context.new_code_coverage && context.coverage.get_edge_count() != old_edge_count
                 {
-                    trace_coverage_input(context, FuzzingResult::None)?;
+                    finish_edge_pc_run(context)?;
                 }
             }
             Err(e) => return Err(e),
@@ -1639,6 +1589,6 @@ pub fn fuzz_loop(context: &mut LucidContext, id: Option<usize>) -> Result<(), Lu
         // Check to see if we should sync the corpus
         context
             .corpus
-            .sync(context.mutator.get_rng(), context.trace_cov.seen_pcs());
+            .sync(context.mutator.get_rng(), context.edge_pc.seen_pcs());
     }
 }

@@ -94,11 +94,11 @@ newgrp docker
 
 ## Binary Integrity (SHA-1)
 
-- `lucid-fuzz`  7ad5ea8212017317734b477c6f415e92e1113e3e
+- `lucid-fuzz`  5e10fe9bf0213012f518d133145cb45906729266
 - `gui-bochs`  d69d5e67e3f16701d1421a6fe57863c07f9d7507
-- `lucid-bochs`  6562a4311b9a39eea50d6db49643b93a424415b7
+- `lucid-bochs`  dbb7343ef7f0711be0bf37dc25bc925bb1256541
 - `gui-bochs-smp`  62e5891388fb54ca69cbbbccba2d4e8856db8617
-- `lucid-bochs-smp`  056f6c3df238157b3d7a86e0c992aaf60e416269
+- `lucid-bochs-smp`  bdc7f74dcc85ba8a06635c8d1ae2bcedee4451d2
 - `BIOS-bochs-latest`  c654a401c6f4257324640b157a7e16bf334a263c
 - `VGABIOS-lgpl-latest`  35aa458948da1fcb747f70d3536c6de08e15f498
 
@@ -256,21 +256,9 @@ These are stats about how we are spending our CPU time:
 - `last find`: Wall-clock and iterations since the last time we set a campaign record globally for edges discovered
 - `map`: The percentage of the coverage map we have used 
 
-Lucid treats both a newly discovered edge and a newly reached hit-count bucket
-as new coverage. Inputs that produce either are retained immediately.
-
-When an input discovers a new edge or hit-count bucket, Lucid replays it once
-in `TraceCov` mode and records every guest virtual PC executed during that
-replay. The resulting coverage database is stored under the campaign output
-directory:
-
+These are disk artifacts the fuzzers produce related to coverage. Each individual fuzzer tracks its own novel edge-transition PCs and the campaign managing parent process will merge those files into a `global.coverage` file.
 - `coverage/fuzzer-N.coverage`: PCs newly observed by fuzzer `N`
 - `coverage/global.coverage`: the manager's consolidated campaign PCs
-
-These files are headerless sequences of little-endian `u64` values. Each PC is
-stored at most once per file; ordering is not significant. In multi-process
-campaigns the manager merges worker files at the normal statistics reporting
-interval. A single-process campaign updates the global file immediately.
 
 ## Snapshot
 - `dirty pages`: The number of pages we've marked dirty for differential resets
@@ -308,10 +296,9 @@ Lucid's patched Bochs:
 - `xchg di, di`: EVENT records new ordered event-sequence prefixes.
 
 New IJON feedback has the same corpus and Redqueen behavior as new edge
-coverage. TraceCov is only replayed when an input also discovers a new edge or
-hit-count bucket. IJON feedback and ordinary edge coverage are tracked
-independently. All IJON bookkeeping is generic; its tags and values only have
-meaning to the instrumented target.
+coverage. IJON feedback and ordinary edge coverage are tracked independently,
+and IJON-only findings do not cause a secondary execution. All IJON bookkeeping
+is generic; its tags and values only have meaning to the instrumented target.
 
 # Contributors
 People who have had a hand in the project one way or another thus far:

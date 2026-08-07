@@ -8,6 +8,7 @@ mod config;
 mod context;
 mod corpus;
 mod coverage;
+mod edge_pc;
 mod elf;
 mod err;
 mod files;
@@ -20,7 +21,6 @@ mod redqueen;
 mod snapshot;
 mod stats;
 mod syscall;
-mod trace_cov;
 
 use config::parse_args;
 use context::{dry_run, fuzz_loop, register_input, start_bochs, LucidContext};
@@ -248,7 +248,7 @@ fn main() {
 
             // Roll-up the PCs for every fuzzer into the global database
             lucid_context
-                .trace_cov
+                .edge_pc
                 .consolidate()
                 .unwrap_or_else(|error| fatal!(error));
 

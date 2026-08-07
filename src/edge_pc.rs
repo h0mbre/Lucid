@@ -1,4 +1,4 @@
-//! Full PC tracing for inputs that discover new edge coverage.
+//! Endpoint PCs for newly occupied edge-coverage map slots.
 //!
 //! SPDX-License-Identifier: MIT
 //! Copyright (c) 2026 h0mbre
@@ -12,48 +12,48 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// Must match the capacity of the static buffer in patched Bochs.
-const PC_BATCH_CAPACITY: usize = 1 << 16;
+const EDGE_PC_BATCH_CAPACITY: usize = 1 << 16;
 /// Size of each PC record in the on-disk coverage databases.
 const PC_SIZE: u64 = std::mem::size_of::<u64>() as u64;
 
-/// Per-process trace collection and manager-side campaign consolidation.
-pub struct TraceCov {
-    trace_dir: PathBuf,          // Directory that holds all PC databases
-    worker_id: usize,            // ID for this fuzzer process
-    worker_count: usize,         // Total number of fuzzer processes
-    current_trace: HashSet<u64>, // PCs reported during the current replay
-    worker_seen: HashSet<u64>,   // PCs already saved by this fuzzer
-    global_seen: HashSet<u64>,   // PCs already saved in the global database
-    worker_offsets: Vec<u64>,    // Last processed file offset for each fuzzer
+/// Per-process edge collection and manager-side campaign consolidation.
+pub struct EdgePc {
+    coverage_dir: PathBuf,     // Directory that holds all PC databases
+    worker_id: usize,          // ID for this fuzzer process
+    worker_count: usize,       // Total number of fuzzer processes
+    current_pcs: HashSet<u64>, // New edge endpoints reported during this input
+    worker_seen: HashSet<u64>, // PCs already saved by this fuzzer
+    global_seen: HashSet<u64>, // PCs already saved in the global database
+    worker_offsets: Vec<u64>,  // Last processed file offset for each fuzzer
 }
 
-impl TraceCov {
+impl EdgePc {
     pub fn new(output_dir: &str, worker_count: usize) -> Result<Self, LucidErr> {
         // Create the directory that holds the per-fuzzer and global databases
-        let trace_dir = Path::new(output_dir).join("coverage");
-        create_dir_all(&trace_dir).map_err(|e| {
+        let coverage_dir = Path::new(output_dir).join("coverage");
+        create_dir_all(&coverage_dir).map_err(|e| {
             LucidErr::from(&format!(
-                "Unable to create coverage trace directory '{}': {}",
-                trace_dir.display(),
+                "Unable to create edge PC directory '{}': {}",
+                coverage_dir.display(),
                 e
             ))
         })?;
 
         // Initialize this process as fuzzer zero until its ID is updated
-        let mut trace_cov = Self {
-            trace_dir,
+        let mut edge_pc = Self {
+            coverage_dir,
             worker_id: 0,
             worker_count,
-            current_trace: HashSet::new(),
+            current_pcs: HashSet::new(),
             worker_seen: HashSet::new(),
             global_seen: HashSet::new(),
             worker_offsets: vec![0; worker_count],
         };
 
         // Reload any coverage databases that already exist in the output folder
-        trace_cov.global_seen = Self::read_pc_file(&trace_cov.global_path())?;
-        trace_cov.worker_seen = Self::read_pc_file(&trace_cov.worker_path(0))?;
-        Ok(trace_cov)
+        edge_pc.global_seen = Self::read_pc_file(&edge_pc.global_path())?;
+        edge_pc.worker_seen = Self::read_pc_file(&edge_pc.worker_path(0))?;
+        Ok(edge_pc)
     }
 
     /// Select the per-worker artifact after a fuzzer child has been forked.
@@ -64,21 +64,21 @@ impl TraceCov {
         Ok(())
     }
 
-    /// Discard data from a previous trace before replaying an interesting input.
-    pub fn begin_trace(&mut self) {
-        self.current_trace.clear();
+    /// Discard any unconsumed endpoint report before executing another input.
+    pub fn begin_run(&mut self) {
+        self.current_pcs.clear();
     }
 
     /// Receive one bounded batch from Bochs and deduplicate it in memory.
     fn report_batch(&mut self, pcs: &[u64]) {
-        self.current_trace.extend(pcs.iter().copied());
+        self.current_pcs.extend(pcs.iter().copied());
     }
 
     /// Append PCs newly observed by this worker to its raw little-endian blob.
-    pub fn finish_trace(&mut self) -> Result<Vec<u64>, LucidErr> {
+    pub fn finish_run(&mut self) -> Result<Vec<u64>, LucidErr> {
         // Keep only PCs that have not already been saved by this fuzzer
         let mut new_pcs: Vec<u64> = self
-            .current_trace
+            .current_pcs
             .drain()
             .filter(|pc| self.worker_seen.insert(*pc))
             .collect();
@@ -145,12 +145,12 @@ impl TraceCov {
 
     /// Get the path to a fuzzer's individual PC database.
     fn worker_path(&self, id: usize) -> PathBuf {
-        self.trace_dir.join(format!("fuzzer-{}.coverage", id))
+        self.coverage_dir.join(format!("fuzzer-{}.coverage", id))
     }
 
     /// Get the path to the consolidated global PC database.
     fn global_path(&self) -> PathBuf {
-        self.trace_dir.join("global.coverage")
+        self.coverage_dir.join("global.coverage")
     }
 
     /// Read an existing PC database into a deduplicated in-memory set.
@@ -171,7 +171,7 @@ impl TraceCov {
             .len();
         if len % PC_SIZE != 0 {
             return Err(LucidErr::from(&format!(
-                "Coverage trace file '{}' has a partial u64",
+                "Edge PC file '{}' has a partial u64",
                 path.display()
             )));
         }
@@ -213,7 +213,7 @@ impl TraceCov {
     /// Format an I/O error with the affected coverage database path.
     fn file_error(operation: &str, path: &Path, error: std::io::Error) -> LucidErr {
         LucidErr::from(&format!(
-            "Unable to {} coverage trace file '{}': {}",
+            "Unable to {} edge PC file '{}': {}",
             operation,
             path.display(),
             error
@@ -221,16 +221,24 @@ impl TraceCov {
     }
 }
 
-/// Called by patched Bochs whenever its static PC batch is full or flushed.
-pub extern "C" fn lucid_report_pcs(contextp: *mut LucidContext, pcs: *const u64, count: usize) {
+/// Called by patched Bochs whenever its static edge-endpoint batch is flushed.
+pub extern "C" fn lucid_report_edge_pcs(
+    contextp: *mut LucidContext,
+    pcs: *const u64,
+    count: usize,
+) {
     // Validate every value received across the Bochs callback boundary
-    if !LucidContext::is_valid(contextp) || pcs.is_null() || count == 0 || count > PC_BATCH_CAPACITY
+    if !LucidContext::is_valid(contextp)
+        || pcs.is_null()
+        || count == 0
+        || count > EDGE_PC_BATCH_CAPACITY
+        || count % 2 != 0
     {
-        mega_panic!("Invalid PC trace report\n");
+        mega_panic!("Invalid edge PC report\n");
     }
 
-    // Convert the Bochs buffer to a slice and add it to the current trace
+    // Convert the Bochs buffer to a slice and add it to the current input
     let context = LucidContext::from_ptr_mut(contextp);
     let pcs = unsafe { std::slice::from_raw_parts(pcs, count) };
-    context.trace_cov.report_batch(pcs);
+    context.edge_pc.report_batch(pcs);
 }

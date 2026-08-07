@@ -36,6 +36,12 @@ impl CoverageMap {
         self.curr_map_addr as usize
     }
 
+    /// Return the persistent map address used by Bochs to identify first-time
+    /// edge slots without changing the map from the instrumentation fast path.
+    pub fn history_addr(&self) -> usize {
+        self.history_map.as_ptr() as usize
+    }
+
     /// After a fuzzing iteration, Bochs will have updated the curr_map with
     /// hit counts for each edge pair that was reached during that fuzzing
     /// iteration. Instead of keeping the hit counts literal, we instead "bucket"

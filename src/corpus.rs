@@ -376,7 +376,7 @@ impl Corpus {
         }
 
         // Serialize the sorted PC set using the same little-endian u64 format
-        // used by the campaign TraceCov databases
+        // used by the campaign edge-PC databases
         let mut bytes = Vec::with_capacity(std::mem::size_of_val(pcs));
         for pc in pcs {
             bytes.extend_from_slice(&pc.to_le_bytes());

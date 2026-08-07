@@ -248,7 +248,7 @@
 +      // Check if we should register a timeout
 +      if ((BX_CPU_THIS_PTR icount - icount_base)>= icount_timeout) {
 +        g_lucid_ctx->timeout = 1;
-+        BX_INSTR_TRACE_COV_FLUSH();
++        BX_INSTR_EDGE_PC_FLUSH();
 +        lucid_postfuzz_hook();
 +      }
 +#endif /* BX_LUCID && !BX_SUPPORT_SMP */
@@ -1068,7 +1068,7 @@
 +      // These are Lucid lifecycle handlers
 +      case 3: // Perform a snapshot reset
 +        if (g_lucid_ctx) {
-+          BX_INSTR_TRACE_COV_FLUSH();
++          BX_INSTR_EDGE_PC_FLUSH();
 +          lucid_postfuzz_hook();
 +        }
 +        break;
@@ -1076,7 +1076,7 @@
 +      case 4: // Handle a crash
 +        if (g_lucid_ctx) {
 +          g_lucid_ctx->crash = 1;
-+          BX_INSTR_TRACE_COV_FLUSH();
++          BX_INSTR_EDGE_PC_FLUSH();
 +          lucid_postfuzz_hook();
 +        }
 +        break;
@@ -1128,7 +1128,7 @@
  
  #if BX_INSTRUMENTATION
  
-@@ -38,8 +39,101 @@
+@@ -38,8 +39,106 @@
  void bx_instr_debug_promt() {}
  void bx_instr_debug_cmd(const char *cmd) {}
  
@@ -1159,42 +1159,53 @@
 +    return hash;
 +}
 +
-+static inline void update_coverage_map(uint32_t hash) {
-+    // Get the address of the coverage map
++#if BX_LUCID
++#define EDGE_PC_BUFFER_CAPACITY (1U << 16)
++
++static uint64_t edge_pc_buffer[EDGE_PC_BUFFER_CAPACITY];
++static size_t edge_pc_buffer_index = 0;
++
++void bx_instr_edge_pc_flush(void) {
++    if (edge_pc_buffer_index == 0) {
++        return;
++    }
++
++    g_lucid_report_edge_pcs(g_lucid_ctx, edge_pc_buffer, edge_pc_buffer_index);
++    edge_pc_buffer_index = 0;
++}
++
++static inline void record_edge_pcs(uint64_t src, uint64_t dst) {
++    // Every record is a pair, so a full buffer always ends on a pair boundary
++    edge_pc_buffer[edge_pc_buffer_index++] = src;
++    edge_pc_buffer[edge_pc_buffer_index++] = dst;
++    if (edge_pc_buffer_index == EDGE_PC_BUFFER_CAPACITY) {
++        bx_instr_edge_pc_flush();
++    }
++}
++
++static inline void update_coverage_map(uint32_t hash, uint64_t src, uint64_t dst) {
 +    uint8_t *map_addr = g_lucid_ctx->coverage_map_addr;
 +
-+    // Mark this as hit
-+    map_addr[hash]++;
++    // Record the edge endpoints only when this input first occupies a slot
++    // that no previous input has occupied.
++    if (map_addr[hash] == 0 && g_lucid_ctx->coverage_history_map_addr[hash] == 0) {
++        record_edge_pcs(src, dst);
++    }
 +
-+    // If it's been rolled-over to zero, make it one
++    map_addr[hash]++;
 +    if (map_addr[hash] == 0) {
 +        map_addr[hash] = 1;
 +    }
 +}
 +
-+#if BX_LUCID
-+#define TRACE_COV_BUFFER_CAPACITY (1U << 16)
-+
-+static uint64_t trace_cov_buffer[TRACE_COV_BUFFER_CAPACITY];
-+static size_t trace_cov_buffer_index = 0;
-+
-+void bx_instr_trace_cov_flush(void) {
-+    if (g_lucid_ctx->cpu_mode != TRACE_COV || trace_cov_buffer_index == 0) {
-+        return;
-+    }
-+
-+    g_lucid_report_pcs(g_lucid_ctx, trace_cov_buffer, trace_cov_buffer_index);
-+    trace_cov_buffer_index = 0;
-+}
-+
 +void bx_instr_cnear_branch_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip) {
 +    uint32_t hash = hash_coverage(branch_eip, new_eip);
-+    update_coverage_map(hash);
++    update_coverage_map(hash, branch_eip, new_eip);
 +}
 +
 +void bx_instr_cnear_branch_not_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip) {
 +    uint32_t hash = hash_coverage(branch_eip, new_eip);
-+    update_coverage_map(hash);
++    update_coverage_map(hash, branch_eip, new_eip);
 +}
 +
 +void bx_instr_ucnear_branch(unsigned cpu, unsigned what, bx_address branch_eip, bx_address new_eip) {
@@ -1204,18 +1215,12 @@
 +    }
 +
 +    uint32_t hash = hash_coverage(branch_eip, new_eip);
-+    update_coverage_map(hash);
++    update_coverage_map(hash, branch_eip, new_eip);
 +}
 +
 +void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i, bx_address eip) {
 +    if (g_lucid_ctx->cpu_mode == TRACE_HASH) {
 +        g_lucid_ctx->trace_hash = dbj2_hash_trace(g_lucid_ctx->trace_hash, eip);
-+    }
-+    else if (g_lucid_ctx->cpu_mode == TRACE_COV) {
-+        trace_cov_buffer[trace_cov_buffer_index++] = (uint64_t)eip;
-+        if (trace_cov_buffer_index == TRACE_COV_BUFFER_CAPACITY) {
-+            bx_instr_trace_cov_flush();
-+        }
 +    }
 +}
 +
@@ -1225,7 +1230,7 @@
 +void bx_instr_cnear_branch_not_taken(unsigned cpu, bx_address branch_eip, bx_address new_eip) {}
 +void bx_instr_ucnear_branch(unsigned cpu, unsigned what, bx_address branch_eip, bx_address new_eip) {}
 +void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i, bx_address eip) {}
-+void bx_instr_trace_cov_flush(void) {}
++void bx_instr_edge_pc_flush(void) {}
 +
 +#endif /* BX_LUCID */
 +
@@ -1268,7 +1273,7 @@
  
 -void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i);
 +void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i, bx_address eip);
-+void bx_instr_trace_cov_flush(void);
++void bx_instr_edge_pc_flush(void);
  void bx_instr_after_execution(unsigned cpu, bxInstruction_c *i);
  void bx_instr_repeat_iteration(unsigned cpu, bxInstruction_c *i);
  
@@ -1288,15 +1293,15 @@
 -#define BX_INSTR_BEFORE_EXECUTION(cpu_id, i)  bx_instr_before_execution(cpu_id, i)
 +#if BX_LUCID
 +#define BX_INSTR_BEFORE_EXECUTION(cpu_id, i, eip) do { \
-+  if (__builtin_expect(g_lucid_ctx->cpu_mode >= TRACE_HASH, 0)) \
++  if (__builtin_expect(g_lucid_ctx->cpu_mode == TRACE_HASH, 0)) \
 +    bx_instr_before_execution(cpu_id, i, eip); \
 +} while (0)
-+#define BX_INSTR_TRACE_COV_FLUSH() bx_instr_trace_cov_flush()
++#define BX_INSTR_EDGE_PC_FLUSH() bx_instr_edge_pc_flush()
 +// The Lucid stub has no after-execution feedback, so avoid a call after every instruction.
 +#define BX_INSTR_AFTER_EXECUTION(cpu_id, i)   do {} while (0)
 +#else
 +#define BX_INSTR_BEFORE_EXECUTION(cpu_id, i, eip) bx_instr_before_execution(cpu_id, i, eip)
-+#define BX_INSTR_TRACE_COV_FLUSH() bx_instr_trace_cov_flush()
++#define BX_INSTR_EDGE_PC_FLUSH() bx_instr_edge_pc_flush()
  #define BX_INSTR_AFTER_EXECUTION(cpu_id, i)   bx_instr_after_execution(cpu_id, i)
 +#endif /* BX_LUCID */
  #define BX_INSTR_REPEAT_ITERATION(cpu_id, i)  bx_instr_repeat_iteration(cpu_id, i)
@@ -1334,7 +1339,7 @@
  /* execution */
 -#define BX_INSTR_BEFORE_EXECUTION(cpu_id, i)
 +#define BX_INSTR_BEFORE_EXECUTION(cpu_id, i, eip)
-+#define BX_INSTR_TRACE_COV_FLUSH()
++#define BX_INSTR_EDGE_PC_FLUSH()
  #define BX_INSTR_AFTER_EXECUTION(cpu_id, i)
  #define BX_INSTR_REPEAT_ITERATION(cpu_id, i)
  
@@ -1480,7 +1485,7 @@
 +         g_lucid_ctx->smp_icount += n;
 +         if (g_lucid_ctx->smp_icount >= g_lucid_ctx->icount_timeout) {
 +           g_lucid_ctx->timeout = 1;
-+           BX_INSTR_TRACE_COV_FLUSH();
++           BX_INSTR_EDGE_PC_FLUSH();
 +           lucid_postfuzz_hook();
 +         }
 +#endif

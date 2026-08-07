@@ -143,7 +143,6 @@
 +    FUZZING = 0,    // Normal fuzzing mode
 +    CMPLOG = 1,     // Report compare instruction operands to Lucid
 +    TRACE_HASH = 2, // Hash all PCs as we execute them 
-+    TRACE_COV = 3,  // Report all executed PCs to Lucid
 +} CpuMode;
 +
 +// A fake TLS structure that Bochs will access instead of the real TLS
@@ -192,6 +191,7 @@
 +    size_t fs_reg;
 +    VmExit exit_reason;
 +    uint8_t *coverage_map_addr;
++    uint8_t *coverage_history_map_addr;
 +    size_t coverage_map_size;
 +    size_t trace_hash;
 +    int crash;
@@ -202,7 +202,7 @@
 +    size_t dirty_block_start;
 +    size_t dirty_block_length;
 +    int new_dirty_page;
-+    size_t lucid_report_pcs;
++    size_t lucid_report_edge_pcs;
 +    size_t lucid_report_ijon;
 +    uint8_t *icache_addr;
 +    size_t icache_size;
@@ -243,12 +243,12 @@
 +// Create an instance of the function pointer
 +extern lucid_report_cmps_p g_lucid_report_cmps;
 +
-+// Define a function pointer type for reporting batches of executed PCs
-+typedef void (*lucid_report_pcs_p)(lucid_ctx_t *ctx, const uint64_t *pcs,
++// Define a function pointer type for reporting new edge endpoint PCs
++typedef void (*lucid_report_edge_pcs_p)(lucid_ctx_t *ctx, const uint64_t *pcs,
 +    size_t count);
 +
 +// Create an instance of the function pointer
-+extern lucid_report_pcs_p g_lucid_report_pcs;
++extern lucid_report_edge_pcs_p g_lucid_report_edge_pcs;
 +
 +// Define a function pointer type for reporting IJON feedback
 +typedef void (*lucid_report_ijon_p)(lucid_ctx_t *ctx, size_t operation,
@@ -307,9 +307,9 @@
 +		g_lucid_report_cmps =
 +			(lucid_report_cmps_p)g_lucid_ctx->lucid_report_cmps;
 +
-+		// Initialize function pointer to lucid_report_pcs
-+		g_lucid_report_pcs =
-+			(lucid_report_pcs_p)g_lucid_ctx->lucid_report_pcs;
++		// Initialize function pointer to lucid_report_edge_pcs
++		g_lucid_report_edge_pcs =
++			(lucid_report_edge_pcs_p)g_lucid_ctx->lucid_report_edge_pcs;
 +
 +		// Initialize function pointer to lucid_report_ijon
 +		g_lucid_report_ijon =
@@ -340,7 +340,7 @@
 +		g_lucid_ctx = NULL;
 +		g_lucid_syscall = NULL;
 +		g_lucid_report_cmps = NULL;
-+		g_lucid_report_pcs = NULL;
++		g_lucid_report_edge_pcs = NULL;
 +		g_lucid_report_ijon = NULL;
 +	}
 +
@@ -443,8 +443,8 @@
 +// Define the function pointer
 +lucid_report_cmps_p g_lucid_report_cmps = NULL;
 +
-+// Define the PC reporting function pointer
-+lucid_report_pcs_p g_lucid_report_pcs = NULL;
++// Define the edge endpoint reporting function pointer
++lucid_report_edge_pcs_p g_lucid_report_edge_pcs = NULL;
 +
 +// Define the IJON reporting function pointer
 +lucid_report_ijon_p g_lucid_report_ijon = NULL;
