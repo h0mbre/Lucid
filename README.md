@@ -223,11 +223,12 @@ Right now, we don't have any documentation besides the blog series: https://h0mb
 ```terminal
 [lucid stats (start time: 2025-10-08 10:30:21)]
 globals: uptime: 0d 0h 0m 5s | fuzzers: 8 | crashes: 0 | timeouts: 0
-perf: iters: 1.09K | iters/s: 211.36 | iters/s/f: 26.42
+campaign: execs: 1.09K | execs/s: 218.00 | execs/s/f: 27.25
+batch: execs: 211 | execs/s: 211.36 | execs/s/f: 26.42
 cpu: target: 83.5% | reset: 10.3% | mutator: 0.0% | coverage: 0.2% | redqueen: 6.0% | misc: 0.1%
-coverage: edges: 17487 | last find: 0h 0m 0s, 0 iters | map: 26.68%
+coverage: edges: 17487 | last find: 0h 0m 0s, 0 execs | map: 26.68%
 snapshot: dirty pages: 7392 | dirty / total: 0.00131% | reset memcpys: 672
-corpus: inputs: 291 | corpus size (MB): 0.100 | max input: 0x10088
+corpus: total 291 (180 perm, 80 sample, 9 desc, 22 gen) | size: 0.100 (MB) | max: 0x10088
 ```
 ## Globals
 These are stats about the entire fuzzing campaign:
@@ -236,11 +237,17 @@ These are stats about the entire fuzzing campaign:
 - `crashes`: Total crashes across the campaign
 - `timeouts`: Total timeouts across the campaign
 
-## Perf
-These are stats about the performance of the fuzzing campaign:
-- `iters`: Total fuzzing iterations thus far
-- `iters/s`: How many iterations per second have been achieved globally 
-- `iters/s/f`: How many iterations per second have been achieved *per fuzzer*
+## Campaign
+These are lifetime stats measured from the start of the fuzzing campaign:
+- `execs`: Total fuzzcase executions thus far
+- `execs/s`: Average executions per second achieved globally over the entire campaign
+- `execs/s/f`: Average executions per second achieved per fuzzer over the entire campaign
+
+## Batch
+These are stats measured over the latest reporting batch:
+- `execs`: Fuzzcase executions completed during the batch
+- `execs/s`: Executions per second achieved globally during the batch
+- `execs/s/f`: Executions per second achieved per fuzzer during the batch
 
 ## Cpu
 These are stats about how we are spending our CPU time:
@@ -253,7 +260,7 @@ These are stats about how we are spending our CPU time:
 
 ## Coverage
 - `edges`: The number of unique edge pairs the fuzzer has discovered
-- `last find`: Wall-clock and iterations since the last time we set a campaign record globally for edges discovered
+- `last find`: Wall-clock and executions since the last time we set a campaign record globally for edges discovered
 - `map`: The percentage of the coverage map we have used 
 
 These are disk artifacts the fuzzers produce related to coverage. Each individual fuzzer tracks its own novel edge-transition PCs and the campaign managing parent process will merge those files into a `global.coverage` file.
@@ -266,9 +273,9 @@ These are disk artifacts the fuzzers produce related to coverage. Each individua
 - `reset memcpys`: The number of `memcpy` invocations needed to reset the dirty pages (after merging neighboring page ranges)
 
 ## Corpus
-- `inputs`: Number of total inputs in the corpus globally
-- `corpus size`: Disk size of all corpus inputs
-- `max input`: Size-limit of input
+- `total`: Number of inputs in the corpus globally, followed by the `perm`, `sample`, `desc`, and `gen` pool sizes
+- `size`: Combined in-memory size of permanent and hit-count inputs, reported in MB; sampled inputs are excluded
+- `max`: Size limit for an input
 
 # Special Feedbacks
 ## Redqueen

@@ -1485,6 +1485,10 @@ fn generate_stats_update(context: &LucidContext) -> (SnapshotStats, CorpusStats)
     // Get the corpus stats
     let corpus_stats = CorpusStats {
         entries: context.corpus.num_inputs(),
+        permanent: context.corpus.num_permanent_inputs(),
+        sampled: context.corpus.num_sampled_inputs(),
+        descendant: context.corpus.num_descendant_hitcounts(),
+        generated: context.corpus.num_generated_hitcounts(),
         size: context.corpus.corpus_size,
         max_input: context.config.input_max_size,
     };

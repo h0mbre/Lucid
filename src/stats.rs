@@ -22,6 +22,15 @@ fn format_group(title: &str, stats: &[(String, String)]) -> String {
     format!("\x1b[1;32m{}:\x1b[0m {}", title, stats_str)
 }
 
+/// Format an execution count compactly without changing the underlying value.
+fn format_execs(execs: usize) -> String {
+    match execs {
+        0..=999 => format!("{}", execs),
+        1_000..=999_999 => format!("{:.2}K", execs as f64 / 1_000.0),
+        _ => format!("{:.3}M", execs as f64 / 1_000_000.0),
+    }
+}
+
 /// What kind of mode are fuzzing in determines how stats are processed and
 /// collected
 #[derive(Clone, Default)]
@@ -46,6 +55,10 @@ pub struct SnapshotStats {
 #[derive(Clone, Copy)]
 pub struct CorpusStats {
     pub entries: usize,
+    pub permanent: usize,
+    pub sampled: usize,
+    pub descendant: usize,
+    pub generated: usize,
     pub size: usize,
     pub max_input: usize,
 }
@@ -57,7 +70,7 @@ pub struct CorpusStats {
 #[repr(C, packed)]
 struct SerialStats {
     report: usize, // Has to be the first member
-    iters: usize,
+    execs: usize,
     crashes: usize,
     timeouts: usize,
     edges: usize,
@@ -70,6 +83,10 @@ struct SerialStats {
     dirty_pages: usize,
     memcpys: usize,
     corpus_entries: usize,
+    corpus_permanent: usize,
+    corpus_sampled: usize,
+    corpus_descendant: usize,
+    corpus_generated: usize,
     corpus_size: usize,
     report_checksum: usize, // Has to be the last member
 }
@@ -86,7 +103,7 @@ impl SerialStats {
 
         SerialStats {
             report: stats.report,
-            iters: stats.session_iters,
+            execs: stats.session_execs,
             crashes: stats.crashes,
             timeouts: stats.timeouts,
             edges: stats.edges,
@@ -99,6 +116,10 @@ impl SerialStats {
             dirty_pages: stats.dirty_pages,
             memcpys: stats.memcpys,
             corpus_entries: stats.corpus_entries,
+            corpus_permanent: stats.corpus_permanent,
+            corpus_sampled: stats.corpus_sampled,
+            corpus_descendant: stats.corpus_descendant,
+            corpus_generated: stats.corpus_generated,
             corpus_size: stats.corpus_size,
             report_checksum: stats.report,
         }
@@ -110,7 +131,7 @@ impl SerialStats {
     pub fn diff(&self, old: SerialStats) -> Self {
         SerialStats {
             report: self.report,
-            iters: self.iters - old.iters,
+            execs: self.execs - old.execs,
             crashes: self.crashes,
             timeouts: self.timeouts,
             edges: self.edges,
@@ -123,6 +144,10 @@ impl SerialStats {
             dirty_pages: self.dirty_pages,
             memcpys: self.memcpys,
             corpus_entries: self.corpus_entries,
+            corpus_permanent: self.corpus_permanent,
+            corpus_sampled: self.corpus_sampled,
+            corpus_descendant: self.corpus_descendant,
+            corpus_generated: self.corpus_generated,
             corpus_size: self.corpus_size,
             report_checksum: self.report,
         }
@@ -134,9 +159,12 @@ impl SerialStats {
 struct FormattedStats {
     uptime: String,
     fuzzers: usize,
-    iters: String,
-    iters_per_sec: f64,
-    iters_per_sec_fuzzer: f64,
+    campaign_execs: String,
+    campaign_execs_per_sec: f64,
+    campaign_execs_per_sec_fuzzer: f64,
+    batch_execs: String,
+    batch_execs_per_sec: f64,
+    batch_execs_per_sec_fuzzer: f64,
     crashes: usize,
     timeouts: usize,
     edges: usize,
@@ -152,6 +180,10 @@ struct FormattedStats {
     dirty_percent: f64,
     memcpys: usize,
     corpus_entries: usize,
+    corpus_permanent: usize,
+    corpus_sampled: usize,
+    corpus_descendant: usize,
+    corpus_generated: usize,
     corpus_size: f64,
     max_input: usize,
 }
@@ -162,10 +194,10 @@ pub struct Stats {
     // Stats for the entire campaign so far
     report: usize,                  // Current report number
     pub start_str: String,          // String repr of date start
-    pub session_iters: usize,       // Total fuzzcases
+    pub session_execs: usize,       // Total fuzzcase executions
     session_start: Option<Instant>, // Start time
     last_find: Option<Instant>,     // Last new coverage find
-    last_find_iters: usize,         // Iters since last new coverage find
+    last_find_execs: usize,         // Executions since last new coverage find
     pub crashes: usize,             // Number of crashes
     pub timeouts: usize,            // Number of timeouts
     pub fuzzers: usize,             // Number of fuzzers
@@ -179,12 +211,16 @@ pub struct Stats {
     pub memcpys: usize,        // Number of memcpys we're doing for resets
 
     // Corpus related metrics
-    corpus_entries: usize, // Number of inputs
-    corpus_size: usize,    // Size of all the inputs in bytes
-    max_input: usize,      // The configuration for max input allowed
+    corpus_entries: usize,    // Number of inputs across all four pools
+    corpus_permanent: usize,  // Permanent inputs owned by fuzzers
+    corpus_sampled: usize,    // Inputs sampled from other fuzzers
+    corpus_descendant: usize, // Hit-count inputs descended from parents
+    corpus_generated: usize,  // Hit-count inputs generated from scratch
+    corpus_size: usize,       // Size of permanent and hit-count inputs in bytes
+    max_input: usize,         // The configuration for max input allowed
 
     // Stats for local batch reporting
-    batch_iters: usize,           // Batch fuzzcases
+    batch_execs: usize,           // Batch fuzzcase executions
     batch_start: Option<Instant>, // Batch start
     pub batch_reset: Duration,    // Batch time spent in reset
     pub batch_mutator: Duration,  // Batch time spent in mutator
@@ -232,17 +268,18 @@ impl Stats {
         let minutes = (total_seconds % 3600) / 60;
         let seconds = total_seconds % 60;
 
+        // Campaign performance covers the complete fuzzing session.
+        let campaign_seconds = total_elapsed.as_millis() as f64 / 1000.0;
+        let campaign_execs_per_sec = self.session_execs as f64 / campaign_seconds;
+        let campaign_execs_per_sec_fuzzer = campaign_execs_per_sec / self.fuzzers as f64;
+
         let lf_elapsed = self.last_find.unwrap().elapsed().as_secs();
         let lf_hours = lf_elapsed / 3600;
         let lf_minutes = (lf_elapsed % 3600) / 60;
         let lf_secs = lf_elapsed % 60;
 
-        // Format the last find iters
-        let lf_iters = match self.last_find_iters {
-            0..=999 => format!("{}", self.last_find_iters),
-            1_000..=999_999 => format!("{:.2}K", self.last_find_iters as f64 / 1_000.0),
-            _ => format!("{:.3}M", self.last_find_iters as f64 / 1_000_000.0),
-        };
+        // Format the executions since the last coverage find.
+        let lf_execs = format_execs(self.last_find_execs);
 
         // For single process
         let batch_elapsed = self.batch_start.unwrap().elapsed();
@@ -253,22 +290,15 @@ impl Stats {
         let oldest_millis = self.oldest_batch.as_millis() as f64;
         let oldest_seconds = oldest_millis / 1000.0;
 
-        // Iters/s is based on report mode
-        let iters_sec = if matches!(self.report_mode, ReportMode::Single) {
-            self.batch_iters as f64 / batch_seconds
+        // Batch performance covers only the most recent reporting interval.
+        let batch_execs_per_sec = if matches!(self.report_mode, ReportMode::Single) {
+            self.batch_execs as f64 / batch_seconds
         } else {
-            self.batch_iters as f64 / oldest_seconds
+            self.batch_execs as f64 / oldest_seconds
         };
 
-        // Calculate Iters/s per fuzzer
-        let iters_sec_fuzzer = iters_sec / self.fuzzers as f64;
-
-        // Generate the dynamic iters/s string value to print
-        let iters_str = match self.session_iters {
-            0..=999 => format!("{}", self.session_iters),
-            1_000..=999_999 => format!("{:.2}K", self.session_iters as f64 / 1_000.0),
-            _ => format!("{:.3}M", self.session_iters as f64 / 1_000_000.0),
-        };
+        // Report both aggregate and average per-fuzzer batch throughput.
+        let batch_execs_per_sec_fuzzer = batch_execs_per_sec / self.fuzzers as f64;
 
         // Generate the batch's CPU time spent where values
         let cpu_target = (self.batch_target.as_millis() as f64 / batch_millis) * 100.0;
@@ -291,15 +321,18 @@ impl Stats {
         FormattedStats {
             uptime: format!("{}d {}h {}m {}s", days, hours, minutes, seconds),
             fuzzers: self.fuzzers,
-            iters: iters_str,
-            iters_per_sec: iters_sec,
-            iters_per_sec_fuzzer: iters_sec_fuzzer,
+            campaign_execs: format_execs(self.session_execs),
+            campaign_execs_per_sec,
+            campaign_execs_per_sec_fuzzer,
+            batch_execs: format_execs(self.batch_execs),
+            batch_execs_per_sec,
+            batch_execs_per_sec_fuzzer,
             crashes: self.crashes,
             timeouts: self.timeouts,
             edges: self.edges,
             last_find: format!(
-                "{}h {}m {}s, {} iters",
-                lf_hours, lf_minutes, lf_secs, lf_iters
+                "{}h {}m {}s, {} execs",
+                lf_hours, lf_minutes, lf_secs, lf_execs
             ),
             map_coverage: (self.edges as f64 / self.map_size as f64) * 100.0,
             cpu_target,
@@ -312,6 +345,10 @@ impl Stats {
             dirty_percent,
             memcpys,
             corpus_entries: self.corpus_entries,
+            corpus_permanent: self.corpus_permanent,
+            corpus_sampled: self.corpus_sampled,
+            corpus_descendant: self.corpus_descendant,
+            corpus_generated: self.corpus_generated,
             corpus_size,
             max_input: self.max_input,
         }
@@ -352,19 +389,33 @@ impl Stats {
         ];
         println!("{}", format_group("globals", &globals));
 
-        // Print all the perf stuff
-        let perf = [
-            ("iters".to_string(), formatted_stats.iters),
+        // Print performance across the entire campaign lifetime.
+        let campaign = [
+            ("execs".to_string(), formatted_stats.campaign_execs),
             (
-                "iters/s".to_string(),
-                format!("{:.2}", formatted_stats.iters_per_sec),
+                "execs/s".to_string(),
+                format!("{:.2}", formatted_stats.campaign_execs_per_sec),
             ),
             (
-                "iters/s/f".to_string(),
-                format!("{:.2}", formatted_stats.iters_per_sec_fuzzer),
+                "execs/s/f".to_string(),
+                format!("{:.2}", formatted_stats.campaign_execs_per_sec_fuzzer),
             ),
         ];
-        println!("{}", format_group("perf", &perf));
+        println!("{}", format_group("campaign", &campaign));
+
+        // Print performance across only the latest reporting batch.
+        let batch = [
+            ("execs".to_string(), formatted_stats.batch_execs),
+            (
+                "execs/s".to_string(),
+                format!("{:.2}", formatted_stats.batch_execs_per_sec),
+            ),
+            (
+                "execs/s/f".to_string(),
+                format!("{:.2}", formatted_stats.batch_execs_per_sec_fuzzer),
+            ),
+        ];
+        println!("{}", format_group("batch", &batch));
 
         // Print where we're spending our CPU time
         let cpu = [
@@ -423,22 +474,18 @@ impl Stats {
         ];
         println!("{}", format_group("snapshot", &snapshot));
 
-        // Print the corpus metrics
-        let corpus = [
-            (
-                "inputs".to_string(),
-                format!("{}", formatted_stats.corpus_entries),
-            ),
-            (
-                "corpus size (MB)".to_string(),
-                format!("{:.3}", formatted_stats.corpus_size),
-            ),
-            (
-                "max input".to_string(),
-                format!("0x{:X}", formatted_stats.max_input),
-            ),
-        ];
-        println!("{}", format_group("corpus", &corpus));
+        // Keep the total and its four constituent pools together so their
+        // relationship is visible without adding another stat column.
+        println!(
+            "\x1b[1;32mcorpus:\x1b[0m total {} ({} perm, {} sample, {} desc, {} gen) | size: {:.3} (MB) | max: 0x{:X}",
+            formatted_stats.corpus_entries,
+            formatted_stats.corpus_permanent,
+            formatted_stats.corpus_sampled,
+            formatted_stats.corpus_descendant,
+            formatted_stats.corpus_generated,
+            formatted_stats.corpus_size,
+            formatted_stats.max_input,
+        );
     }
 
     /// Initializes global stat values such as the start time of the fuzzing
@@ -453,7 +500,7 @@ impl Stats {
         // Dry runs happen before workers enter the fuzzing session. Clear all
         // batch counters here so pre-fork work is not inherited and reported
         // once by every child as campaign CPU time.
-        self.batch_iters = 0;
+        self.batch_execs = 0;
         self.batch_reset = Duration::new(0, 0);
         self.batch_mutator = Duration::new(0, 0);
         self.batch_target = Duration::new(0, 0);
@@ -465,7 +512,7 @@ impl Stats {
         self.session_start = Some(Instant::now());
         self.batch_start = Some(Instant::now());
         self.last_find = Some(Instant::now());
-        self.last_find_iters = 0;
+        self.last_find_execs = 0;
         self.map_size = map_size;
         self.dirty_block_length = dirty_block_length;
         self.max_input = input_max_size;
@@ -475,9 +522,9 @@ impl Stats {
     #[inline]
     pub fn update(&mut self, snapshot: SnapshotStats, corpus: CorpusStats) {
         // We just completed a single fuzzcase
-        self.session_iters += 1;
-        self.batch_iters += 1;
-        self.last_find_iters += 1;
+        self.session_execs += 1;
+        self.batch_execs += 1;
+        self.last_find_execs += 1;
 
         // Update the snapshot statistics
         self.dirty_pages = snapshot.dirty_pages;
@@ -485,6 +532,10 @@ impl Stats {
 
         // Update the corpus statistics
         self.corpus_entries = corpus.entries;
+        self.corpus_permanent = corpus.permanent;
+        self.corpus_sampled = corpus.sampled;
+        self.corpus_descendant = corpus.descendant;
+        self.corpus_generated = corpus.generated;
         self.corpus_size = corpus.size;
         self.max_input = corpus.max_input;
     }
@@ -528,7 +579,7 @@ impl Stats {
     pub fn new_coverage(&mut self, edges: usize) {
         self.edges = edges;
         self.last_find = Some(Instant::now());
-        self.last_find_iters = 0;
+        self.last_find_execs = 0;
     }
 
     /// Report stats in single-process fuzzing
@@ -537,7 +588,7 @@ impl Stats {
         self.print_stats();
 
         // Reset batch
-        self.batch_iters = 0;
+        self.batch_execs = 0;
         self.batch_start = Some(Instant::now());
         self.batch_reset = Duration::new(0, 0);
         self.batch_mutator = Duration::new(0, 0);
@@ -645,7 +696,7 @@ impl Stats {
         self.session_start = None;
         self.batch_start = None;
         self.last_find = Some(Instant::now());
-        self.last_find_iters = 0;
+        self.last_find_execs = 0;
         self.map_size = map_size;
         self.dirty_block_length = dirty_block_length;
         self.max_input = max_input_size;
@@ -677,18 +728,22 @@ impl Stats {
 
         // Totals and absolutes
         let mut max_total_time = 0;
-        let mut session_iters = 0;
+        let mut session_execs = 0;
         let mut crashes = 0;
         let mut timeouts = 0;
         let mut edges = 0;
         let mut dirty_pages = 0;
         let mut memcpys = 0;
         let mut corpus_entries = 0;
+        let mut corpus_permanent = 0;
+        let mut corpus_sampled = 0;
+        let mut corpus_descendant = 0;
+        let mut corpus_generated = 0;
         let mut corpus_size = 0;
 
         // Batch stats
         let mut batch_total_time = Duration::new(0, 0);
-        let mut batch_iters = 0;
+        let mut batch_execs = 0;
         let mut batch_reset = Duration::new(0, 0);
         let mut batch_mutator = Duration::new(0, 0);
         let mut batch_target = Duration::new(0, 0);
@@ -703,13 +758,17 @@ impl Stats {
 
             // First, update all total-type and absolute statisics
             max_total_time = max_total_time.max(stats.total_time);
-            session_iters += stats.iters;
+            session_execs += stats.execs;
             crashes += stats.crashes;
             timeouts += stats.timeouts;
             edges = edges.max(stats.edges);
             dirty_pages = dirty_pages.max(stats.dirty_pages);
             memcpys = memcpys.max(stats.memcpys);
             corpus_entries += stats.corpus_entries;
+            corpus_permanent += stats.corpus_permanent;
+            corpus_sampled += stats.corpus_sampled;
+            corpus_descendant += stats.corpus_descendant;
+            corpus_generated += stats.corpus_generated;
             corpus_size += stats.corpus_size;
 
             // Create a batch for this fuzzer
@@ -718,7 +777,7 @@ impl Stats {
             // Create batch figures
             oldest_batch = oldest_batch.max(batch.total_time);
             batch_total_time += Duration::from_millis(batch.total_time);
-            batch_iters += batch.iters;
+            batch_execs += batch.execs;
             batch_reset += Duration::from_millis(batch.reset_time);
             batch_mutator += Duration::from_millis(batch.mutator_time);
             batch_target += Duration::from_millis(batch.target_time);
@@ -735,7 +794,7 @@ impl Stats {
         }
 
         // Update our total/absolute stats
-        self.session_iters = session_iters;
+        self.session_execs = session_execs;
         self.crashes = crashes;
         self.timeouts = timeouts;
 
@@ -743,21 +802,25 @@ impl Stats {
         if edges > self.edges {
             self.edges = edges;
             self.last_find = Some(Instant::now());
-            self.last_find_iters = 0;
+            self.last_find_execs = 0;
         }
-        // No new edge record, add the batch iters to since last
+        // No new edge record, add the batch executions to the running count.
         else {
-            self.last_find_iters += batch_iters;
+            self.last_find_execs += batch_execs;
         }
 
         self.dirty_pages = dirty_pages;
         self.memcpys = memcpys;
         self.corpus_entries = corpus_entries;
+        self.corpus_permanent = corpus_permanent;
+        self.corpus_sampled = corpus_sampled;
+        self.corpus_descendant = corpus_descendant;
+        self.corpus_generated = corpus_generated;
         self.corpus_size = corpus_size;
 
         // Update our batch stats
         self.batch_start = Some(Instant::now() - batch_total_time);
-        self.batch_iters = batch_iters;
+        self.batch_execs = batch_execs;
         self.batch_reset = batch_reset;
         self.batch_mutator = batch_mutator;
         self.batch_target = batch_target;
@@ -769,7 +832,7 @@ impl Stats {
         self.print_stats();
 
         // Reset batch stats for the next iteration
-        self.batch_iters = 0;
+        self.batch_execs = 0;
         self.batch_start = None;
         self.batch_reset = Duration::new(0, 0);
         self.batch_mutator = Duration::new(0, 0);
