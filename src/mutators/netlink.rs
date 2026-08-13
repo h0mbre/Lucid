@@ -659,7 +659,7 @@ impl NetlinkMutator {
 
             // Pick a random input from the corpus, bias towards new inputs, can
             // unwrap here because we checked above that we have > 1 inputs
-            let (idx, chosen) = corpus.get_input_bias_new(self.get_rng());
+            let (idx, chosen) = corpus.get_input_uniform(self.get_rng());
 
             // Set this as the last used base input
             self.core.last_input = Some(idx);
@@ -1336,7 +1336,7 @@ impl NetlinkMutator {
         let donor_protocol = self.netlink_input.protocols[donor_idx];
 
         // Get a recipient input
-        let (_, recipient) = corpus.get_input_bias_new(self.get_rng());
+        let (_, recipient) = corpus.get_input_uniform(self.get_rng());
         self.copy_input(recipient.unwrap());
 
         // Deserialize it

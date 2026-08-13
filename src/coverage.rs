@@ -3,9 +3,6 @@
 //! SPDX-License-Identifier: MIT
 //! Copyright (c) 2026 h0mbre
 
-/// This is the size of coverage map, this *has* to be a power of 2
-const COVERAGE_MAP_SIZE: usize = 65536;
-
 /// All of the information we need to track coverage feedback. Bochs updates the
 /// curr_map from its side so it needs the cur_map_addr to get its address. The
 /// Rust side uses the history_map to compare the curr_map hitcounts to what we
@@ -21,13 +18,13 @@ pub struct CoverageMap {
 
 impl CoverageMap {
     /// Create a new CoverageMap struct
-    pub fn new() -> Self {
-        let curr_map = vec![0u8; COVERAGE_MAP_SIZE];
+    pub fn new(size: usize) -> Self {
+        let curr_map = vec![0u8; size];
         let curr_map_addr = curr_map.as_ptr();
 
         CoverageMap {
             curr_map,
-            history_map: vec![0u8; COVERAGE_MAP_SIZE],
+            history_map: vec![0u8; size],
             curr_map_addr,
         }
     }

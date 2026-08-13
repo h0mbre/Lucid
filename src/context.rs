@@ -532,7 +532,7 @@ impl LucidContext {
         let icache_addr = create_icache_mapping()?;
 
         // Create coverage map
-        let coverage = CoverageMap::new();
+        let coverage = CoverageMap::new(config.coverage_map_size);
         let coverage_map_addr = coverage.addr();
         let coverage_history_map_addr = coverage.history_addr();
         let coverage_map_size = coverage.curr_map.len();
@@ -1541,6 +1541,18 @@ pub fn fuzz_loop(context: &mut LucidContext, id: Option<usize>) -> Result<(), Lu
             context.mutator.reseed()
         );
     }
+
+    // Stagger only the first corpus sync using this worker's post-fork PRNG
+    // state. Corpus scheduling copies the seed and does not consume or alter
+    // the mutator's random stream.
+    let initial_sync_delay = context
+        .corpus
+        .initialize_sync_schedule(context.mutator.get_rng());
+    finding!(
+        context.fuzzer_id,
+        "Initial corpus sync in {} second(s)",
+        initial_sync_delay
+    );
 
     loop {
         // Try to clear out the Redqueen process queue first

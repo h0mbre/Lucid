@@ -26,12 +26,16 @@ const MEG: usize = 1_000_000;
 /// Default batch time for stat reporting in milliseconds
 const DEFAULT_BATCH_TIME: u128 = 2_000;
 
+/// Default number of slots in the edge-pair coverage map
+const DEFAULT_COVERAGE_MAP_SIZE: usize = 1 << 16;
+
 /// Struct that contains all of the configurable information we need to pass
 /// around in the LucidContext
 #[derive(Clone)]
 pub struct Config {
     pub input_max_size: usize, // The max size
     pub input_signature: String,
+    pub coverage_map_size: usize,
     pub verbose: bool,
     pub dryrun: bool,
     pub bochs_image: String,
@@ -66,6 +70,10 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         .value_name("SIGNATURE")
         .help("Sets the input signature for Lucid to search for in target (128-bit hex string)")
         .required(true))
+    .arg(Arg::new("coverage-map-size")
+        .long("coverage-map-size")
+        .value_name("SIZE")
+        .help("Number of edge-pair coverage map slots (power of 2; 65536 default)"))
     .arg(Arg::new("seeds-dir")
         .long("seeds-dir")
         .value_name("SEEDS_DIR")
@@ -81,7 +89,7 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         .action(ArgAction::SetTrue))
     .arg(Arg::new("dryrun")
         .long("dryrun")
-        .help("Conduct a dry-run of seed inputs to set coverage map (slow!)")
+        .help("Replay seed inputs before fuzzing to initialize coverage (slow)")
         .action(ArgAction::SetTrue))
     .arg(Arg::new("mutator-seed")
         .long("mutator-seed")
@@ -90,7 +98,7 @@ pub fn parse_args() -> Result<Config, LucidErr> {
     .arg(Arg::new("output-limit")
         .long("output-limit")
         .value_name("LIMIT")
-        .help("Number of megabytes we can save to disk for output (inputs, crashes, etc) (100 default)"))
+        .help("Number of megabytes available for output (inputs, crashes, etc; 1000 default)"))
     .arg(Arg::new("fuzzers")
         .long("fuzzers")
         .value_name("COUNT")
@@ -98,15 +106,15 @@ pub fn parse_args() -> Result<Config, LucidErr> {
     .arg(Arg::new("stat-interval")
         .long("stat-interval")
         .value_name("INTERVAL")
-        .help("Number of seconds we wait in between stat reports (1 default)"))
+        .help("Number of seconds between stat reports (2 default)"))
     .arg(Arg::new("sync-interval")
         .long("sync-interval")
         .value_name("INTERVAL")
-        .help("Number of seconds in between corpus syncs between fuzzers"))
+        .help("Number of seconds between corpus syncs (1800 default)"))
     .arg(Arg::new("icount-timeout")
         .long("icount-timeout")
         .value_name("INSTRUCTION_COUNT")
-        .help("Number of instructions we can execute before a timeout (in millions)"))
+        .help("Execution timeout in millions of guest instructions (250 default)"))
     .arg(Arg::new("bochs-image")
         .long("bochs-image")
         .value_name("IMAGE")
@@ -125,14 +133,14 @@ pub fn parse_args() -> Result<Config, LucidErr> {
     .arg(Arg::new("mutator")
         .long("mutator")
         .value_name("MUTATOR")
-        .help("Name of mutator to use, eg 'toy' in /mutators"))
+        .help("Mutator to use: 'toy' (default) or 'netlink'"))
     .arg(Arg::new("redqueen")
         .long("redqueen")
         .help("Enable Redqueen comparison-guided input processing")
         .action(ArgAction::SetTrue))
     .arg(Arg::new("colorize")
         .long("colorize")
-        .help("Enable Redqueen operand colorization")
+        .help("Enable slower Redqueen operand colorization (requires --redqueen)")
         .requires("redqueen")
         .action(ArgAction::SetTrue))
     .get_matches();
@@ -141,6 +149,25 @@ pub fn parse_args() -> Result<Config, LucidErr> {
     let max_size_str = matches.get_one::<String>("input-max-size").unwrap();
     let Ok(input_max_size) = max_size_str.parse::<usize>() else {
         return Err(LucidErr::from("Invalid --input-max-size value"));
+    };
+
+    // The Bochs edge instrumentation masks hashes with size - 1, which only
+    // implements modulo correctly when the map has a nonzero power-of-two size.
+    let coverage_map_size = match matches.get_one::<String>("coverage-map-size") {
+        None => DEFAULT_COVERAGE_MAP_SIZE,
+        Some(str_repr) => {
+            let Ok(size) = str_repr.parse::<usize>() else {
+                return Err(LucidErr::from("Invalid --coverage-map-size value"));
+            };
+
+            if !size.is_power_of_two() {
+                return Err(LucidErr::from(
+                    "--coverage-map-size must be a nonzero power of 2",
+                ));
+            }
+
+            size
+        }
     };
 
     // String arguments, unwraps safe on required args
@@ -330,6 +357,7 @@ pub fn parse_args() -> Result<Config, LucidErr> {
     Ok(Config {
         input_max_size,
         input_signature,
+        coverage_map_size,
         verbose,
         dryrun,
         bochs_image,

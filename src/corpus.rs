@@ -9,7 +9,7 @@ use std::collections::{HashSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::config::Config;
 use crate::err::LucidErr;
@@ -49,7 +49,7 @@ pub struct Corpus {
     input_hashes: HashSet<u64>, // Database of unique permanent input hashes
     output_limit: usize,        // The limit in megabytes of what we can save
     pub id: usize,              // Inherited from the LucidContext
-    last_sync: Instant,         // The last time we synced from disk to memory
+    next_sync: Instant,         // The next time we should sync from disk to memory
     sync_interval: u64,         // How often we sync the in-memory corpus with the disk
     pub corpus_size: usize,     // Permanent and hit-count corpus bytes
 
@@ -186,8 +186,9 @@ impl Corpus {
             }
         }
 
-        // Count this now as our last sync
-        let last_sync = Instant::now();
+        // Use the full interval until the worker initializes its post-fork,
+        // independently jittered sync schedule.
+        let next_sync = Instant::now() + Duration::from_secs(config.sync_interval as u64);
 
         Ok(Corpus {
             inputs_dir,
@@ -197,7 +198,7 @@ impl Corpus {
             input_hashes: HashSet::new(),
             output_limit: config.output_limit,
             id: 0,
-            last_sync,
+            next_sync,
             sync_interval: config.sync_interval as u64,
             corpus_size,
             sample_inputs,
@@ -207,6 +208,22 @@ impl Corpus {
             generated_hitcounts,
             prng,
         })
+    }
+
+    /// Initialize this worker's corpus-sync schedule from its post-fork PRNG
+    /// seed. Only the first deadline is jittered; subsequent syncs retain the
+    /// configured fixed interval.
+    pub fn initialize_sync_schedule(&mut self, prng: usize) -> u64 {
+        self.prng = prng;
+
+        let initial_delay = if self.sync_interval == 0 {
+            0
+        } else {
+            self.rand() as u64 % self.sync_interval
+        };
+
+        self.next_sync = Instant::now() + Duration::from_secs(initial_delay);
+        initial_delay
     }
 
     /// Return the number of inputs currently in the corpus in memory
@@ -668,9 +685,14 @@ impl Corpus {
     /// sample. Every sync they will clear out their sample queue and hashset
     pub fn sync(&mut self, prng: usize, seen_pcs: &HashSet<u64>) {
         // Check to see if we've reached re-sync time
-        if self.last_sync.elapsed().as_secs() < self.sync_interval {
+        let now = Instant::now();
+        if now < self.next_sync {
             return;
         }
+
+        // Keep the configured period after the independently jittered first
+        // sync. Anchor it to this check rather than the duration of the scan.
+        self.next_sync = now + Duration::from_secs(self.sync_interval);
 
         // Set the prng
         self.prng = prng;
@@ -685,7 +707,6 @@ impl Corpus {
         // Scan PC sidecars and sample only inputs that carry a PC this fuzzer
         // has not observed, files have this format: `8B5BB66137A8AA15.pcs`
         self.sample_inputs_from_disk(seen_pcs);
-        self.last_sync = Instant::now();
 
         finding!(self.id, "Sampled {} inputs from disk", self.sample_len);
     }

@@ -154,6 +154,16 @@ impl SerialStats {
     }
 }
 
+/// Update one worker's most recently observed throughput. Worker stat files are
+/// published independently, so their reporting intervals need not have equal
+/// durations. A file that has not advanced retains its previous rate instead
+/// of making the aggregate temporarily lose that worker.
+fn update_worker_batch_rate(rate: &mut f64, batch: &SerialStats) {
+    if batch.total_time != 0 {
+        *rate = batch.execs as f64 / (batch.total_time as f64 / 1000.0);
+    }
+}
+
 /// A data structure for statistics that have already been formatted and can
 /// be displayed (printed to terminal)
 struct FormattedStats {
@@ -227,7 +237,7 @@ pub struct Stats {
     pub batch_target: Duration,   // Batch time spent in target
     pub batch_coverage: Duration, // Batch time spent in coverage
     pub batch_redqueen: Duration, // Batch time spent in redqueen
-    pub oldest_batch: Duration,   // Oldest batch duration in multi-process
+    batch_execs_per_sec: f64,     // Sum of independently timed worker rates
 
     pub edges: usize,        // Number of edges we've hit
     map_size: usize,         // Size of coverage map
@@ -235,6 +245,7 @@ pub struct Stats {
 
     // For the multi-process stat reporter
     multi_batch_stats: Vec<SerialStats>,
+    multi_batch_rates: Vec<f64>,
 }
 
 impl Stats {
@@ -286,15 +297,11 @@ impl Stats {
         let batch_millis = batch_elapsed.as_millis() as f64;
         let batch_seconds = batch_millis / 1000.0;
 
-        // For multi-process
-        let oldest_millis = self.oldest_batch.as_millis() as f64;
-        let oldest_seconds = oldest_millis / 1000.0;
-
         // Batch performance covers only the most recent reporting interval.
         let batch_execs_per_sec = if matches!(self.report_mode, ReportMode::Single) {
             self.batch_execs as f64 / batch_seconds
         } else {
-            self.batch_execs as f64 / oldest_seconds
+            self.batch_execs_per_sec
         };
 
         // Report both aggregate and average per-fuzzer batch throughput.
@@ -506,7 +513,7 @@ impl Stats {
         self.batch_target = Duration::new(0, 0);
         self.batch_coverage = Duration::new(0, 0);
         self.batch_redqueen = Duration::new(0, 0);
-        self.oldest_batch = Duration::new(0, 0);
+        self.batch_execs_per_sec = 0.0;
 
         self.start_str = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         self.session_start = Some(Instant::now());
@@ -691,6 +698,7 @@ impl Stats {
         max_input_size: usize,
     ) {
         self.multi_batch_stats = vec![SerialStats::default(); self.fuzzers];
+        self.multi_batch_rates = vec![0.0; self.fuzzers];
 
         self.start_str = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         self.session_start = None;
@@ -749,8 +757,6 @@ impl Stats {
         let mut batch_target = Duration::new(0, 0);
         let mut batch_coverage = Duration::new(0, 0);
         let mut batch_redqueen = Duration::new(0, 0);
-        let mut oldest_batch = 0;
-
         for i in 0..self.fuzzers {
             let Ok(stats) = self.read_stat_file(output_dir, i) else {
                 continue;
@@ -775,7 +781,7 @@ impl Stats {
             let batch = self.create_batch(i, stats);
 
             // Create batch figures
-            oldest_batch = oldest_batch.max(batch.total_time);
+            update_worker_batch_rate(&mut self.multi_batch_rates[i], &batch);
             batch_total_time += Duration::from_millis(batch.total_time);
             batch_execs += batch.execs;
             batch_reset += Duration::from_millis(batch.reset_time);
@@ -826,7 +832,7 @@ impl Stats {
         self.batch_target = batch_target;
         self.batch_coverage = batch_coverage;
         self.batch_redqueen = batch_redqueen;
-        self.oldest_batch = Duration::from_millis(oldest_batch);
+        self.batch_execs_per_sec = self.multi_batch_rates.iter().sum();
 
         // Print the stats
         self.print_stats();
@@ -839,6 +845,6 @@ impl Stats {
         self.batch_target = Duration::new(0, 0);
         self.batch_coverage = Duration::new(0, 0);
         self.batch_redqueen = Duration::new(0, 0);
-        self.oldest_batch = Duration::new(0, 0);
+        self.batch_execs_per_sec = 0.0;
     }
 }

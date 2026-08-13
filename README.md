@@ -89,16 +89,16 @@ newgrp docker
 - `lucid-bochs`: A single-CPU `--static-pie` Bochs binary that we load into Lucid for fuzzing built against a custom musl
 - `gui-bochs-smp`: A dynamically linked SMP Bochs binary we use to take SMP snapshots to disk
 - `lucid-bochs-smp`: An SMP `--static-pie` Bochs binary that we load into Lucid for fuzzing built against a custom musl
-- `BIOS-bochs-latest`: Required Bochs file the path to which is required in the `bochsrc_files`
-- `VGABIOS-lgpl-latest`: Required Bochs file the path to which is required in the `bochsrc_files`
+- `BIOS-bochs-latest`: Bochs system BIOS referenced by the runtime configuration file
+- `VGABIOS-lgpl-latest`: Bochs VGA BIOS referenced by the runtime configuration file
 
 ## Binary Integrity (SHA-1)
 
-- `lucid-fuzz`  5e10fe9bf0213012f518d133145cb45906729266
-- `gui-bochs`  d69d5e67e3f16701d1421a6fe57863c07f9d7507
-- `lucid-bochs`  dbb7343ef7f0711be0bf37dc25bc925bb1256541
-- `gui-bochs-smp`  62e5891388fb54ca69cbbbccba2d4e8856db8617
-- `lucid-bochs-smp`  bdc7f74dcc85ba8a06635c8d1ae2bcedee4451d2
+- `lucid-fuzz`  0cc9e6d56b684fb51131a8eb4e83598ccc8a7e82
+- `gui-bochs`  2820a93d160c51ec6f02f260c22439892ffab3d1
+- `lucid-bochs`  e30767c4b0049ff04ca3c45d0114d0ba52a20523
+- `gui-bochs-smp`  f4b7c98632e28e1d81897b5b82f25ca43e437664
+- `lucid-bochs-smp`  d736d3e772a18967dc060ccd095c48aceb4b83f2
 - `BIOS-bochs-latest`  c654a401c6f4257324640b157a7e16bf334a263c
 - `VGABIOS-lgpl-latest`  35aa458948da1fcb747f70d3536c6de08e15f498
 
@@ -112,10 +112,10 @@ Other third-party downloads can still fail if an upstream server is unavailable 
 Develop your environment, probably using something like QEMU system in order to do quick development cycles. For instance, if fuzzing a Linux kernel subsystem, you may develop a harness which sends user controlled input to a kernel API. Once you've confirmed your harness works in something like QEMU, you can create an `.iso` out of the kernel image (`bzImage`) which Bochs can then run. 
 
 ### Step 2:
-Use the built `gui-bochs` Bochs binary in `bins` and run your harness. If your harness was built correctly, Bochs will save its state to disk when it reaches the `xchg dx, dx` special NOP instruction and exit. 
+Use the built `gui-bochs` Bochs binary in `bins` and run your harness. Use `gui-bochs-smp` when creating a snapshot for an SMP campaign. If your harness was built correctly, Bochs will save its state to disk when it reaches the `xchg dx, dx` special NOP instruction and exit.
 
 ### Step 3:
-Now with the saved-to-disk Bochs state, we are able to resume execution in the fuzzer. We do this by pointing Lucid at the `lucid-bochs` Bochs binary. Use the `--bochs-snapshot-dir` command line argument to tell `lucid-fuzz` where to find the snapshot saved on disk from `Step 2`.
+Now with the saved-to-disk Bochs state, we are able to resume execution in the fuzzer. We do this by pointing Lucid at the matching `lucid-bochs` binary (`lucid-bochs-smp` for an SMP snapshot). Use the `--bochs-snapshot-dir` command line argument to tell `lucid-fuzz` where to find the snapshot saved on disk from `Step 2`.
 
 ### Step 4:
 The fuzzer should be able to resume the saved state of Bochs and continue execution from where it left off. This allows you to manipulate the user input and explore new code via fuzzing. You will need to adequately anticipate all possible code paths your input can cause as you will need to identify an appropriate choke-point to call back into the fuzzer to reset the snapshot via the special NOP instruction (`xchg bx, bx`). You will also need to implement your fuzzing target with crash oracles.
@@ -144,6 +144,8 @@ Options:
           Sets the maximum input size for mutator to use (usize)
       --input-signature <SIGNATURE>
           Sets the input signature for Lucid to search for in target (128-bit hex string)
+      --coverage-map-size <SIZE>
+          Number of edge-pair coverage map slots (power of 2; 65536 default)
       --seeds-dir <SEEDS_DIR>
           Directory containing seed inputs (optional)
       --output-dir <OUTPUT_DIR>
@@ -151,19 +153,19 @@ Options:
       --verbose
           Enables printing of Bochs stdout and stderr
       --dryrun
-          Conduct a dry-run of seed inputs to set coverage map (slow!)
+          Replay seed inputs before fuzzing to initialize coverage (slow)
       --mutator-seed <SEED>
           Optional seed value provided to mutator pRNG (usize)
       --output-limit <LIMIT>
-          Number of megabytes we can save to disk for output (inputs, crashes, etc) (100 default)
+          Number of megabytes available for output (inputs, crashes, etc; 1000 default)
       --fuzzers <COUNT>
           Number of fuzzers we spawn (1 default)
       --stat-interval <INTERVAL>
-          Number of seconds we wait in between stat reports (1 default)
+          Number of seconds between stat reports (2 default)
       --sync-interval <INTERVAL>
-          Number of seconds in between corpus syncs between fuzzers
+          Number of seconds between corpus syncs (1800 default)
       --icount-timeout <INSTRUCTION_COUNT>
-          Number of instructions we can execute before a timeout (in millions)
+          Execution timeout in millions of guest instructions (250 default)
       --bochs-image <IMAGE>
           File path for the Bochs binary compatible with Lucid
       --bochs-config <BOCHS_CONFIG>
@@ -171,11 +173,11 @@ Options:
       --bochs-snapshot-dir <BOCHS_SNAPSHOT_DIR>
           File path for the Bochs snapshot dir created with GUI Bochs
       --mutator <MUTATOR>
-          Name of mutator to use, eg 'toy' in /mutators
+          Mutator to use: 'toy' (default) or 'netlink'
       --redqueen
           Enable Redqueen comparison-guided input processing
       --colorize
-          Enable Redqueen operand colorization
+          Enable slower Redqueen operand colorization (requires --redqueen)
   -h, --help
           Print help
   -V, --version
@@ -202,22 +204,25 @@ struct fuzz_input {
 ./lucid-fuzz \
     --input-max-size 65672 \
     --input-signature 0x13371337133713371338133813381338 \
-    --verbose \
+    --coverage-map-size 65536 \
     --bochs-image ~/Lucid/bins/lucid-bochs \
     --output-dir /tmp/findings \
     --output-limit 1000 \
     --icount-timeout 500 \
     --fuzzers 8 \
     --stat-interval 5 \
+    --sync-interval 1800 \
     --seeds-dir ~/seeds/ \
     --dryrun \
     --mutator toy \
+    --mutator-seed 4919 \
+    --redqueen \
     --bochs-config /tmp/bochsrc_nogui.txt \
     --bochs-snapshot-dir /tmp/lucid_snapshot/
 ```
 
 # Documentation
-Right now, we don't have any documentation besides the blog series: https://h0mbre.github.io/New_Fuzzer_Project/
+Longer-form design and implementation notes are available in the project blog series: https://h0mbre.github.io/New_Fuzzer_Project/
 
 # Output Explained
 ```terminal
