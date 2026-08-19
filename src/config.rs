@@ -34,7 +34,6 @@ const DEFAULT_COVERAGE_MAP_SIZE: usize = 1 << 16;
 #[derive(Clone)]
 pub struct Config {
     pub input_max_size: usize, // The max size
-    pub input_signature: String,
     pub coverage_map_size: usize,
     pub verbose: bool,
     pub dryrun: bool,
@@ -64,11 +63,6 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         .long("input-max-size")
         .value_name("SIZE")
         .help("Sets the maximum input size for mutator to use (usize)")
-        .required(true))
-    .arg(Arg::new("input-signature")
-        .long("input-signature")
-        .value_name("SIGNATURE")
-        .help("Sets the input signature for Lucid to search for in target (128-bit hex string)")
         .required(true))
     .arg(Arg::new("coverage-map-size")
         .long("coverage-map-size")
@@ -172,10 +166,6 @@ pub fn parse_args() -> Result<Config, LucidErr> {
 
     // String arguments, unwraps safe on required args
     let output_dir = matches.get_one::<String>("output-dir").unwrap().to_string();
-    let input_signature = matches
-        .get_one::<String>("input-signature")
-        .unwrap()
-        .to_string();
     let verbose = matches.get_flag("verbose");
     let dryrun = matches.get_flag("dryrun");
     let bochs_image = matches
@@ -356,7 +346,6 @@ pub fn parse_args() -> Result<Config, LucidErr> {
     // Create and return Config
     Ok(Config {
         input_max_size,
-        input_signature,
         coverage_map_size,
         verbose,
         dryrun,

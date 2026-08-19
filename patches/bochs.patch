@@ -1774,3 +1774,259 @@
      }
 +#endif
 +
+
+--- bochs/cpu/cpu.cc
++++ bochs/cpu/cpu.cc
+@@ -49,6 +49,70 @@
+
+ jmp_buf BX_CPU_C::jmp_buf_env;
+
++#if BX_LUCID
++
++void BX_CPU_C::lucid_register_guest_input(void)
++{
++  size_t segment_count = bx_pc_system.lucid_input_span_count;
++  size_t layout_len = (size_t) bx_pc_system.lucid_input_layout_len;
++
++  // An old snapshot has no serialized registration record.  Refuse to guess.
++  if (!segment_count || segment_count > LUCID_MAX_INPUT_SPANS ||
++      layout_len < sizeof(Bit64u))
++    BX_PANIC(("Lucid snapshot has no valid input layout"));
++
++  lucid_input_span_t *spans = new lucid_input_span_t[segment_count];
++  size_t total_size = 0;
++
++  // Resolve each saved physical span to the writable host pointer belonging to
++  // this Bochs process.  Lucid will copy the resulting vector immediately.
++  for (size_t index = 0; index < segment_count; index++) {
++    bx_phy_address segment_addr = (bx_phy_address)
++        bx_pc_system.lucid_input_spans[index].phys_addr;
++    size_t segment_len = (size_t)
++        bx_pc_system.lucid_input_spans[index].len;
++
++    // Each guest entry must describe bytes from exactly one physical page.
++    if (!segment_len || (segment_addr & 0xfff) + segment_len > 0x1000) {
++      delete [] spans;
++      BX_PANIC(("Lucid input segment crosses a guest physical page"));
++    }
++
++    // Check the sum before adding so a corrupt snapshot cannot wrap it.
++    if (total_size > layout_len ||
++        segment_len > layout_len - total_size) {
++      delete [] spans;
++      BX_PANIC(("Lucid input segments exceed the advertised capacity"));
++    }
++
++    bx_hostpageaddr_t span_host = getHostMemAddr(segment_addr, BX_WRITE);
++
++    if (!span_host) {
++      delete [] spans;
++      BX_PANIC(("Lucid input page has no writable host mapping"));
++    }
++
++    spans[index].addr = (Bit8u *) span_host;
++    spans[index].len = segment_len;
++    total_size += segment_len;
++  }
++
++  if (total_size != layout_len) {
++    delete [] spans;
++    BX_PANIC(("Lucid input segments do not cover the advertised capacity"));
++  }
++
++  // Lucid copies this short vector into its own context before snapshotting.
++  g_lucid_register_input(
++      g_lucid_ctx,
++      spans,
++      segment_count,
++      layout_len);
++  delete [] spans;
++}
++
++#endif
++
+ void BX_CPU_C::cpu_loop(void)
+ {
+ #if BX_SUPPORT_HANDLERS_CHAINING_SPEEDUPS
+@@ -70,6 +134,8 @@ void BX_CPU_C::cpu_loop(void)
+
+   // Keep track of the timeout threshold of instructions
+   size_t icount_timeout = g_lucid_ctx->icount_timeout;
++  // Register the saved guest input layout before Lucid saves host state.
++  lucid_register_guest_input();
+   lucid_take_snapshot();
+ #endif
+
+--- bochs/cpu/cpu.h
++++ bochs/cpu/cpu.h
+@@ -4556,6 +4556,11 @@ public: // for now...
+
+   BX_SMF bx_hostpageaddr_t getHostMemAddr(bx_phy_address addr, unsigned rw);
+
++#if BX_LUCID
++  // Translate the guest's saved input description and register it with Lucid.
++  BX_SMF void lucid_register_guest_input(void);
++#endif
++
+   // linear address for translate_linear expected to be canonical !
+   BX_SMF bx_phy_address translate_linear(bx_TLB_entry *entry, bx_address laddr, unsigned user, unsigned rw);
+   BX_SMF bx_phy_address translate_linear_legacy(bx_address laddr, Bit32u &lpf_mask, unsigned user, unsigned rw);
+--- bochs/cpu/data_xfer16.cc
++++ bochs/cpu/data_xfer16.cc
+@@ -22,6 +22,7 @@
+ #define NEED_CPU_REG_SHORTCUTS 1
+ #include "bochs.h"
+ #include "cpu.h"
++#include "pc_system.h"
+ #include "gui/siminterface.h"
+ #define LOG_THIS BX_CPU_THIS_PTR
+
+@@ -237,6 +238,56 @@ void BX_CPP_AttrRegparmN(1) BX_CPU_C::XCHG_EwGwR(bxInstruction_c *i)
+   BX_WRITE_16BIT_REG(i->dst(), op2_16);
+
+ #if BX_SNAPSHOT
++  // The guest uses `xchgw %r10w, %r10w` once before taking its snapshot.
++  // R8 carries the virtual address of [u64 length][input bytes], while R9
++  // carries the complete layout length.  Resolve the virtual pages now because
++  // the GUI build has the live guest page tables available.
++  if ((i->src() == i->dst()) && (i->src() == 10)) {
++    bx_address linear = (bx_address)
++        BX_READ_64BIT_REG(BX_64BIT_REG_R8);
++    Bit64u layout_len = BX_READ_64BIT_REG(BX_64BIT_REG_R9);
++
++    // Eight bytes hold the logical input length.  The remaining bytes hold
++    // the fuzzcase.  Keep the fixed snapshot record bounded.  An ordinary
++    // guest may also execute this harmless self-XCHG, so unrelated register
++    // contents must leave it behaving exactly like a normal no-op.
++    if (layout_len < sizeof(Bit64u) ||
++        layout_len > BX_CONST64(0x1000000) + sizeof(Bit64u) ||
++        bx_pc_system.lucid_input_span_count != 0)
++      BX_NEXT_INSTR(i);
++
++    Bit64u remaining = layout_len;
++    while (remaining != 0) {
++      if (bx_pc_system.lucid_input_span_count >= LUCID_MAX_INPUT_SPANS)
++        BX_PANIC(("Lucid input layout has too many physical spans"));
++
++      bx_phy_address physical = 0;
++      if (!dbg_xlate_linear2phy(linear, &physical))
++        BX_PANIC(("Lucid input virtual address is not mapped"));
++
++      // A translation is valid only until the end of its current virtual
++      // page.  Record that exact piece before walking the next page.
++      Bit64u page_len = 0x1000 - (linear & 0xfff);
++      if (page_len > remaining)
++        page_len = remaining;
++
++      unsigned index = bx_pc_system.lucid_input_span_count++;
++      bx_pc_system.lucid_input_spans[index].phys_addr = physical;
++      bx_pc_system.lucid_input_spans[index].len = page_len;
++
++      if (linear + page_len < linear)
++        BX_PANIC(("Lucid input virtual address wrapped"));
++
++      linear += page_len;
++      remaining -= page_len;
++    }
++
++    bx_pc_system.lucid_input_layout_len = layout_len;
++    printf("Registered Lucid input layout: %u physical spans, %llu bytes\n",
++        bx_pc_system.lucid_input_span_count,
++        (unsigned long long) layout_len);
++  }
++
+   // Check for take snapshot instruction `xchg dx, dx`
+   if ((i->src() == i->dst()) && (i->src() == 2)) {
+     BX_COMMIT_INSTRUCTION(i);
+@@ -281,7 +332,7 @@ void BX_CPP_AttrRegparmN(1) BX_CPU_C::XCHG_EwGwR(bxInstruction_c *i)
+         break;
+
+       // These are IJON tag handlers
+-      case 0: operation = 0; break; // SET
++      case 11: operation = 0; break; // SET
+       case 1: operation = 1; break; // MAX
+       case 5: operation = 2; break; // INC
+       case 6: operation = 3; break; // STATE
+--- bochs/main.cc
++++ bochs/main.cc
+@@ -1175,6 +1175,9 @@ int bx_begin_simulation(int argc, char *argv[])
+       // Snapshot the complete machine once before the deterministic,
+       // single-host-thread SMP scheduler begins executing fuzz input.
+       g_lucid_ctx->smp_icount = 0;
++      // The input layout belongs to machine memory, not to a virtual CPU.
++      // CPU 0 merely supplies Bochs' existing physical-memory lookup helper.
++      BX_CPU(0)->lucid_register_guest_input();
+       lucid_take_snapshot();
+ #endif
+
+--- bochs/pc_system.cc
++++ bochs/pc_system.cc
+@@ -69,6 +69,14 @@ void bx_pc_system_c::initialize(Bit32u ips)
+   HRQ = 0;
+   kill_bochs_request = 0;
+
++#if BX_SNAPSHOT || BX_LUCID
++  // Snapshot restore replaces these zeroes with the input layout registered
++  // by the guest before the snapshot was taken.
++  lucid_input_span_count = 0;
++  lucid_input_layout_len = 0;
++  memset(lucid_input_spans, 0, sizeof(lucid_input_spans));
++#endif
++
+   // parameter 'ips' is the processor speed in Instructions-Per-Second
+   m_ips = double(ips) / 1000000.0L;
+
+@@ -231,6 +239,15 @@ void bx_pc_system_c::register_state(void)
+   BXRS_DEC_PARAM_SIMPLE(list, usecSinceLast);
+   BXRS_PARAM_BOOL(list, HRQ, HRQ);
+
++#if BX_SNAPSHOT || BX_LUCID
++  // Physical guest addresses survive a snapshot.  Host pointers do not, so
++  // the fuzzing build resolves these spans after it restores the machine.
++  BXRS_DEC_PARAM_SIMPLE(list, lucid_input_span_count);
++  BXRS_DEC_PARAM_SIMPLE(list, lucid_input_layout_len);
++  new bx_shadow_data_c(list, "lucid_input_spans",
++      (Bit8u *) lucid_input_spans, sizeof(lucid_input_spans));
++#endif
++
+   bx_list_c *timers = new bx_list_c(list, "timer");
+   for (unsigned i = 0; i < numTimers; i++) {
+     char name[4];
+--- bochs/pc_system.h
++++ bochs/pc_system.h
+@@ -28,6 +28,20 @@
+
+ typedef void (*bx_timer_handler_t)(void *);
+
++#if BX_SNAPSHOT || BX_LUCID
++// Lucid accepts inputs up to 16 MiB.  A buffer of that size can touch 4098
++// virtual pages when its first byte is not page aligned.
++#define LUCID_MAX_INPUT_SPANS 4098
++
++// The snapshot stores guest physical addresses, never host pointers.  Host
++// pointers are process-local and are resolved after the fuzzing Bochs loads
++// the snapshot.
++struct lucid_input_snapshot_span_t {
++  Bit64u phys_addr;
++  Bit64u len;
++};
++#endif
++
+ BOCHSAPI extern class bx_pc_system_c bx_pc_system;
+
+ #ifdef PROVIDE_M_IPS
+@@ -167,6 +181,14 @@ public:
+
+   volatile bool kill_bochs_request;
+
++#if BX_SNAPSHOT || BX_LUCID
++  // Input registration describes machine memory, not state owned by whichever
++  // virtual CPU happened to execute the registration instruction.
++  Bit32u lucid_input_span_count;
++  Bit64u lucid_input_layout_len;
++  lucid_input_snapshot_span_t lucid_input_spans[LUCID_MAX_INPUT_SPANS];
++#endif
++
+   void set_HRQ(bool val);  // set the Hold ReQuest line
+
+   void raise_INTR(void);

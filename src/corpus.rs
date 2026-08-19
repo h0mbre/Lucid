@@ -186,6 +186,10 @@ impl Corpus {
             }
         }
 
+        // Seed inputs are already permanent corpus members. Remember their
+        // hashes so rediscovering an unchanged seed cannot add it a second time.
+        let input_hashes = inputs.iter().map(|input| Self::hash_input(input)).collect();
+
         // Use the full interval until the worker initializes its post-fork,
         // independently jittered sync schedule.
         let next_sync = Instant::now() + Duration::from_secs(config.sync_interval as u64);
@@ -195,7 +199,7 @@ impl Corpus {
             crash_dir,
             stats_dir,
             inputs,
-            input_hashes: HashSet::new(),
+            input_hashes,
             output_limit: config.output_limit,
             id: 0,
             next_sync,
@@ -326,10 +330,16 @@ impl Corpus {
             CorpusSaveReason::Permanent => {}
         }
 
+        // A worker can rediscover one of its seeds or one of its own findings.
+        // Neither case should consume disk budget or create another corpus row.
+        if self.input_hashes.contains(&hash) {
+            return hash;
+        }
+
         // Create the file path for the new input
         let file_path = std::path::Path::new(&self.inputs_dir).join(format!("{:016X}.input", hash));
         if file_path.exists() {
-            finding_warn!(self.id, "Skipping input save, {:016X} already exists", hash);
+            return hash;
         }
 
         // Make sure we have enough space
@@ -338,21 +348,35 @@ impl Corpus {
             return hash;
         }
 
-        // Attempt to save the input to disk
-        match std::fs::write(file_path, input) {
-            Ok(_) => {
-                self.output_limit -= input.len();
-                // Copy the input bytes over in memory only if successfully saved to disk
-                self.inputs.push(input.clone());
-                self.corpus_size += input.len();
-
-                // Add the hash to the database
-                self.input_hashes.insert(hash);
-            }
+        // Create the file exclusively. Multiple fuzzers share this directory,
+        // so another worker can publish the same input after the check above.
+        let mut file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&file_path)
+        {
+            Ok(file) => file,
             Err(e) => {
-                finding_warn!(self.id, "Unable to save new input to disk, error: {}", e);
+                // Another worker winning the create race is normal.
+                if e.kind() != std::io::ErrorKind::AlreadyExists {
+                    finding_warn!(self.id, "Unable to save new input to disk, error: {}", e);
+                }
+                return hash;
             }
+        };
+
+        if let Err(e) = file.write_all(input) {
+            // This worker created the file, so it also owns cleanup if the
+            // write failed before the input could be published.
+            let _ = std::fs::remove_file(&file_path);
+            finding_warn!(self.id, "Unable to save new input to disk, error: {}", e);
+            return hash;
         }
+
+        self.output_limit -= input.len();
+        self.inputs.push(input.clone());
+        self.corpus_size += input.len();
+        self.input_hashes.insert(hash);
 
         hash
     }

@@ -23,7 +23,7 @@ mod stats;
 mod syscall;
 
 use config::parse_args;
-use context::{dry_run, fuzz_loop, register_input, start_bochs, LucidContext};
+use context::{dry_run, fuzz_loop, start_bochs, LucidContext};
 use corpus::Corpus;
 use err::LucidErr;
 use loader::load_bochs;
@@ -134,31 +134,20 @@ fn main() {
         fatal!(err);
     }
 
-    // Register input dimensions
-    prompt!("Registering fuzzing input dimensions...");
-    register_input(&mut lucid_context, config.input_signature).unwrap_or_else(|error| {
-        fatal!(error);
-    });
+    // Bochs translates the guest's registered physical ranges immediately
+    // before it asks Lucid to take the snapshot, make sure that happened
+    if lucid_context.input_spans.is_empty() {
+        fatal!(LucidErr::from(
+            "Bochs did not register the guest fuzzing input"
+        ));
+    }
 
     // Display input dimensions
-    prompt!("Input size address @ 0x{:X}", lucid_context.input_size_addr);
+    prompt!("Input layout spans: {}", lucid_context.input_spans.len());
     prompt!(
-        "Input buffer address @ 0x{:X}",
-        lucid_context.input_buf_addr
+        "Input buffer capacity: 0x{:X}",
+        lucid_context.input_capacity
     );
-
-    // Try to reach into the Bochs memory and pull out these values for
-    // confirmation
-    let input_size = unsafe { *(lucid_context.input_size_addr as *const usize) };
-
-    let display_len = std::cmp::min(input_size, 8);
-
-    let input_buf: &[u8] = unsafe {
-        std::slice::from_raw_parts(lucid_context.input_buf_addr as *const u8, display_len)
-    };
-
-    prompt!("Input size in snapshot: 0x{:X}", input_size);
-    prompt!("Input buffer in snapshot: {:X?}...", input_buf);
 
     // Dry-run if we have seeds and aren't skipping
     if config.dryrun && lucid_context.corpus.num_inputs() > 0 {

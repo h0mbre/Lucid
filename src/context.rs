@@ -8,6 +8,7 @@
 //! Copyright (c) 2026 h0mbre
 
 use std::arch::{asm, global_asm};
+use std::mem::size_of;
 
 use crate::config::Config;
 use crate::corpus::{Corpus, CorpusSaveReason};
@@ -37,6 +38,18 @@ const SCRATCH_STACK_LEN: usize = 0x21000;
 
 /// Maximum number of guest CPUs supported by Lucid's external Bochs cache.
 pub const MAX_VCPUS: usize = 4;
+
+/// One host-memory destination for part of the guest fuzzing buffer
+///
+/// Bochs builds these spans in guest-address order. Lucid deliberately keeps
+/// that order so a fuzzcase remains one flat byte string even when the guest
+/// pages are scattered across Bochs' host mappings
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct LucidInputSpan {
+    pub addr: usize,
+    pub len: usize,
+}
 
 /// External Bochs instruction-cache arena:
 ///
@@ -282,6 +295,7 @@ pub struct LucidContext {
     pub new_dirty_page: i32,          // Flag for indicating we found a new dirty page
     lucid_report_edge_pcs: usize,     // Address of lucid_report_edge_pcs()
     lucid_report_ijon: usize,         // Address of lucid_report_ijon()
+    lucid_register_input: usize,      // Address of lucid_register_input()
     pub(crate) icache_addr: usize,    // Address of Bochs' external instruction cache
     icache_size: usize,               // Size of the external instruction cache mapping
     vcpu_count: usize,                // Configured guest CPU count reported by Bochs
@@ -308,8 +322,8 @@ pub struct LucidContext {
     pub snapshot: Snapshot,     // The Bochs snapshot
     pub stats: Stats,           // Fuzzing stats
     pub coverage: CoverageMap,  // The coverage map
-    pub input_size_addr: usize, // The memory address of the input size variable
-    pub input_buf_addr: usize,  // The memory address of the input buf variable
+    pub input_spans: Vec<LucidInputSpan>, // Ordered host spans for [length][input]
+    pub input_capacity: usize,  // Input bytes available after the length prefix
     pub mutator: Box<dyn Mutator>, // Mutator we're using
     pub redqueen: Redqueen,     // Redqueen state
     pub config: Config,         // Configuration based on user options
@@ -560,6 +574,7 @@ impl LucidContext {
             lucid_report_cmps: lucid_report_cmps as *const () as usize,
             lucid_report_edge_pcs: lucid_report_edge_pcs as *const () as usize,
             lucid_report_ijon: lucid_report_ijon as *const () as usize,
+            lucid_register_input: lucid_register_input as *const () as usize,
             icache_addr,
             icache_size: ICACHE_MAPPING_LEN,
             vcpu_count: 0,
@@ -590,8 +605,8 @@ impl LucidContext {
             coverage_history_map_addr,
             coverage_map_size,
             trace_hash: 0,
-            input_size_addr: 0,
-            input_buf_addr: 0,
+            input_spans: Vec::new(),
+            input_capacity: 0,
             mutator,
             crash: 0,
             timeout: 0,
@@ -1042,60 +1057,101 @@ pub fn resume_bochs(context: &mut LucidContext) {
     }
 }
 
-/// Search Bochs memory, which includes the guest RAM, for the input signature.
-/// The input signature is 128-bits and it tells us where we're going to be
-/// inserting both the fuzz-input and also the fuzz-input-length. This will
-/// fail if we find the signature in more than one place or not at all.
-pub fn register_input(context: &mut LucidContext, signature: String) -> Result<(), LucidErr> {
-    // If it starts with 0x, trim that off
-    let sig = if signature.starts_with("0x") || signature.starts_with("0X") {
-        &signature[2..]
-    } else {
-        &signature
-    };
-
-    // Make sure its the right length for 128 bit value
-    if sig.len() != 32 {
-        return Err(LucidErr::from(&format!(
-            "Invalid signature string length {}, should be 32",
-            sig.len()
-        )));
+/// Receive the fuzz-input layout that Bochs translated from guest physical
+/// memory immediately before taking the snapshot
+///
+/// The span array is temporary Bochs memory, so copy it now. The array order is
+/// part of the ABI: the first input bytes go to span zero, then span one, and so
+/// on. This lets Lucid remain responsible for every later fuzzcase insertion
+/// without assuming that guest RAM is contiguous in the host process
+pub extern "C" fn lucid_register_input(
+    contextp: *mut LucidContext,
+    spans: *const LucidInputSpan,
+    span_count: usize,
+    layout_len: usize,
+) {
+    // Make sure the pointer we got is valid
+    if !LucidContext::is_valid(contextp) {
+        mega_panic!("Invalid context pointer passed to lucid_register_input\n");
     }
 
-    // Try to convert the hex digits into bytes
-    let mut sig_bytes: [u8; 16] = [0; 16];
-    for i in 0..16 {
-        let curr_byte = u8::from_str_radix(&sig[i * 2..i * 2 + 2], 16);
-        if curr_byte.is_err() {
-            return Err(LucidErr::from("Invalid non-hex value in signature"));
+    let context = unsafe { &mut *contextp };
+
+    // Ensure this is empty so we don't register twice or more somehow
+    if !context.input_spans.is_empty() {
+        mega_panic!("Fuzzing input was registered twice\n");
+    }
+
+    // Reject empty descriptions before making a Rust slice from a C pointer
+    if spans.is_null() || span_count == 0 || layout_len < size_of::<u64>() {
+        mega_panic!("Invalid fuzzing input dimensions\n");
+    }
+
+    // Calculate the span count based on page size
+    let mut maximum_spans = layout_len / PAGE_SIZE;
+
+    // Add two to cover partial head and tail pages that the input buffer may touch
+    maximum_spans += 2;
+
+    // Make sure we don't have a non-sensical value here
+    if span_count > maximum_spans {
+        mega_panic!("Invalid fuzzing input dimensions\n");
+    }
+
+    // Layout length includes the input size which is a u64, calculate
+    // the input buffer capacity
+    let input_capacity = layout_len - size_of::<u64>();
+
+    // Panic if the guest buffer is too small
+    if context.config.input_max_size > input_capacity {
+        mega_panic!("Guest fuzzing input is smaller than --input-max-size\n");
+    }
+
+    // Create a rust slice view of the input spans
+    let registered_spans = unsafe { core::slice::from_raw_parts(spans, span_count) };
+    let mut total_len = 0usize;
+
+    // Validate every destination and prove that the vector describes exactly
+    // the capacity reported by the harness
+    for span in registered_spans {
+        if span.addr == 0 || span.len == 0 {
+            mega_panic!("Invalid fuzzing input span\n");
         }
 
-        // Store byte
-        sig_bytes[i] = curr_byte.unwrap();
+        match total_len.checked_add(span.len) {
+            Some(new_total) => total_len = new_total,
+            None => mega_panic!("Fuzzing input span length overflow\n"),
+        };
     }
 
-    // Search for the byte pattern in the MMU
-    let candidates = context.mmu.search_memory(&sig_bytes);
+    // Need exact arithmetic here
+    if total_len != layout_len {
+        mega_panic!("Fuzzing input spans do not match capacity\n");
+    }
 
-    // Analyze search results
-    let sig_addr = match candidates.len() {
-        0 => return Err(LucidErr::from("Unable to find signature in memory")),
-        1 => candidates[0],
-        _ => return Err(LucidErr::from("Found input signature collision")),
-    };
+    // Copy the ordered vector because Bochs frees its temporary array as soon
+    // as this callback returns. Merge neighboring host ranges when Bochs has
+    // mapped consecutive guest pages consecutively in its own address space.
+    for span in registered_spans {
 
-    // Input looks like this in harness:
-    // - signature[16 bytes] [offset 0]
-    // - input size [8 bytes] [offset 0x10]
-    // - input [max input size] [offset 0x18]
+        // Grab previous span if there is one
+        if let Some(previous) = context.input_spans.last_mut() {
 
-    // Find location of input size
-    context.input_size_addr = sig_addr + 0x10;
+            // If the previous span + its length is the current span's beginning
+            // merge the two spans for a single memcpy() operation
+            if previous.addr.checked_add(previous.len) == Some(span.addr) {
+                match previous.len.checked_add(span.len) {
+                    Some(new_len) => previous.len = new_len,
+                    None => mega_panic!("Fuzzing input span length overflow\n"),
+                };
+                continue;
+            }
+        }
 
-    // Find location of input buffer
-    context.input_buf_addr = sig_addr + 0x18;
-
-    Ok(())
+        // Add the span to the context
+        context.input_spans.push(*span);
+    }
+    context.input_capacity = input_capacity;
 }
 
 /// Helper to update CPU time tracking in the Context->Stats
@@ -1142,24 +1198,95 @@ fn generate_input(context: &mut LucidContext) -> Result<(), LucidErr> {
     Ok(())
 }
 
-/// Insert a fuzzcase into the target by writing the input-buffer and then also
-/// updating the input-buffer-len in the Bochs guest memory
-#[inline]
-pub fn insert_fuzzcase(context: &mut LucidContext) {
-    // Update the size
-    unsafe {
-        let size_ptr = context.input_size_addr as *mut u64;
-        core::ptr::write(size_ptr, context.mutator.input_len() as u64);
+/// Spans are ordered and are just pairs of dst_ptr and lengths [dst, len]. We just
+/// need to iterate through them and find out where we start writing the input according
+/// to the `offset` passed in, and then write until we're out of bytes
+fn write_registered_input(
+    spans: &[LucidInputSpan],
+    layout_len: usize,
+    offset: usize,
+    bytes: &[u8],
+) -> Result<(), LucidErr> {
+    // Make sure we were given valid values
+    let end = match offset.checked_add(bytes.len()) {
+        Some(end) => end,
+        None => return Err(LucidErr::from("Registered input write overflow")),
+    };
+
+    // Make sure the write fits inside the fixed layout Bochs registered
+    if end > layout_len {
+        return Err(LucidErr::from("Registered input write is out of bounds"));
     }
 
-    // Insert the fuzzing input
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            context.mutator.input_ptr(),
-            context.input_buf_addr as *mut u8,
-            context.mutator.input_len(),
-        );
+    // Make sure we were passed actual bytes to write
+    if bytes.is_empty() {
+        return Ok(());
     }
+
+    // Track how many bytes of the registered layout we need to skip before
+    // writing and how many input bytes are left to write
+    let mut skip = offset;
+    let mut remaining = bytes;
+
+    // Walk the spans in the exact order Bochs registered them
+    for span in spans {
+        // Skip complete spans until we reach the requested write offset
+        if skip >= span.len {
+            skip -= span.len;
+            continue;
+        }
+
+        // Copy either all the remaining bytes or as many as this span holds
+        let copy_len = remaining.len().min(span.len - skip);
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                remaining.as_ptr(),
+                (span.addr as *mut u8).add(skip),
+                copy_len,
+            );
+        }
+
+        // Remove the bytes we just copied from the remaining input
+        remaining = &remaining[copy_len..];
+        if remaining.is_empty() {
+            return Ok(());
+        }
+
+        // Every later write begins at the start of its span
+        skip = 0;
+    }
+
+    Err(LucidErr::from("Registered input write was incomplete"))
+}
+
+/// Insert a fuzzcase into the target by writing the length prefix followed by
+/// the input bytes through the ordered host-memory spans Bochs registered.
+#[inline]
+pub fn insert_fuzzcase(context: &mut LucidContext) -> Result<(), LucidErr> {
+    // A mutator must never be able to write beyond the registered guest input.
+    if context.mutator.input_len() > context.input_capacity {
+        return Err(LucidErr::from(
+            "Mutator input is larger than the registered guest input",
+        ));
+    }
+
+    // The registered layout contains the size field followed by the input
+    let layout_len = size_of::<u64>() + context.input_capacity;
+
+    let input_len = (context.mutator.input_len() as u64).to_ne_bytes();
+    write_registered_input(&context.input_spans, layout_len, 0, &input_len)?;
+
+    let input = unsafe {
+        core::slice::from_raw_parts(context.mutator.input_ptr(), context.mutator.input_len())
+    };
+    write_registered_input(
+        &context.input_spans,
+        layout_len,
+        size_of::<u64>(),
+        input,
+    )?;
+
+    Ok(())
 }
 
 /// Run a fuzzcase by calling `resume_bochs` which will resume Bochs from its
@@ -1354,7 +1481,7 @@ pub fn fuzz_one(context: &mut LucidContext) -> Result<FuzzingResult, LucidErr> {
     context.new_code_coverage = false;
 
     // Insert the fuzzcase into the target
-    insert_fuzzcase(context);
+    insert_fuzzcase(context)?;
 
     // Run the fuzzcase through
     time_func!(context, batch_target, run_fuzzcase(context))?;
