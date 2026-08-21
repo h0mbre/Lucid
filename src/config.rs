@@ -56,88 +56,126 @@ pub struct Config {
 /// configure the LucidContext in most cases for the duration of the campaign
 pub fn parse_args() -> Result<Config, LucidErr> {
     let matches = Command::new("lucid")
-    .version("0.0.1")
-    .author("h0mbre")
-    .about("x86_64 Full-System Snapshot Fuzzer Powered by Bochs")
-    .arg(Arg::new("input-max-size")
-        .long("input-max-size")
-        .value_name("SIZE")
-        .help("Sets the maximum input size for mutator to use (usize)")
-        .required(true))
-    .arg(Arg::new("coverage-map-size")
-        .long("coverage-map-size")
-        .value_name("SIZE")
-        .help("Number of edge-pair coverage map slots (power of 2; 65536 default)"))
-    .arg(Arg::new("seeds-dir")
-        .long("seeds-dir")
-        .value_name("SEEDS_DIR")
-        .help("Directory containing seed inputs (optional)"))
-    .arg(Arg::new("output-dir")
-        .long("output-dir")
-        .value_name("OUTPUT_DIR")
-        .help("Directory to store fuzzer output (inputs, crashes, etc)")
-        .required(true))
-    .arg(Arg::new("verbose")
-        .long("verbose")
-        .help("Enables printing of Bochs stdout and stderr")
-        .action(ArgAction::SetTrue))
-    .arg(Arg::new("dryrun")
-        .long("dryrun")
-        .help("Replay seed inputs before fuzzing to initialize coverage (slow)")
-        .action(ArgAction::SetTrue))
-    .arg(Arg::new("mutator-seed")
-        .long("mutator-seed")
-        .value_name("SEED")
-        .help("Optional seed value provided to mutator pRNG (usize)"))
-    .arg(Arg::new("output-limit")
-        .long("output-limit")
-        .value_name("LIMIT")
-        .help("Number of megabytes available for output (inputs, crashes, etc; 1000 default)"))
-    .arg(Arg::new("fuzzers")
-        .long("fuzzers")
-        .value_name("COUNT")
-        .help("Number of fuzzers we spawn (1 default)"))
-    .arg(Arg::new("stat-interval")
-        .long("stat-interval")
-        .value_name("INTERVAL")
-        .help("Number of seconds between stat reports (2 default)"))
-    .arg(Arg::new("sync-interval")
-        .long("sync-interval")
-        .value_name("INTERVAL")
-        .help("Number of seconds between corpus syncs (1800 default)"))
-    .arg(Arg::new("icount-timeout")
-        .long("icount-timeout")
-        .value_name("INSTRUCTION_COUNT")
-        .help("Execution timeout in millions of guest instructions (250 default)"))
-    .arg(Arg::new("bochs-image")
-        .long("bochs-image")
-        .value_name("IMAGE")
-        .help("File path for the Bochs binary compatible with Lucid")
-        .required(true))
-    .arg(Arg::new("bochs-config")
-        .long("bochs-config")
-        .value_name("BOCHS_CONFIG")
-        .help("File path for the Bochs runtime config file (bochsrc.txt)")
-        .required(true))
-    .arg(Arg::new("bochs-snapshot-dir")
-        .long("bochs-snapshot-dir")
-        .value_name("BOCHS_SNAPSHOT_DIR")
-        .help("File path for the Bochs snapshot dir created with GUI Bochs")
-        .required(true))
-    .arg(Arg::new("mutator")
-        .long("mutator")
-        .value_name("MUTATOR")
-        .help("Mutator to use: 'toy' (default) or 'netlink'"))
-    .arg(Arg::new("redqueen")
-        .long("redqueen")
-        .help("Enable Redqueen comparison-guided input processing")
-        .action(ArgAction::SetTrue))
-    .arg(Arg::new("colorize")
-        .long("colorize")
-        .help("Enable slower Redqueen operand colorization (requires --redqueen)")
-        .requires("redqueen")
-        .action(ArgAction::SetTrue))
-    .get_matches();
+        .version("0.0.1")
+        .author("h0mbre")
+        .about("x86_64 Full-System Snapshot Fuzzer Powered by Bochs")
+        .arg(
+            Arg::new("input-max-size")
+                .long("input-max-size")
+                .value_name("SIZE")
+                .help("Sets the maximum input size for mutator to use (usize)")
+                .required(true),
+        )
+        .arg(
+            Arg::new("coverage-map-size")
+                .long("coverage-map-size")
+                .value_name("SIZE")
+                .help("Number of edge-pair coverage map slots (power of 2; 65536 default)"),
+        )
+        .arg(
+            Arg::new("seeds-dir")
+                .long("seeds-dir")
+                .value_name("SEEDS_DIR")
+                .help("Directory containing seed inputs (optional)"),
+        )
+        .arg(
+            Arg::new("output-dir")
+                .long("output-dir")
+                .value_name("OUTPUT_DIR")
+                .help("Directory to store fuzzer output (inputs, crashes, etc)")
+                .required(true),
+        )
+        .arg(
+            Arg::new("verbose")
+                .long("verbose")
+                .help("Enables printing of Bochs stdout and stderr")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("dryrun")
+                .long("dryrun")
+                .help("Replay seed inputs before fuzzing to initialize coverage (slow)")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("mutator-seed")
+                .long("mutator-seed")
+                .value_name("SEED")
+                .help("Optional seed value provided to mutator pRNG (usize)"),
+        )
+        .arg(
+            Arg::new("output-limit")
+                .long("output-limit")
+                .value_name("LIMIT")
+                .help(
+                    "Number of megabytes available for output (inputs, crashes, etc; 1000 default)",
+                ),
+        )
+        .arg(
+            Arg::new("fuzzers")
+                .long("fuzzers")
+                .value_name("COUNT")
+                .help("Number of fuzzers we spawn (1 default)"),
+        )
+        .arg(
+            Arg::new("stat-interval")
+                .long("stat-interval")
+                .value_name("INTERVAL")
+                .help("Number of seconds between stat reports (2 default)"),
+        )
+        .arg(
+            Arg::new("sync-interval")
+                .long("sync-interval")
+                .value_name("INTERVAL")
+                .help("Number of seconds between corpus syncs (1800 default)"),
+        )
+        .arg(
+            Arg::new("icount-timeout")
+                .long("icount-timeout")
+                .value_name("INSTRUCTION_COUNT")
+                .help("Execution timeout in millions of guest instructions (250 default)"),
+        )
+        .arg(
+            Arg::new("bochs-image")
+                .long("bochs-image")
+                .value_name("IMAGE")
+                .help("File path for the Bochs binary compatible with Lucid")
+                .required(true),
+        )
+        .arg(
+            Arg::new("bochs-config")
+                .long("bochs-config")
+                .value_name("BOCHS_CONFIG")
+                .help("File path for the Bochs runtime config file (bochsrc.txt)")
+                .required(true),
+        )
+        .arg(
+            Arg::new("bochs-snapshot-dir")
+                .long("bochs-snapshot-dir")
+                .value_name("BOCHS_SNAPSHOT_DIR")
+                .help("File path for the Bochs snapshot dir created with GUI Bochs")
+                .required(true),
+        )
+        .arg(
+            Arg::new("mutator")
+                .long("mutator")
+                .value_name("MUTATOR")
+                .help("Mutator to use: 'toy' (default) or 'netlink'"),
+        )
+        .arg(
+            Arg::new("redqueen")
+                .long("redqueen")
+                .help("Enable Redqueen comparison-guided input processing")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("colorize")
+                .long("colorize")
+                .help("Enable slower Redqueen operand colorization (requires --redqueen)")
+                .requires("redqueen")
+                .action(ArgAction::SetTrue),
+        )
+        .get_matches();
 
     // Convert the string to a usize
     let max_size_str = matches.get_one::<String>("input-max-size").unwrap();

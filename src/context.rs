@@ -1136,10 +1136,8 @@ pub extern "C" fn lucid_register_input(
     // as this callback returns. Merge neighboring host ranges when Bochs has
     // mapped consecutive guest pages consecutively in its own address space.
     for span in registered_spans {
-
         // Grab previous span if there is one
         if let Some(previous) = context.input_spans.last_mut() {
-
             // If the previous span + its length is the current span's beginning
             // merge the two spans for a single memcpy() operation
             if previous.addr.checked_add(previous.len) == Some(span.addr) {
@@ -1282,12 +1280,7 @@ pub fn insert_fuzzcase(context: &mut LucidContext) -> Result<(), LucidErr> {
     let input = unsafe {
         core::slice::from_raw_parts(context.mutator.input_ptr(), context.mutator.input_len())
     };
-    write_registered_input(
-        &context.input_spans,
-        layout_len,
-        size_of::<u64>(),
-        input,
-    )?;
+    write_registered_input(&context.input_spans, layout_len, size_of::<u64>(), input)?;
 
     Ok(())
 }
