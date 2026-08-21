@@ -2030,3 +2030,410 @@
    void set_HRQ(bool val);  // set the Hold ReQuest line
 
    void raise_INTR(void);
+
+--- bochs/cpu/cpu.cc
++++ bochs/cpu/cpu.cc
+@@ -195,6 +195,7 @@
+       if ((BX_CPU_THIS_PTR icount - icount_base)>= icount_timeout) {
+         g_lucid_ctx->timeout = 1;
+         BX_INSTR_EDGE_PC_FLUSH();
++        BX_INSTR_TEMPORAL_EVENT_FLUSH();
+         lucid_postfuzz_hook();
+       }
+ #endif /* BX_LUCID && !BX_SUPPORT_SMP */
+--- bochs/cpu/data_xfer16.cc
++++ bochs/cpu/data_xfer16.cc
+@@ -23,6 +23,7 @@
+ #include "bochs.h"
+ #include "cpu.h"
+ #include "pc_system.h"
++#include "lucid_scheduler.h"
+ #include "gui/siminterface.h"
+ #define LOG_THIS BX_CPU_THIS_PTR
+
+@@ -310,15 +311,14 @@
+ #endif
+
+ #if BX_LUCID
+-  // Check for special NOP
++  // Check for a special NOP
+   if (i->src() == i->dst()) {
+-    unsigned operation = 5;
+-
+     switch (i->src()) {
+       // These are Lucid lifecycle handlers
+       case 3: // Perform a snapshot reset
+         if (g_lucid_ctx) {
+           BX_INSTR_EDGE_PC_FLUSH();
++          BX_INSTR_TEMPORAL_EVENT_FLUSH();
+           lucid_postfuzz_hook();
+         }
+         break;
+@@ -327,27 +327,65 @@
+         if (g_lucid_ctx) {
+           g_lucid_ctx->crash = 1;
+           BX_INSTR_EDGE_PC_FLUSH();
++          BX_INSTR_TEMPORAL_EVENT_FLUSH();
+           lucid_postfuzz_hook();
+         }
+         break;
+
+-      // These are IJON tag handlers
+-      case 11: operation = 0; break; // SET
+-      case 1: operation = 1; break; // MAX
+-      case 5: operation = 2; break; // INC
+-      case 6: operation = 3; break; // STATE
+-      case 7: operation = 4; break; // EVENT
+-      default: break;
+-    }
++      // Forward the generic IJON ABI to Lucid.  The guest passes the
++      // operation in R8, the tag in R9, and the value in R10.  Bochs appends
++      // the current vCPU and the event's position in the machine-wide
++      // instruction timeline.
++      case 11:
++        if (g_lucid_ctx) {
++          size_t current_icount = (size_t) get_icount();
++          size_t quantum_base = g_lucid_ctx->smp_quantum_icount_base;
++
++          // The per-vCPU instruction count can only move forward while this
++          // vCPU owns the deterministic SMP scheduler.
++          if (current_icount < quantum_base) {
++            BX_PANIC(("Lucid SMP instruction count moved backwards"));
++          }
++
++          size_t operation =
++              (size_t) BX_READ_64BIT_REG(BX_64BIT_REG_R8);
++          uint64_t tag =
++              (uint64_t) BX_READ_64BIT_REG(BX_64BIT_REG_R9);
++          uint64_t value =
++              (uint64_t) BX_READ_64BIT_REG(BX_64BIT_REG_R10);
++          size_t instruction_count =
++              g_lucid_ctx->smp_icount + current_icount - quantum_base;
++
++          // Temporal events carry emulator-owned metadata and are buffered.
++          // All other generic IJON operations retain their scalar callback.
++          if (operation == 5) {
++            BX_INSTR_TEMPORAL_EVENT(
++                (size_t) RIP, tag, value, (size_t) BX_CPU_ID,
++                instruction_count);
++          }
++          else {
++            g_lucid_report_ijon(
++                g_lucid_ctx, operation, tag, value, (size_t) RIP,
++                (size_t) BX_CPU_ID, instruction_count);
++          }
++        }
++        break;
+
+-    // Report an IJON operation using R8 as the tag and R9 as the value
+-    if (operation < 5 && g_lucid_ctx) {
+-      g_lucid_report_ijon(
+-          g_lucid_ctx,
+-          operation,
+-          (uint64_t) BX_READ_64BIT_REG(BX_64BIT_REG_R8),
+-          (uint64_t) BX_READ_64BIT_REG(BX_64BIT_REG_R9),
+-          (size_t) RIP);
++#if BX_LUCID && BX_SUPPORT_SMP
++      // Generic per-execution scheduler-seed ABI.  R8 contains the seed; the
++      // guest intentionally uses a self-XCHG so non-Lucid Bochs treats the
++      // instruction as an ordinary no-op.
++      case 12:
++        if (g_lucid_ctx) {
++          bx_lucid_set_scheduler_seed(
++              BX_READ_64BIT_REG(BX_64BIT_REG_R8));
++          // The next dispatch must begin with the selected trace quantum.
++          BX_CPU_THIS_PTR async_event |= BX_ASYNC_EVENT_STOP_TRACE;
++        }
++        break;
++#endif
++
++      default: break;
+     }
+   }
+ #endif
+--- bochs/cpu/icache.cc
++++ bochs/cpu/icache.cc
+@@ -24,6 +24,7 @@
+ #define NEED_CPU_REG_SHORTCUTS 1
+ #include "bochs.h"
+ #include "cpu.h"
++#include "lucid_scheduler.h"
+ #define LOG_THIS BX_CPU_THIS_PTR
+
+ #include "gui/siminterface.h"
+@@ -107,11 +108,16 @@
+ #endif
+
+   // Don't allow traces longer than cpu_loop can execute
+-  static unsigned quantum =
++  static unsigned default_quantum =
+ #if BX_SUPPORT_SMP
+     (BX_SMP_PROCESSORS > 1) ? SIM->get_param_num(BXPN_SMP_QUANTUM)->get() :
+ #endif
+     BX_MAX_TRACE_LENGTH;
++  unsigned quantum = default_quantum;
++#if BX_LUCID && BX_SUPPORT_SMP
++  if (bx_lucid_scheduler_state != 0)
++    quantum = bx_lucid_scheduler_quantum;
++#endif
+
+   for (unsigned n=0;n < quantum;n++)
+   {
+--- bochs/cpu/icache.h
++++ bochs/cpu/icache.h
+@@ -24,6 +24,10 @@
+ #ifndef BX_ICACHE_H
+ #define BX_ICACHE_H
+
++#if BX_LUCID && BX_SUPPORT_SMP
++extern Bit64u bx_lucid_scheduler_state;
++#endif
++
+ extern void handleSMC(bx_phy_address pAddr, Bit32u mask);
+
+ class bxPageWriteStampTable
+@@ -276,6 +280,16 @@
+     if (e->pAddr != pAddr)
+        return NULL;
+
++#if BX_LUCID && BX_SUPPORT_SMP
++    // A trace's length is fixed when it is decoded.  Reject the selected
++    // vCPU's current cached trace while scheduler perturbation is active so
++    // the fresh decode observes this dispatch's newly selected quantum.
++    if (bx_lucid_scheduler_state != 0) {
++      e->pAddr = BX_ICACHE_INVALID_PHY_ADDRESS;
++      return NULL;
++    }
++#endif
++
+     return e;
+   }
+
+--- bochs/instrument/stubs/instrument.cc
++++ bochs/instrument/stubs/instrument.cc
+@@ -69,10 +69,26 @@
+
+ #if BX_LUCID
+ #define EDGE_PC_BUFFER_CAPACITY (1U << 16)
++#define TEMPORAL_EVENT_BUFFER_CAPACITY (1U << 10)
+
+ static uint64_t edge_pc_buffer[EDGE_PC_BUFFER_CAPACITY];
+ static size_t edge_pc_buffer_index = 0;
+
++// This layout mirrors TemporalEvent in src/ijon.rs.  Bochs owns the RIP,
++// vCPU, and instruction-count fields because the guest cannot report them
++// faithfully.  The guest supplies only the stable site and per-run object ID.
++struct lucid_temporal_event {
++    size_t rip;
++    uint64_t site_id;
++    uint64_t object_id;
++    size_t cpu_id;
++    size_t instruction_count;
++};
++
++static struct lucid_temporal_event
++    temporal_event_buffer[TEMPORAL_EVENT_BUFFER_CAPACITY];
++static size_t temporal_event_buffer_index = 0;
++
+ void bx_instr_edge_pc_flush(void) {
+     if (edge_pc_buffer_index == 0) {
+         return;
+@@ -82,6 +98,40 @@
+     edge_pc_buffer_index = 0;
+ }
+
++void bx_instr_temporal_event_flush(void) {
++    if (temporal_event_buffer_index == 0) {
++        return;
++    }
++
++    // Operation 5 uses the generic IJON callback as a batch transport.  The
++    // pointer and count occupy tag and value; scalar event fields are unused.
++    g_lucid_report_ijon(
++        g_lucid_ctx,
++        5,
++        (uint64_t)(uintptr_t) temporal_event_buffer,
++        (uint64_t) temporal_event_buffer_index,
++        0,
++        0,
++        0);
++    temporal_event_buffer_index = 0;
++}
++
++void bx_instr_temporal_event(size_t rip, uint64_t site_id,
++        uint64_t object_id, size_t cpu_id, size_t instruction_count) {
++    struct lucid_temporal_event *event =
++        &temporal_event_buffer[temporal_event_buffer_index++];
++
++    event->rip = rip;
++    event->site_id = site_id;
++    event->object_id = object_id;
++    event->cpu_id = cpu_id;
++    event->instruction_count = instruction_count;
++
++    if (temporal_event_buffer_index == TEMPORAL_EVENT_BUFFER_CAPACITY) {
++        bx_instr_temporal_event_flush();
++    }
++}
++
+ static inline void record_edge_pcs(uint64_t src, uint64_t dst) {
+     // Every record is a pair, so a full buffer always ends on a pair boundary
+     edge_pc_buffer[edge_pc_buffer_index++] = src;
+@@ -138,6 +188,9 @@
+ void bx_instr_ucnear_branch(unsigned cpu, unsigned what, bx_address branch_eip, bx_address new_eip) {}
+ void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i, bx_address eip) {}
+ void bx_instr_edge_pc_flush(void) {}
++void bx_instr_temporal_event_flush(void) {}
++void bx_instr_temporal_event(size_t rip, uint64_t site_id,
++        uint64_t object_id, size_t cpu_id, size_t instruction_count) {}
+
+ #endif /* BX_LUCID */
+
+--- bochs/instrument/stubs/instrument.h
++++ bochs/instrument/stubs/instrument.h
+@@ -62,6 +62,9 @@
+
+ void bx_instr_before_execution(unsigned cpu, bxInstruction_c *i, bx_address eip);
+ void bx_instr_edge_pc_flush(void);
++void bx_instr_temporal_event_flush(void);
++void bx_instr_temporal_event(size_t rip, uint64_t site_id,
++        uint64_t object_id, size_t cpu_id, size_t instruction_count);
+ void bx_instr_after_execution(unsigned cpu, bxInstruction_c *i);
+ void bx_instr_repeat_iteration(unsigned cpu, bxInstruction_c *i);
+
+@@ -125,11 +128,17 @@
+     bx_instr_before_execution(cpu_id, i, eip); \
+ } while (0)
+ #define BX_INSTR_EDGE_PC_FLUSH() bx_instr_edge_pc_flush()
++#define BX_INSTR_TEMPORAL_EVENT_FLUSH() bx_instr_temporal_event_flush()
++#define BX_INSTR_TEMPORAL_EVENT(rip, site, object, cpu, icount) \
++  bx_instr_temporal_event(rip, site, object, cpu, icount)
+ // The Lucid stub has no after-execution feedback, so avoid a call after every instruction.
+ #define BX_INSTR_AFTER_EXECUTION(cpu_id, i)   do {} while (0)
+ #else
+ #define BX_INSTR_BEFORE_EXECUTION(cpu_id, i, eip) bx_instr_before_execution(cpu_id, i, eip)
+ #define BX_INSTR_EDGE_PC_FLUSH() bx_instr_edge_pc_flush()
++#define BX_INSTR_TEMPORAL_EVENT_FLUSH() bx_instr_temporal_event_flush()
++#define BX_INSTR_TEMPORAL_EVENT(rip, site, object, cpu, icount) \
++  bx_instr_temporal_event(rip, site, object, cpu, icount)
+ #define BX_INSTR_AFTER_EXECUTION(cpu_id, i)   bx_instr_after_execution(cpu_id, i)
+ #endif /* BX_LUCID */
+ #define BX_INSTR_REPEAT_ITERATION(cpu_id, i)  bx_instr_repeat_iteration(cpu_id, i)
+@@ -202,6 +211,8 @@
+ /* execution */
+ #define BX_INSTR_BEFORE_EXECUTION(cpu_id, i, eip)
+ #define BX_INSTR_EDGE_PC_FLUSH()
++#define BX_INSTR_TEMPORAL_EVENT_FLUSH()
++#define BX_INSTR_TEMPORAL_EVENT(rip, site, object, cpu, icount)
+ #define BX_INSTR_AFTER_EXECUTION(cpu_id, i)
+ #define BX_INSTR_REPEAT_ITERATION(cpu_id, i)
+
+--- bochs/main.cc
++++ bochs/main.cc
+@@ -22,6 +22,7 @@
+ #include "bxversion.h"
+ #include "param_names.h"
+ #include "cpu/cpu.h"
++#include "lucid_scheduler.h"
+ #include "iodev/iodev.h"
+ #include "iodev/hdimage/hdimage.h"
+ #if BX_NETWORKING
+@@ -76,6 +77,48 @@
+ bx_startup_flags_t bx_startup_flags;
+ bool bx_user_quit;
+ Bit8u bx_cpu_count;
++
++#if BX_LUCID && BX_SUPPORT_SMP
++Bit64u bx_lucid_scheduler_state = 0;
++unsigned bx_lucid_scheduler_quantum = 0;
++bool bx_lucid_scheduler_restore_default = false;
++
++void bx_lucid_set_scheduler_seed(Bit64u seed)
++{
++  // The scheduler globals live in Bochs' snapshotted writable image, so the
++  // restored state is already zero when operation 12 runs.  The decoded
++  // iCache deliberately lives outside that image.  Reserve one byte in its
++  // documented unused tail to remember only whether the previous case used
++  // short traces; the fuzzcase seed itself never escapes snapshot state.
++  Bit8u *previous_case_used_scheduler =
++      g_lucid_ctx->icache_addr + g_lucid_ctx->icache_size - 1;
++
++  // A transition back to zero must discard every trace decoded with a short
++  // quantum.  Defer the flush until the current hypercall trace has ended.
++  if (*previous_case_used_scheduler != 0 && seed == 0)
++    bx_lucid_scheduler_restore_default = true;
++  *previous_case_used_scheduler = seed != 0;
++
++  bx_lucid_scheduler_state = seed;
++  bx_lucid_scheduler_quantum = 0;
++}
++
++unsigned bx_lucid_next_scheduler_quantum(void)
++{
++  // xorshift64 is deterministic, cheap, and maps nonzero states to nonzero
++  // states.  Advance exactly once for every vCPU dispatch.
++  Bit64u state = bx_lucid_scheduler_state;
++  state ^= state << 13;
++  state ^= state >> 7;
++  state ^= state << 17;
++  bx_lucid_scheduler_state = state;
++
++  // Short traces create useful interleavings without starving either CPU.
++  bx_lucid_scheduler_quantum = 1 + (unsigned)(state & 31);
++  return bx_lucid_scheduler_quantum;
++}
++#endif
++
+ #if BX_SUPPORT_APIC
+ Bit32u apic_id_mask; // determinted by XAPIC option
+ bool simulate_xapic;
+@@ -1188,6 +1231,27 @@
+       }
+       while (1) {
+          // do some instructions in each processor
++#if BX_LUCID && BX_SUPPORT_SMP
++        if (bx_lucid_scheduler_restore_default) {
++          // The previous fuzzcase used short traces.  Flush all CPUs before
++          // a zero-seed case resumes the unmodified configured quantum.
++          for (unsigned cpu = 0; cpu < BX_SMP_PROCESSORS; cpu++)
++            BX_CPU(cpu)->iCache.flushICacheEntries();
++          bx_lucid_scheduler_restore_default = false;
++        }
++
++        if (bx_lucid_scheduler_state != 0) {
++          bx_lucid_next_scheduler_quantum();
++          // find_entry() rejects the selected vCPU's current cached trace.
++          // The fresh decode therefore observes this dispatch's quantum
++          // without an expensive whole-cache scan at every switch.
++        }
++#endif
++#if BX_LUCID
++        // Remember where this vCPU's current scheduler quantum begins so an
++        // event handler can place itself inside the machine-wide timeline.
++        g_lucid_ctx->smp_quantum_icount_base = BX_CPU(processor)->get_icount();
++#endif
+         if (run)
+           BX_CPU(processor)->cpu_run_trace();
+         else
+@@ -1195,17 +1259,18 @@
+
+          // see how many instruction it was able to run
+          Bit32u n = (Bit32u)(BX_CPU(processor)->get_icount() - BX_CPU(processor)->icount_last_sync);
++         if (n == 0) n = quantum; // the CPU was halted
++         executed += n;
++
+ #if BX_LUCID
+          g_lucid_ctx->smp_icount += n;
+          if (g_lucid_ctx->smp_icount >= g_lucid_ctx->icount_timeout) {
+            g_lucid_ctx->timeout = 1;
+            BX_INSTR_EDGE_PC_FLUSH();
++           BX_INSTR_TEMPORAL_EVENT_FLUSH();
+            lucid_postfuzz_hook();
+          }
+ #endif
+-         if (n == 0) n = quantum; // the CPU was halted
+-         executed += n;
+-
+          if (++processor == BX_SMP_PROCESSORS) {
+            processor = 0;
+            BX_TICKN(executed / BX_SMP_PROCESSORS);

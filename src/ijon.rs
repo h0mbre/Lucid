@@ -14,6 +14,19 @@ const IJON_MAX: usize = 1;
 const IJON_INC: usize = 2;
 const IJON_STATE: usize = 3;
 const IJON_EVENT: usize = 4;
+const IJON_TEMPORAL: usize = 5;
+
+/// Number of slots in each temporal feedback map.
+///
+/// Keep this fixed for the first implementation.  Temporal feedback is only
+/// active when a guest reports an IJON_TEMPORAL event, so ordinary harnesses
+/// do not pay for clearing or evaluating these maps.
+const TEMPORAL_MAP_SIZE: usize = 1 << 16;
+
+/// Maximum number of complete events Bochs may pass in one callback.
+///
+/// This value must match TEMPORAL_EVENT_BUFFER_CAPACITY in the Bochs patch.
+const TEMPORAL_EVENT_BUFFER_CAPACITY: usize = 1 << 10;
 
 /// Bit values used to remember which IJON operations found new feedback
 const FOUND_SET: u8 = 1 << IJON_SET;
@@ -21,6 +34,7 @@ const FOUND_MAX: u8 = 1 << IJON_MAX;
 const FOUND_INC: u8 = 1 << IJON_INC;
 const FOUND_STATE: u8 = 1 << IJON_STATE;
 const FOUND_EVENT: u8 = 1 << IJON_EVENT;
+const FOUND_TEMPORAL: u8 = 1 << IJON_TEMPORAL;
 
 /// All generic state needed to evaluate IJON feedback for one fuzzer
 pub struct Ijon {
@@ -32,7 +46,28 @@ pub struct Ijon {
     run_counts: HashMap<(usize, u64), u64>,
     run_events: HashMap<(usize, u64), u64>,
     run_state: u64,
+    temporal_events: Vec<TemporalEvent>,
+    temporal_current_map: Vec<u8>,
+    temporal_history_map: Vec<u8>,
+    temporal_active: bool,
     pending: u8,
+}
+
+/// One semantic event reported by an instrumented guest during an iteration
+///
+/// Bochs constructs this record, so its layout is part of the C ABI between
+/// the emulator and Lucid.  Object identifiers are meaningful only within the
+/// current fuzzcase.  RIP and instruction count are retained as useful event
+/// metadata, but they are intentionally not part of the persistent novelty
+/// key.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TemporalEvent {
+    pub rip: usize,
+    pub site_id: u64,
+    pub object_id: u64,
+    pub cpu_id: usize,
+    pub instruction_count: usize,
 }
 
 impl Ijon {
@@ -47,6 +82,10 @@ impl Ijon {
             run_counts: HashMap::new(),
             run_events: HashMap::new(),
             run_state: 0,
+            temporal_events: Vec::new(),
+            temporal_current_map: vec![0; TEMPORAL_MAP_SIZE],
+            temporal_history_map: vec![0; TEMPORAL_MAP_SIZE],
+            temporal_active: false,
             pending: 0,
         }
     }
@@ -56,7 +95,64 @@ impl Ijon {
         self.run_counts.clear();
         self.run_events.clear();
         self.run_state = 0;
+        self.temporal_events.clear();
+
+        // Do not add a map clear to harnesses which never request temporal
+        // feedback.  Once a harness has emitted a temporal event, this map is
+        // ordinary execution-local state and must be cleared for every run.
+        if self.temporal_active {
+            self.temporal_current_map.fill(0);
+        }
         self.pending = 0;
+    }
+
+    /// Append one complete batch reported by Bochs.
+    fn record_temporal_batch(&mut self, events: &[TemporalEvent]) {
+        self.temporal_active = true;
+        self.temporal_events.extend_from_slice(events);
+    }
+
+    /// Finish IJON feedback processing for the current fuzzing iteration.
+    ///
+    /// Keeping this as one generic lifecycle hook prevents the fuzzing loop
+    /// from needing to know which IJON feedback types require finalization.
+    /// New IJON feedback mechanisms can be finished here in the future.
+    pub fn post_fuzz(&mut self) {
+        if !self.temporal_active || self.temporal_events.is_empty() {
+            return;
+        }
+
+        let mut previous_events: HashMap<u64, (u64, usize)> = HashMap::new();
+
+        // Every event replaces the prior event for its object, including
+        // events on the same vCPU.  Only a resulting edge which crosses vCPUs
+        // earns novelty.  Same-vCPU events remain part of the object's
+        // history without duplicating ordinary code coverage.
+        for event in &self.temporal_events {
+            let previous = previous_events.insert(event.object_id, (event.site_id, event.cpu_id));
+
+            let Some((previous_site, previous_cpu)) = previous else {
+                continue;
+            };
+
+            if previous_cpu == event.cpu_id {
+                continue;
+            }
+
+            // Object IDs only separate simultaneous lifetimes inside this
+            // fuzzcase.  Excluding the ID here lets an equivalent lifetime in
+            // a later fuzzcase map to the same persistent temporal edge.
+            let mut hash = mix(previous_site, previous_cpu as u64);
+            hash = mix(hash, event.site_id);
+            hash = mix(hash, event.cpu_id as u64);
+            let index = hash as usize & (TEMPORAL_MAP_SIZE - 1);
+
+            self.temporal_current_map[index] = 1;
+            if self.temporal_history_map[index] == 0 {
+                self.temporal_history_map[index] = 1;
+                self.pending |= FOUND_TEMPORAL;
+            }
+        }
     }
 
     /// Check whether the current input found any new IJON feedback
@@ -85,6 +181,9 @@ impl Ijon {
         }
         if self.pending & FOUND_EVENT != 0 {
             found.push("EVENT");
+        }
+        if self.pending & FOUND_TEMPORAL != 0 {
+            found.push("TEMPORAL");
         }
 
         self.pending = 0;
@@ -164,14 +263,32 @@ pub extern "C" fn lucid_report_ijon(
     tag: u64,
     value: u64,
     rip: usize,
+    _cpu_id: usize,
+    _instruction_count: usize,
 ) {
     // Ensure that Bochs passed back a valid execution context
     if !LucidContext::is_valid(contextp) {
         mega_panic!("Invalid context pointer passed to lucid_report_ijon");
     }
 
-    // Update generic IJON feedback independently from normal edge coverage
+    // Temporal operation 5 uses the existing callback as a batch transport.
+    // Bochs passes a pointer in `tag` and a record count in `value`; the other
+    // event arguments are zero.  Operations 0 through 4 keep their original
+    // scalar meaning.
     let context = unsafe { &mut *contextp };
+    if operation == IJON_TEMPORAL {
+        let event_count = value as usize;
+        if tag == 0 || event_count == 0 || event_count > TEMPORAL_EVENT_BUFFER_CAPACITY {
+            mega_panic!("Invalid temporal IJON event batch");
+        }
+
+        let event_pointer = tag as usize as *const TemporalEvent;
+        let events = unsafe { std::slice::from_raw_parts(event_pointer, event_count) };
+        context.ijon.record_temporal_batch(events);
+        return;
+    }
+
+    // Update generic IJON feedback independently from normal edge coverage
     context.ijon.report(operation, rip, tag, value);
 
     // Include all semantic feedback in the trace identity used by Redqueen

@@ -94,11 +94,11 @@ newgrp docker
 
 ## Binary Integrity (SHA-1)
 
-- `lucid-fuzz`  0cc9e6d56b684fb51131a8eb4e83598ccc8a7e82
-- `gui-bochs`  2820a93d160c51ec6f02f260c22439892ffab3d1
-- `lucid-bochs`  e30767c4b0049ff04ca3c45d0114d0ba52a20523
-- `gui-bochs-smp`  f4b7c98632e28e1d81897b5b82f25ca43e437664
-- `lucid-bochs-smp`  d736d3e772a18967dc060ccd095c48aceb4b83f2
+- `lucid-fuzz`  71b710d8599071059e2c03d4074eef460e42b80c
+- `gui-bochs`  76844eacb1d1d873d2d7ee0357183aa05afdfb17
+- `lucid-bochs`  a2198fbee4bef44b43a5636792c3efa51abf8d93
+- `gui-bochs-smp`  7f0bf4efefd712bd09f25064ce76beaa03f1d279
+- `lucid-bochs-smp`  4d476f0b39c599d813e0e01ea279ceda08904378
 - `BIOS-bochs-latest`  c654a401c6f4257324640b157a7e16bf334a263c
 - `VGABIOS-lgpl-latest`  35aa458948da1fcb747f70d3536c6de08e15f498
 
@@ -112,7 +112,28 @@ Other third-party downloads can still fail if an upstream server is unavailable 
 Develop your environment, probably using something like QEMU system in order to do quick development cycles. For instance, if fuzzing a Linux kernel subsystem, you may develop a harness which sends user controlled input to a kernel API. Once you've confirmed your harness works in something like QEMU, you can create an `.iso` out of the kernel image (`bzImage`) which Bochs can then run. 
 
 ### Step 2:
-Use the built `gui-bochs` Bochs binary in `bins` and run your harness. Use `gui-bochs-smp` when creating a snapshot for an SMP campaign. If your harness was built correctly, Bochs will save its state to disk when it reaches the `xchg dx, dx` special NOP instruction and exit.
+Use the built `gui-bochs` Bochs binary in `bins` and run your harness. Use `gui-bochs-smp` when creating a snapshot for an SMP campaign. Before taking the snapshot, the harness must register its logical `[u64 input_len][input bytes]` layout with Bochs using the `xchg r10w, r10w` special NOP instruction. Pass the layout's guest virtual address in `r8` and its total byte length in `r9`. Bochs saves the ordered physical spans backing that virtual range with the snapshot. Bochs will then save its state to disk when the harness reaches the `xchg dx, dx` special NOP instruction and exit.
+
+```c
+// Pseudocode: this layout is contiguous in guest virtual memory, even when
+// the guest pages are backed by non-contiguous physical memory.
+struct {
+    u64 input_len;
+    u8 input[INPUT_MAX_SIZE];
+} fuzzcase = {0};
+
+asm volatile("movq %0, %%r8\n\t"
+             "movq %1, %%r9\n\t"
+             "xchgw %%r10w, %%r10w\n\t" // Register the layout
+             "xchgw %%dx, %%dx"          // Take the snapshot
+             :
+             : "r" ((unsigned long)&fuzzcase), // R8: guest virtual address
+               "r" ((unsigned long)sizeof(fuzzcase)) // R9: total capacity
+             : "r8", "r9", "r10", "memory");
+
+// After restoring the snapshot, Lucid writes each new logical fuzzcase across
+// the registered spans in order, regardless of their physical addresses.
+```
 
 ### Step 3:
 Now with the saved-to-disk Bochs state, we are able to resume execution in the fuzzer. We do this by pointing Lucid at the matching `lucid-bochs` binary (`lucid-bochs-smp` for an SMP snapshot). Use the `--bochs-snapshot-dir` command line argument to tell `lucid-fuzz` where to find the snapshot saved on disk from `Step 2`.
@@ -126,7 +147,7 @@ The fuzzer should be able to resume the saved state of Bochs and continue execut
 git clone https://github.com/h0mbre/Lucid
 cd Lucid && ./build-bins.sh
 ```
-2. Run your target system in `gui-bochs` and reach the `xchg dx, dx` NOP instruction in your harness to save Bochs state to disk
+2. Run your target system in `gui-bochs`, register `[u64 input_len][input bytes]` with `xchg r10w, r10w` (`r8` = guest virtual address, `r9` = total length), and reach `xchg dx, dx` to save Bochs state to disk
 3. Point `lucid-fuzz` at saved-to-disk Bochs snapshot so `lucid-bochs` can begin emulating the target for fuzzing
 
 # `lucid-fuzz` Usage
@@ -137,13 +158,11 @@ h0mbre@pwn:~/Lucid/bins$ ./lucid-fuzz --help
 lucid:: Parsing config options...
 x86_64 Full-System Snapshot Fuzzer Powered by Bochs
 
-Usage: lucid-fuzz [OPTIONS] --input-max-size <SIZE> --input-signature <SIGNATURE> --output-dir <OUTPUT_DIR> --bochs-image <IMAGE> --bochs-config <BOCHS_CONFIG> --bochs-snapshot-dir <BOCHS_SNAPSHOT_DIR>
+Usage: lucid-fuzz [OPTIONS] --input-max-size <SIZE> --output-dir <OUTPUT_DIR> --bochs-image <IMAGE> --bochs-config <BOCHS_CONFIG> --bochs-snapshot-dir <BOCHS_SNAPSHOT_DIR>
 
 Options:
       --input-max-size <SIZE>
           Sets the maximum input size for mutator to use (usize)
-      --input-signature <SIGNATURE>
-          Sets the input signature for Lucid to search for in target (128-bit hex string)
       --coverage-map-size <SIZE>
           Number of edge-pair coverage map slots (power of 2; 65536 default)
       --seeds-dir <SEEDS_DIR>
@@ -184,26 +203,10 @@ Options:
           Print version
 
 ```
-## `--input-signature` 
-+ `--input-signature`: This is a 128-bit signature that we should scan for from the fuzzer in Bochs' memory in order to find your user input. This will change in the future, but for now, this is how I've chosen to do it. For instance, here is the user input defined in my current harness:
-```c
-#define LUCID_SIGNATURE { 0x13, 0x37, 0x13, 0x37, 0x13, 0x37, 0x13, 0x37, \
-                          0x13, 0x38, 0x13, 0x38, 0x13, 0x38, 0x13, 0x38 }
-
-#define MAX_INPUT_SIZE 1024UL
-
-struct fuzz_input {
-    unsigned char signature[16];
-    size_t input_len;
-    char input[MAX_INPUT_SIZE];
-};
-```
-
 ## Example Usage
 ```terminal
 ./lucid-fuzz \
     --input-max-size 65672 \
-    --input-signature 0x13371337133713371338133813381338 \
     --coverage-map-size 65536 \
     --bochs-image ~/Lucid/bins/lucid-bochs \
     --output-dir /tmp/findings \
@@ -297,15 +300,15 @@ The optional `--colorize` pass is substantially slower and requires
 
 ## IJON
 Lucid supports five target-defined IJON feedback operations. Instrumented guest
-code places a tag in `R8`, a value in `R9`, and executes the corresponding
-same-register 16-bit `XCHG`. These instructions remain ordinary NOPs outside
-Lucid's patched Bochs:
+code places the operation in `R8`, a tag in `R9`, a value in `R10`, and executes
+`xchg r11w, r11w`. This instruction remains an ordinary NOP outside Lucid's
+patched Bochs. Rust interprets the operation as follows:
 
-- `xchg ax, ax`: SET records a previously unseen `(site, tag, value)`.
-- `xchg cx, cx`: MAX records a new maximum for `(site, tag)`.
-- `xchg bp, bp`: INC records a new per-input execution-count maximum.
-- `xchg si, si`: STATE mixes the value into the current input's path state.
-- `xchg di, di`: EVENT records new ordered event-sequence prefixes.
+- `0`: SET records a previously unseen `(site, tag, value)`.
+- `1`: MAX records a new maximum for `(site, tag)`.
+- `2`: INC records a new per-input execution-count maximum.
+- `3`: STATE mixes the value into the current input's path state.
+- `4`: EVENT records new ordered event-sequence prefixes.
 
 New IJON feedback has the same corpus and Redqueen behavior as new edge
 coverage. IJON feedback and ordinary edge coverage are tracked independently,

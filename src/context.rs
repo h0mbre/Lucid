@@ -303,6 +303,7 @@ pub struct LucidContext {
     icache_shared_size: usize,        // Machine-wide page-write-stamp bytes
     icache_slot_size: usize,          // Bytes in each per-vCPU decoded cache slot
     smp_icount: usize,                // Machine-wide instruction count for one input
+    smp_quantum_icount_base: usize,   // Current vCPU count when its quantum began
 
     // Opaque members, not defined on C side, free to re-arrange these here and
     // not worry about things being broken elsewhere
@@ -582,6 +583,7 @@ impl LucidContext {
             icache_shared_size: 0,
             icache_slot_size: 0,
             smp_icount: 0,
+            smp_quantum_icount_base: 0,
             save_inst,
             save_size,
             lucid_save_area,
@@ -792,6 +794,7 @@ fn switch_handler(contextp: *mut LucidContext) {
                 // mapping, so clear it explicitly for every execution.
                 let context = LucidContext::from_ptr_mut(contextp);
                 context.smp_icount = 0;
+                context.smp_quantum_icount_base = 0;
                 restore_bochs_execution(contextp);
             }
             _ => {
@@ -1485,6 +1488,11 @@ pub fn fuzz_one(context: &mut LucidContext) -> Result<FuzzingResult, LucidErr> {
 
     // Run the fuzzcase through
     time_func!(context, batch_target, run_fuzzcase(context))?;
+
+    // Give IJON one post-execution hook before deciding whether this input
+    // found semantic feedback.  Feedback-specific lifecycle details remain
+    // encapsulated by IJON instead of leaking into the fuzzing loop.
+    context.ijon.post_fuzz();
 
     // Check for crash
     if context.crash == 1 {

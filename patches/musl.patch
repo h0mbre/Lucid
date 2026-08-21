@@ -87,7 +87,7 @@
  	register long r8 __asm__("r8") = a5;
 --- musl-1.2.4/include/lucid.h	1969-12-31 19:00:00.000000000 -0500
 +++ musl-1.2.4/include/lucid.h	2024-07-24 12:26:11.062841954 -0400
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,200 @@
 +#ifndef LUCID_H
 +#define LUCID_H
 +
@@ -212,6 +212,7 @@
 +    size_t icache_shared_size;
 +    size_t icache_slot_size;
 +    size_t smp_icount;
++    size_t smp_quantum_icount_base;
 +
 +    /* Opaque Members */
 +} lucid_ctx_t;
@@ -259,7 +260,8 @@
 +
 +// Define a function pointer type for reporting IJON feedback
 +typedef void (*lucid_report_ijon_p)(lucid_ctx_t *ctx, size_t operation,
-+    uint64_t tag, uint64_t value, size_t rip);
++    uint64_t tag, uint64_t value, size_t rip, size_t cpu_id,
++    size_t instruction_count);
 +
 +// Create an instance of the function pointer
 +extern lucid_report_ijon_p g_lucid_report_ijon;
