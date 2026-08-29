@@ -94,11 +94,11 @@ newgrp docker
 
 ## Binary Integrity (SHA-1)
 
-- `lucid-fuzz`  71b710d8599071059e2c03d4074eef460e42b80c
-- `gui-bochs`  76844eacb1d1d873d2d7ee0357183aa05afdfb17
-- `lucid-bochs`  a2198fbee4bef44b43a5636792c3efa51abf8d93
-- `gui-bochs-smp`  7f0bf4efefd712bd09f25064ce76beaa03f1d279
-- `lucid-bochs-smp`  4d476f0b39c599d813e0e01ea279ceda08904378
+- `lucid-fuzz`  9e85e320d83825c6e5b51086d56ba66ad9bff04d
+- `gui-bochs`  801d2882858e72127a7e481bb6f6534f3026cc2d
+- `lucid-bochs`  f96f096f5fd3a7a5e2d3d845f9f49e3d808997f5
+- `gui-bochs-smp`  d11198c3020844fd90aa1d6b040d1ed3a2722b82
+- `lucid-bochs-smp`  28e52b766b82fc527971cc40578225189d281aa3
 - `BIOS-bochs-latest`  c654a401c6f4257324640b157a7e16bf334a263c
 - `VGABIOS-lgpl-latest`  35aa458948da1fcb747f70d3536c6de08e15f498
 

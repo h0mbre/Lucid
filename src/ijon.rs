@@ -4,6 +4,7 @@
 //! Copyright (c) 2026 h0mbre
 
 use std::collections::{hash_map::Entry, HashMap, HashSet};
+use std::fmt;
 
 use crate::context::{CpuMode, LucidContext};
 use crate::mega_panic;
@@ -23,6 +24,13 @@ const IJON_TEMPORAL: usize = 5;
 /// do not pay for clearing or evaluating these maps.
 const TEMPORAL_MAP_SIZE: usize = 1 << 16;
 
+/// Per-pair directional state and words needed for every possible distance
+/// bucket on a usize target. Pair-slot collisions may suppress novelty, but
+/// cannot create an unbounded stream of findings.
+const DISTANCE_DIRECTIONS: usize = 2;
+const DISTANCE_BUCKET_WORDS: usize = 2;
+const DISTANCE_UNSEEN: u8 = u8::MAX;
+
 /// Maximum number of complete events Bochs may pass in one callback.
 ///
 /// This value must match TEMPORAL_EVENT_BUFFER_CAPACITY in the Bochs patch.
@@ -35,6 +43,7 @@ const FOUND_INC: u8 = 1 << IJON_INC;
 const FOUND_STATE: u8 = 1 << IJON_STATE;
 const FOUND_EVENT: u8 = 1 << IJON_EVENT;
 const FOUND_TEMPORAL: u8 = 1 << IJON_TEMPORAL;
+const FOUND_ORDER_FLIP: u8 = 1 << 7;
 
 /// All generic state needed to evaluate IJON feedback for one fuzzer
 pub struct Ijon {
@@ -42,15 +51,111 @@ pub struct Ijon {
     maximums: HashMap<(usize, u64), u64>,
     count_maximums: HashMap<(usize, u64), u64>,
     states: HashSet<(usize, u64, u64)>,
-    events: HashSet<(usize, u64, u64)>,
+    events: HashSet<(usize, u64, Option<u64>, u64)>,
     run_counts: HashMap<(usize, u64), u64>,
     run_events: HashMap<(usize, u64), u64>,
-    run_state: u64,
+    run_states: HashMap<(usize, u64), u64>,
     temporal_events: Vec<TemporalEvent>,
-    temporal_current_map: Vec<u8>,
-    temporal_history_map: Vec<u8>,
+    temporal_direction_history: Vec<u8>,
     temporal_active: bool,
+    distance_history: Vec<[u64; DISTANCE_BUCKET_WORDS]>,
+    nearest_history: Vec<u8>,
+    farthest_history: Vec<u8>,
+    distance_pending: Vec<DistanceFeedback>,
+    proximity_pending: Vec<FrontierFeedback>,
+    separation_pending: Vec<FrontierFeedback>,
     pending: u8,
+}
+
+/// One newly observed distance bucket for a directed temporal pair.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DistanceFeedback {
+    pub pair_slot: u16,
+    pub direction: u8,
+    pub bucket: u8,
+    pub distance: usize,
+}
+
+/// One improvement to a directed temporal pair's nearest or farthest frontier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrontierFeedback {
+    pub pair_slot: u16,
+    pub direction: u8,
+    pub previous_bucket: u8,
+    pub bucket: u8,
+    pub distance: usize,
+}
+
+/// IJON feedback classes discovered by one input.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IjonFeedback {
+    pub set: bool,
+    pub maximum: bool,
+    pub increment: bool,
+    pub state: bool,
+    pub event: bool,
+    pub temporal: bool,
+    pub order_flip: bool,
+    pub distance: Vec<DistanceFeedback>,
+    pub proximity: Vec<FrontierFeedback>,
+    pub separation: Vec<FrontierFeedback>,
+}
+
+impl fmt::Display for IjonFeedback {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut found = Vec::new();
+        if self.set {
+            found.push(String::from("SET"));
+        }
+        if self.maximum {
+            found.push(String::from("MAX"));
+        }
+        if self.increment {
+            found.push(String::from("INC"));
+        }
+        if self.state {
+            found.push(String::from("STATE"));
+        }
+        if self.event {
+            found.push(String::from("EVENT"));
+        }
+        if self.temporal {
+            found.push(String::from("TEMPORAL"));
+        }
+        if self.order_flip {
+            found.push(String::from("ORDER_FLIP"));
+        }
+        if !self.distance.is_empty() {
+            found.push(format!("DISTANCE(discoveries={})", self.distance.len()));
+        }
+        if let Some(best) = self.proximity.iter().min_by_key(|feedback| feedback.bucket) {
+            found.push(format!(
+                "PROXIMITY(bucket={}, pair=0x{:04X}, direction={}, previous={}, distance={}, improvements={})",
+                best.bucket,
+                best.pair_slot,
+                best.direction,
+                best.previous_bucket,
+                best.distance,
+                self.proximity.len()
+            ));
+        }
+        if let Some(best) = self
+            .separation
+            .iter()
+            .max_by_key(|feedback| feedback.bucket)
+        {
+            found.push(format!(
+                "SEPARATION(bucket={}, pair=0x{:04X}, direction={}, previous={}, distance={}, improvements={})",
+                best.bucket,
+                best.pair_slot,
+                best.direction,
+                best.previous_bucket,
+                best.distance,
+                self.separation.len()
+            ));
+        }
+        formatter.write_str(&found.join(", "))
+    }
 }
 
 /// One semantic event reported by an instrumented guest during an iteration
@@ -81,11 +186,19 @@ impl Ijon {
             events: HashSet::new(),
             run_counts: HashMap::new(),
             run_events: HashMap::new(),
-            run_state: 0,
+            run_states: HashMap::new(),
             temporal_events: Vec::new(),
-            temporal_current_map: vec![0; TEMPORAL_MAP_SIZE],
-            temporal_history_map: vec![0; TEMPORAL_MAP_SIZE],
+            temporal_direction_history: vec![0; TEMPORAL_MAP_SIZE],
             temporal_active: false,
+            distance_history: vec![
+                [0; DISTANCE_BUCKET_WORDS];
+                TEMPORAL_MAP_SIZE * DISTANCE_DIRECTIONS
+            ],
+            nearest_history: vec![DISTANCE_UNSEEN; TEMPORAL_MAP_SIZE * DISTANCE_DIRECTIONS],
+            farthest_history: vec![DISTANCE_UNSEEN; TEMPORAL_MAP_SIZE * DISTANCE_DIRECTIONS],
+            distance_pending: Vec::new(),
+            proximity_pending: Vec::new(),
+            separation_pending: Vec::new(),
             pending: 0,
         }
     }
@@ -94,15 +207,12 @@ impl Ijon {
     pub fn begin_run(&mut self) {
         self.run_counts.clear();
         self.run_events.clear();
-        self.run_state = 0;
+        self.run_states.clear();
         self.temporal_events.clear();
 
-        // Do not add a map clear to harnesses which never request temporal
-        // feedback.  Once a harness has emitted a temporal event, this map is
-        // ordinary execution-local state and must be cleared for every run.
-        if self.temporal_active {
-            self.temporal_current_map.fill(0);
-        }
+        self.distance_pending.clear();
+        self.proximity_pending.clear();
+        self.separation_pending.clear();
         self.pending = 0;
     }
 
@@ -118,76 +228,174 @@ impl Ijon {
     /// from needing to know which IJON feedback types require finalization.
     /// New IJON feedback mechanisms can be finished here in the future.
     pub fn post_fuzz(&mut self) {
+        // STATE describes an execution's final value at a semantic site. Do
+        // not reward every intermediate prefix: only a different terminal
+        // state is a durable, black-or-white semantic distinction.
+        for (&(rip, tag), &value) in &self.run_states {
+            if self.states.insert((rip, tag, value)) {
+                self.pending |= FOUND_STATE;
+            }
+        }
+
         if !self.temporal_active || self.temporal_events.is_empty() {
             return;
         }
 
-        let mut previous_events: HashMap<u64, (u64, usize)> = HashMap::new();
+        let mut previous_events: HashMap<u64, TemporalEvent> = HashMap::new();
+        let mut run_distances: HashMap<usize, HashMap<u8, usize>> = HashMap::new();
 
         // Every event replaces the prior event for its object, including
         // events on the same vCPU.  Only a resulting edge which crosses vCPUs
         // earns novelty.  Same-vCPU events remain part of the object's
         // history without duplicating ordinary code coverage.
         for event in &self.temporal_events {
-            let previous = previous_events.insert(event.object_id, (event.site_id, event.cpu_id));
+            let previous = previous_events.insert(event.object_id, *event);
 
-            let Some((previous_site, previous_cpu)) = previous else {
+            let Some(previous) = previous else {
                 continue;
             };
 
-            if previous_cpu == event.cpu_id {
+            if previous.cpu_id == event.cpu_id {
                 continue;
             }
 
-            // Object IDs only separate simultaneous lifetimes inside this
-            // fuzzcase.  Excluding the ID here lets an equivalent lifetime in
-            // a later fuzzcase map to the same persistent temporal edge.
-            let mut hash = mix(previous_site, previous_cpu as u64);
-            hash = mix(hash, event.site_id);
-            hash = mix(hash, event.cpu_id as u64);
-            let index = hash as usize & (TEMPORAL_MAP_SIZE - 1);
+            // The emulator supplies one monotonically increasing, machine-
+            // wide instruction position. A backwards or equal position is
+            // not a meaningful directed distance and is ignored explicitly.
+            let Some(distance) = event
+                .instruction_count
+                .checked_sub(previous.instruction_count)
+            else {
+                continue;
+            };
+            if distance == 0 {
+                continue;
+            }
 
-            self.temporal_current_map[index] = 1;
-            if self.temporal_history_map[index] == 0 {
-                self.temporal_history_map[index] = 1;
+            // Canonicalize the site pair and keep direction as independent
+            // state. This lets both A->B and B->A share one pair identity
+            // without conflating their distance coverage or frontiers.
+            let (low, high, direction) = if previous.site_id <= event.site_id {
+                (previous.site_id, event.site_id, 0usize)
+            } else {
+                (event.site_id, previous.site_id, 1usize)
+            };
+            let pair_slot = mix(low, high) as usize & (TEMPORAL_MAP_SIZE - 1);
+            let directed_index = pair_slot * DISTANCE_DIRECTIONS + direction;
+            let bucket = proximity_bucket(distance);
+
+            // Preserve every bucket observed in this execution. For repeated
+            // observations in one bucket, retain the exact distance nearest
+            // that bucket's useful frontier for diagnostics.
+            run_distances
+                .entry(directed_index)
+                .or_default()
+                .entry(bucket)
+                .and_modify(|recorded| {
+                    if bucket <= 63 {
+                        *recorded = (*recorded).min(distance);
+                    } else {
+                        *recorded = (*recorded).max(distance);
+                    }
+                })
+                .or_insert(distance);
+        }
+
+        for (directed_index, buckets) in run_distances {
+            let pair_slot = directed_index / DISTANCE_DIRECTIONS;
+            let direction = (directed_index % DISTANCE_DIRECTIONS) as u8;
+            let direction_bit = 1u8 << direction;
+            let was_seen = self.temporal_direction_history[pair_slot] & direction_bit != 0;
+
+            if !was_seen {
+                if self.temporal_direction_history[pair_slot] & !direction_bit != 0 {
+                    self.pending |= FOUND_ORDER_FLIP;
+                }
+                self.temporal_direction_history[pair_slot] |= direction_bit;
                 self.pending |= FOUND_TEMPORAL;
             }
+
+            let run_nearest = *buckets.keys().min().expect("temporal bucket set is empty");
+            let run_farthest = *buckets.keys().max().expect("temporal bucket set is empty");
+            let previous_nearest = self.nearest_history[directed_index];
+            let previous_farthest = self.farthest_history[directed_index];
+
+            for (&bucket, &distance) in &buckets {
+                let word = bucket as usize / 64;
+                let bit = 1u64 << (bucket as usize % 64);
+                if self.distance_history[directed_index][word] & bit == 0 {
+                    self.distance_history[directed_index][word] |= bit;
+                    self.distance_pending.push(DistanceFeedback {
+                        pair_slot: pair_slot as u16,
+                        direction,
+                        bucket,
+                        distance,
+                    });
+                }
+            }
+
+            // The first observation initializes both frontiers but is only
+            // temporal/distance coverage. Optimization feedback begins once
+            // an established direction actually moves a frontier.
+            if was_seen {
+                if run_nearest < previous_nearest {
+                    self.proximity_pending.push(FrontierFeedback {
+                        pair_slot: pair_slot as u16,
+                        direction,
+                        previous_bucket: previous_nearest,
+                        bucket: run_nearest,
+                        distance: buckets[&run_nearest],
+                    });
+                }
+                if run_farthest > previous_farthest {
+                    self.separation_pending.push(FrontierFeedback {
+                        pair_slot: pair_slot as u16,
+                        direction,
+                        previous_bucket: previous_farthest,
+                        bucket: run_farthest,
+                        distance: buckets[&run_farthest],
+                    });
+                }
+            }
+
+            self.nearest_history[directed_index] = previous_nearest.min(run_nearest);
+            self.farthest_history[directed_index] = if previous_farthest == DISTANCE_UNSEEN {
+                run_farthest
+            } else {
+                previous_farthest.max(run_farthest)
+            };
         }
     }
 
     /// Check whether the current input found any new IJON feedback
     pub fn has_new_feedback(&self) -> bool {
         self.pending != 0
+            || !self.distance_pending.is_empty()
+            || !self.proximity_pending.is_empty()
+            || !self.separation_pending.is_empty()
     }
 
-    /// Consume and describe all IJON feedback found by the current input
-    pub fn take_feedback(&mut self) -> Option<String> {
-        if self.pending == 0 {
+    /// Consume all IJON feedback found by the current input
+    pub fn take_feedback(&mut self) -> Option<IjonFeedback> {
+        if !self.has_new_feedback() {
             return None;
         }
 
-        let mut found = Vec::new();
-        if self.pending & FOUND_SET != 0 {
-            found.push("SET");
-        }
-        if self.pending & FOUND_MAX != 0 {
-            found.push("MAX");
-        }
-        if self.pending & FOUND_INC != 0 {
-            found.push("INC");
-        }
-        if self.pending & FOUND_STATE != 0 {
-            found.push("STATE");
-        }
-        if self.pending & FOUND_EVENT != 0 {
-            found.push("EVENT");
-        }
-        if self.pending & FOUND_TEMPORAL != 0 {
-            found.push("TEMPORAL");
-        }
+        let feedback = IjonFeedback {
+            set: self.pending & FOUND_SET != 0,
+            maximum: self.pending & FOUND_MAX != 0,
+            increment: self.pending & FOUND_INC != 0,
+            state: self.pending & FOUND_STATE != 0,
+            event: self.pending & FOUND_EVENT != 0,
+            temporal: self.pending & FOUND_TEMPORAL != 0,
+            order_flip: self.pending & FOUND_ORDER_FLIP != 0,
+            distance: std::mem::take(&mut self.distance_pending),
+            proximity: std::mem::take(&mut self.proximity_pending),
+            separation: std::mem::take(&mut self.separation_pending),
+        };
 
         self.pending = 0;
-        Some(found.join(", "))
+        Some(feedback)
     }
 
     /// Process one IJON operation reported by the guest
@@ -220,21 +428,37 @@ impl Ijon {
                 }
             }
             IJON_STATE => {
-                self.run_state = mix(self.run_state, mix(tag, value));
-                if self.states.insert((rip, tag, self.run_state)) {
-                    self.pending |= FOUND_STATE;
-                }
+                self.run_states.insert((rip, tag), value);
             }
             IJON_EVENT => {
-                let sequence = self.run_events.entry((rip, tag)).or_insert(0);
-                *sequence = mix(*sequence, value);
-                if self.events.insert((rip, tag, *sequence)) {
+                // EVENT represents a semantic transition, not an ever-growing
+                // sequence prefix. Repeated identical events are noise; a
+                // new adjacent transition is a discrete ordering difference.
+                let previous = self.run_events.insert((rip, tag), value);
+                if previous != Some(value) && self.events.insert((rip, tag, previous, value)) {
                     self.pending |= FOUND_EVENT;
                 }
             }
             _ => mega_panic!("Received invalid IJON operation"),
         }
     }
+}
+
+/// Convert an instruction distance to an exact-near, logarithmic-far bucket.
+///
+/// Buckets zero through 63 represent exact distances one through 64. Bucket
+/// 64 represents distances 65 through 127, bucket 65 represents 128 through
+/// 255, and subsequent buckets continue at power-of-two widths. Smaller
+/// bucket numbers are always closer and are safe to compare directly.
+fn proximity_bucket(distance: usize) -> u8 {
+    const EXACT_DISTANCE_LIMIT: usize = 64;
+
+    if distance <= EXACT_DISTANCE_LIMIT {
+        return (distance - 1) as u8;
+    }
+
+    let highest_bit = usize::BITS - distance.leading_zeros() - 1;
+    (EXACT_DISTANCE_LIMIT as u32 + highest_bit - EXACT_DISTANCE_LIMIT.trailing_zeros()) as u8
 }
 
 /// Mix two 64-bit values so all input bits influence state and event feedback

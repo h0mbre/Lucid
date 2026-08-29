@@ -57,7 +57,7 @@ pub struct CorpusStats {
     pub entries: usize,
     pub permanent: usize,
     pub sampled: usize,
-    pub descendant: usize,
+    pub private: usize,
     pub generated: usize,
     pub size: usize,
     pub max_input: usize,
@@ -85,7 +85,7 @@ struct SerialStats {
     corpus_entries: usize,
     corpus_permanent: usize,
     corpus_sampled: usize,
-    corpus_descendant: usize,
+    corpus_private: usize,
     corpus_generated: usize,
     corpus_size: usize,
     report_checksum: usize, // Has to be the last member
@@ -118,7 +118,7 @@ impl SerialStats {
             corpus_entries: stats.corpus_entries,
             corpus_permanent: stats.corpus_permanent,
             corpus_sampled: stats.corpus_sampled,
-            corpus_descendant: stats.corpus_descendant,
+            corpus_private: stats.corpus_private,
             corpus_generated: stats.corpus_generated,
             corpus_size: stats.corpus_size,
             report_checksum: stats.report,
@@ -146,7 +146,7 @@ impl SerialStats {
             corpus_entries: self.corpus_entries,
             corpus_permanent: self.corpus_permanent,
             corpus_sampled: self.corpus_sampled,
-            corpus_descendant: self.corpus_descendant,
+            corpus_private: self.corpus_private,
             corpus_generated: self.corpus_generated,
             corpus_size: self.corpus_size,
             report_checksum: self.report,
@@ -192,7 +192,7 @@ struct FormattedStats {
     corpus_entries: usize,
     corpus_permanent: usize,
     corpus_sampled: usize,
-    corpus_descendant: usize,
+    corpus_private: usize,
     corpus_generated: usize,
     corpus_size: f64,
     max_input: usize,
@@ -221,13 +221,13 @@ pub struct Stats {
     pub memcpys: usize,        // Number of memcpys we're doing for resets
 
     // Corpus related metrics
-    corpus_entries: usize,    // Number of inputs across all four pools
-    corpus_permanent: usize,  // Permanent inputs owned by fuzzers
-    corpus_sampled: usize,    // Inputs sampled from other fuzzers
-    corpus_descendant: usize, // Hit-count inputs descended from parents
-    corpus_generated: usize,  // Hit-count inputs generated from scratch
-    corpus_size: usize,       // Size of permanent and hit-count inputs in bytes
-    max_input: usize,         // The configuration for max input allowed
+    corpus_entries: usize,   // Number of inputs across all four pools
+    corpus_permanent: usize, // Permanent inputs owned by fuzzers
+    corpus_sampled: usize,   // Inputs sampled from other fuzzers
+    corpus_private: usize,   // Bounded inputs private to this worker
+    corpus_generated: usize, // Bounded inputs generated without a corpus parent
+    corpus_size: usize,      // Size of all inputs retained in memory
+    max_input: usize,        // The configuration for max input allowed
 
     // Stats for local batch reporting
     batch_execs: usize,           // Batch fuzzcase executions
@@ -354,7 +354,7 @@ impl Stats {
             corpus_entries: self.corpus_entries,
             corpus_permanent: self.corpus_permanent,
             corpus_sampled: self.corpus_sampled,
-            corpus_descendant: self.corpus_descendant,
+            corpus_private: self.corpus_private,
             corpus_generated: self.corpus_generated,
             corpus_size,
             max_input: self.max_input,
@@ -484,11 +484,11 @@ impl Stats {
         // Keep the total and its four constituent pools together so their
         // relationship is visible without adding another stat column.
         println!(
-            "\x1b[1;32mcorpus:\x1b[0m total {} ({} perm, {} sample, {} desc, {} gen) | size: {:.3} (MB) | max: 0x{:X}",
+            "\x1b[1;32mcorpus:\x1b[0m total {} ({} perm, {} sample, {} private, {} gen) | size: {:.3} (MB) | max: 0x{:X}",
             formatted_stats.corpus_entries,
             formatted_stats.corpus_permanent,
             formatted_stats.corpus_sampled,
-            formatted_stats.corpus_descendant,
+            formatted_stats.corpus_private,
             formatted_stats.corpus_generated,
             formatted_stats.corpus_size,
             formatted_stats.max_input,
@@ -541,7 +541,7 @@ impl Stats {
         self.corpus_entries = corpus.entries;
         self.corpus_permanent = corpus.permanent;
         self.corpus_sampled = corpus.sampled;
-        self.corpus_descendant = corpus.descendant;
+        self.corpus_private = corpus.private;
         self.corpus_generated = corpus.generated;
         self.corpus_size = corpus.size;
         self.max_input = corpus.max_input;
@@ -745,7 +745,7 @@ impl Stats {
         let mut corpus_entries = 0;
         let mut corpus_permanent = 0;
         let mut corpus_sampled = 0;
-        let mut corpus_descendant = 0;
+        let mut corpus_private = 0;
         let mut corpus_generated = 0;
         let mut corpus_size = 0;
 
@@ -773,7 +773,7 @@ impl Stats {
             corpus_entries += stats.corpus_entries;
             corpus_permanent += stats.corpus_permanent;
             corpus_sampled += stats.corpus_sampled;
-            corpus_descendant += stats.corpus_descendant;
+            corpus_private += stats.corpus_private;
             corpus_generated += stats.corpus_generated;
             corpus_size += stats.corpus_size;
 
@@ -820,7 +820,7 @@ impl Stats {
         self.corpus_entries = corpus_entries;
         self.corpus_permanent = corpus_permanent;
         self.corpus_sampled = corpus_sampled;
-        self.corpus_descendant = corpus_descendant;
+        self.corpus_private = corpus_private;
         self.corpus_generated = corpus_generated;
         self.corpus_size = corpus_size;
 

@@ -10,8 +10,9 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use crate::corpus::Corpus;
+use crate::corpus::{Corpus, CorpusInputType};
 use crate::err::LucidErr;
+use crate::ijon::IjonFeedback;
 
 pub mod toy;
 use toy::ToyMutator;
@@ -40,6 +41,26 @@ pub(crate) struct MutatorCore {
     pub fields: Vec<Vec<u8>>,      // RedQueen fields
     pub last_input: Option<usize>, // Corpus index of last base-input used
     pub new_cov: bool,             // Flag for last fuzzing iteration result
+}
+
+/// Findings produced by the input which just finished executing.
+///
+/// Lucid reports generic facts here; mutators remain responsible for deciding
+/// how those facts affect input selection and mutation scheduling.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InputFeedback {
+    pub new_edge: bool,
+    pub hitcount: bool,
+    pub ijon: Option<IjonFeedback>,
+    /// Default corpus class selected for this positive feedback.
+    pub corpus_type: Option<CorpusInputType>,
+}
+
+impl InputFeedback {
+    /// Whether the execution produced any corpus-worthy feedback.
+    pub fn is_interesting(&self) -> bool {
+        self.new_edge || self.hitcount || self.ijon.is_some()
+    }
 }
 
 impl MutatorCore {
@@ -211,6 +232,15 @@ pub trait Mutator {
     /// Default: Set new coverage flag (called from context.rs)
     fn found_coverage(&mut self, found: bool) {
         self.core_mut().found_coverage(found);
+    }
+
+    /// Default: Report the findings from the input which just executed.
+    ///
+    /// Calling the legacy boolean hook preserves existing mutator behavior;
+    /// mutators interested in feedback classes can override this method.
+    fn found_feedback(&mut self, feedback: &InputFeedback) -> Option<CorpusInputType> {
+        self.found_coverage(feedback.is_interesting());
+        feedback.corpus_type
     }
 
     /// Default: Getter for new coverage flag (called from mutators)

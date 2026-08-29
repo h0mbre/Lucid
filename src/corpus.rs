@@ -18,24 +18,26 @@ use crate::{finding, finding_warn, prompt_warn};
 /// The amount of inputs we can sample from disk from other fuzzers
 const SAMPLE_CORPUS_SIZE: usize = 1000;
 
-/// Hit-count descendants may occupy at most 5% of the permanent corpus.
-const HITCOUNT_DESCENDANT_RATIO: f64 = 0.05;
+/// The maximum number of fuzzer-private feedback inputs retained
+const PRIVATE_CORPUS_SIZE: usize = 1000;
 
-/// The maximum number of hit-count inputs generated without a parent.
-const GENERATED_HITCOUNT_SIZE: usize = 64;
+/// The maximum number of generated inputs retained by one worker
+const GENERATED_CORPUS_SIZE: usize = 64;
 
-/// Size of each PC in an input coverage sidecar.
+/// Size of each PC in an input coverage sidecar
 const PC_SIZE: usize = std::mem::size_of::<u64>();
 
-/// Why an input is being admitted to the corpus.
-pub enum CorpusSaveReason {
-    /// Seeds and inputs retained for new edges or semantic feedback.
+/// The retention and sharing class of a corpus input
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CorpusInputType {
+    /// Saved to disk permanent inputs
     Permanent,
-    /// An input retained only because it increased an edge hit-count bucket.
-    Hitcount {
-        /// Flat corpus index of the input used as the mutation base.
-        parent: Option<usize>,
-    },
+    /// Fixed-size view of permanent inputs discovered by other fuzzers
+    Sample,
+    /// Bounded fuzzer-local feedback, never written to disk or shared
+    Private,
+    /// Bounded fuzzer-local inputs generated from scratch
+    Generated,
 }
 
 /// Holds all of the information and statistics we need in order to manage a
@@ -51,17 +53,16 @@ pub struct Corpus {
     pub id: usize,              // Inherited from the LucidContext
     next_sync: Instant,         // The next time we should sync from disk to memory
     sync_interval: u64,         // How often we sync the in-memory corpus with the disk
-    pub corpus_size: usize,     // Permanent and hit-count corpus bytes
+    pub corpus_size: usize,     // Permanent and bounded local corpus bytes
 
     // Inputs sampled from other fuzzers are replaced on every corpus sync.
     sample_inputs: [Option<Vec<u8>>; SAMPLE_CORPUS_SIZE],
     sample_len: usize,
     sample_hashes: HashSet<u64>,
 
-    // Hit-count-only inputs are local FIFO pools. Descendants have a selected
-    // corpus parent; generated inputs were created without a parent.
-    descendant_hitcounts: VecDeque<Vec<u8>>,
-    generated_hitcounts: VecDeque<Vec<u8>>,
+    // Private and generated inputs are bounded fuzzer-local FIFO pools.
+    private_inputs: VecDeque<Vec<u8>>,
+    generated_inputs: VecDeque<Vec<u8>>,
     prng: usize, // pRNG state
 }
 
@@ -74,8 +75,8 @@ impl Corpus {
         let sample_inputs = std::array::from_fn(|_| None);
         let sample_len = 0;
         let sample_hashes = HashSet::new();
-        let descendant_hitcounts = VecDeque::new();
-        let generated_hitcounts = VecDeque::new();
+        let private_inputs = VecDeque::new();
+        let generated_inputs = VecDeque::new();
 
         // Try to read inputs in from the seeds_dir if we have one
         if let Some(seeds_dir) = config.seeds_dir.as_ref() {
@@ -208,8 +209,8 @@ impl Corpus {
             sample_inputs,
             sample_len,
             sample_hashes,
-            descendant_hitcounts,
-            generated_hitcounts,
+            private_inputs,
+            generated_inputs,
             prng,
         })
     }
@@ -234,8 +235,8 @@ impl Corpus {
     pub fn num_inputs(&self) -> usize {
         self.inputs.len()
             + self.sample_len
-            + self.descendant_hitcounts.len()
-            + self.generated_hitcounts.len()
+            + self.private_inputs.len()
+            + self.generated_inputs.len()
     }
 
     /// Return the number of permanent inputs owned by this fuzzer.
@@ -248,18 +249,23 @@ impl Corpus {
         self.sample_len
     }
 
-    /// Return the number of hit-count inputs descended from a corpus parent.
-    pub fn num_descendant_hitcounts(&self) -> usize {
-        self.descendant_hitcounts.len()
+    /// Return the number of bounded fuzzer-private inputs.
+    pub fn num_private_inputs(&self) -> usize {
+        self.private_inputs.len()
     }
 
-    /// Return the number of hit-count inputs generated without a parent.
-    pub fn num_generated_hitcounts(&self) -> usize {
-        self.generated_hitcounts.len()
+    /// Return the number of bounded generated inputs.
+    pub fn num_generated_inputs(&self) -> usize {
+        self.generated_inputs.len()
     }
 
     /// Get an input by index
     pub fn get_input_by_idx(&self, idx: usize) -> Option<&[u8]> {
+        self.get_typed_input_by_idx(idx).map(|(_, input)| input)
+    }
+
+    /// Get an input and its corpus class by flattened index.
+    pub fn get_typed_input_by_idx(&self, idx: usize) -> Option<(CorpusInputType, &[u8])> {
         // Validate index
         if idx >= self.num_inputs() {
             return None;
@@ -267,24 +273,31 @@ impl Corpus {
 
         // Grab from normal corpus
         if idx < self.inputs.len() {
-            return Some(&self.inputs[idx]);
+            return Some((CorpusInputType::Permanent, &self.inputs[idx]));
         }
 
         // Grab from sampled permanent inputs
         let mut pool_idx = idx - self.inputs.len();
         if pool_idx < self.sample_len {
-            return self.sample_inputs[pool_idx].as_deref();
+            return self.sample_inputs[pool_idx]
+                .as_deref()
+                .map(|input| (CorpusInputType::Sample, input));
         }
 
-        // Grab from hit-count descendants.
+        // Grab from fuzzer-private feedback.
         pool_idx -= self.sample_len;
-        if pool_idx < self.descendant_hitcounts.len() {
-            return self.descendant_hitcounts.get(pool_idx).map(Vec::as_slice);
+        if pool_idx < self.private_inputs.len() {
+            return self
+                .private_inputs
+                .get(pool_idx)
+                .map(|input| (CorpusInputType::Private, input.as_slice()));
         }
 
-        // Return from hit-count inputs generated without a parent.
-        pool_idx -= self.descendant_hitcounts.len();
-        self.generated_hitcounts.get(pool_idx).map(Vec::as_slice)
+        // Return an input generated without a corpus parent.
+        pool_idx -= self.private_inputs.len();
+        self.generated_inputs
+            .get(pool_idx)
+            .map(|input| (CorpusInputType::Generated, input.as_slice()))
     }
 
     /// Gets an input from the corpus with pseudo uniform distribution
@@ -292,15 +305,22 @@ impl Corpus {
         // Seed our random
         self.prng = prng;
 
-        // Determine ceiling index
-        let ceiling = self.num_inputs();
-        if ceiling == 0 {
+        let permanent_len = self.inputs.len() + self.sample_len;
+        let local_len = self.private_inputs.len() + self.generated_inputs.len();
+        if permanent_len + local_len == 0 {
             return (0, None);
         }
 
-        // Treat all four pools as one logical corpus. Every individual input
-        // therefore has the same chance of being selected.
-        let idx = self.rand() % ceiling;
+        // Permanent coverage/IJON inputs are the primary mutation bases.
+        // Bounded local inputs retain a small explicit lane without being able
+        // to dominate selection if their pools grow relative to the corpus.
+        let idx = if permanent_len == 0 {
+            self.rand() % local_len
+        } else if local_len == 0 || !self.rand().is_multiple_of(16) {
+            self.rand() % permanent_len
+        } else {
+            permanent_len + self.rand() % local_len
+        };
 
         // Return the selected input from the flattened corpus
         (idx, self.get_input_by_idx(idx))
@@ -313,32 +333,44 @@ impl Corpus {
     ///
     /// It's important to note that if we fail to write the input to disk because
     /// of the findings limit, then we also don't save the input to memory
-    pub fn save_input(&mut self, input: &Vec<u8>, reason: CorpusSaveReason) -> u64 {
+    pub fn save_input(
+        &mut self,
+        input: &[u8],
+        input_type: CorpusInputType,
+        publish_ijon: bool,
+    ) -> u64 {
         let hash = Self::hash_input(input);
 
-        // Hit-count-only inputs stay local and never touch disk. Whether the
-        // mutator selected a parent determines which bounded FIFO owns them.
-        match reason {
-            CorpusSaveReason::Hitcount { parent: Some(_) } => {
-                self.save_descendant_hitcount(input);
+        match input_type {
+            CorpusInputType::Private => {
+                self.save_private_input(input);
                 return hash;
             }
-            CorpusSaveReason::Hitcount { parent: None } => {
-                self.save_generated_hitcount(input);
+            CorpusInputType::Generated => {
+                self.save_generated_input(input);
                 return hash;
             }
-            CorpusSaveReason::Permanent => {}
+            CorpusInputType::Sample => {
+                panic!("sample inputs may only be admitted by corpus sync");
+            }
+            CorpusInputType::Permanent => {}
         }
 
         // A worker can rediscover one of its seeds or one of its own findings.
         // Neither case should consume disk budget or create another corpus row.
         if self.input_hashes.contains(&hash) {
+            if publish_ijon {
+                self.save_input_ijon(hash);
+            }
             return hash;
         }
 
         // Create the file path for the new input
         let file_path = std::path::Path::new(&self.inputs_dir).join(format!("{:016X}.input", hash));
         if file_path.exists() {
+            if publish_ijon {
+                self.save_input_ijon(hash);
+            }
             return hash;
         }
 
@@ -348,37 +380,86 @@ impl Corpus {
             return hash;
         }
 
-        // Create the file exclusively. Multiple fuzzers share this directory,
-        // so another worker can publish the same input after the check above.
+        // Write privately, then hard-link the complete inode into the shared
+        // namespace. Multiple fuzzers may race on the same content hash, but
+        // peers can never observe a partially written `.input` file.
+        let tmp_path = std::path::Path::new(&self.inputs_dir).join(format!(
+            "{:016X}.input.{}.{}.tmp",
+            hash,
+            std::process::id(),
+            self.id
+        ));
         let mut file = match OpenOptions::new()
             .write(true)
-            .create_new(true)
-            .open(&file_path)
+            .create(true)
+            .truncate(true)
+            .open(&tmp_path)
         {
             Ok(file) => file,
             Err(e) => {
-                // Another worker winning the create race is normal.
-                if e.kind() != std::io::ErrorKind::AlreadyExists {
-                    finding_warn!(self.id, "Unable to save new input to disk, error: {}", e);
-                }
+                finding_warn!(self.id, "Unable to stage new input on disk, error: {}", e);
                 return hash;
             }
         };
 
         if let Err(e) = file.write_all(input) {
-            // This worker created the file, so it also owns cleanup if the
-            // write failed before the input could be published.
-            let _ = std::fs::remove_file(&file_path);
+            let _ = std::fs::remove_file(&tmp_path);
             finding_warn!(self.id, "Unable to save new input to disk, error: {}", e);
             return hash;
         }
+        drop(file);
+
+        if let Err(e) = std::fs::hard_link(&tmp_path, &file_path) {
+            let _ = std::fs::remove_file(&tmp_path);
+
+            // Another worker winning the publication race is normal. The
+            // winner's final path is complete because it used this protocol.
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                if publish_ijon {
+                    self.save_input_ijon(hash);
+                }
+            } else {
+                finding_warn!(self.id, "Unable to publish new input on disk, error: {}", e);
+            }
+            return hash;
+        }
+        let _ = std::fs::remove_file(&tmp_path);
 
         self.output_limit -= input.len();
-        self.inputs.push(input.clone());
+        self.inputs.push(input.to_vec());
         self.corpus_size += input.len();
         self.input_hashes.insert(hash);
 
+        if publish_ijon {
+            self.save_input_ijon(hash);
+        }
+
         hash
+    }
+
+    /// Publish an IJON discovery after its matching input is complete.
+    fn save_input_ijon(&mut self, hash: u64) {
+        let input_path =
+            std::path::Path::new(&self.inputs_dir).join(format!("{:016X}.input", hash));
+        if !input_path.is_file() {
+            return;
+        }
+
+        let ijon_path = std::path::Path::new(&self.inputs_dir).join(format!("{:016X}.ijon", hash));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&ijon_path)
+        {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => finding_warn!(
+                self.id,
+                "Unable to publish IJON sidecar {:016X}, error: {}",
+                hash,
+                e
+            ),
+        }
     }
 
     /// Hash an input using the corpus file-name hash.
@@ -388,28 +469,25 @@ impl Corpus {
         hasher.finish()
     }
 
-    /// Add a hit-count input descended from a selected corpus parent.
-    fn save_descendant_hitcount(&mut self, input: &[u8]) {
-        self.descendant_hitcounts.push_back(input.to_vec());
+    /// Add feedback that stays private to this worker.
+    fn save_private_input(&mut self, input: &[u8]) {
+        self.private_inputs.push_back(input.to_vec());
         self.corpus_size += input.len();
 
-        // Permanent inputs are the only unbounded local pool. The descendant
-        // allowance grows by one entry for every twenty permanent inputs.
-        let limit = (self.inputs.len() as f64 * HITCOUNT_DESCENDANT_RATIO) as usize;
-        while self.descendant_hitcounts.len() > limit {
-            if let Some(removed) = self.descendant_hitcounts.pop_front() {
+        while self.private_inputs.len() > PRIVATE_CORPUS_SIZE {
+            if let Some(removed) = self.private_inputs.pop_front() {
                 self.corpus_size -= removed.len();
             }
         }
     }
 
-    /// Add a hit-count input produced without selecting a corpus parent.
-    fn save_generated_hitcount(&mut self, input: &[u8]) {
-        self.generated_hitcounts.push_back(input.to_vec());
+    /// Add an input produced without selecting a corpus parent.
+    fn save_generated_input(&mut self, input: &[u8]) {
+        self.generated_inputs.push_back(input.to_vec());
         self.corpus_size += input.len();
 
-        while self.generated_hitcounts.len() > GENERATED_HITCOUNT_SIZE {
-            if let Some(removed) = self.generated_hitcounts.pop_front() {
+        while self.generated_inputs.len() > GENERATED_CORPUS_SIZE {
+            if let Some(removed) = self.generated_inputs.pop_front() {
                 self.corpus_size -= removed.len();
             }
         }
@@ -514,13 +592,23 @@ impl Corpus {
             Ok(_) => {
                 self.output_limit -= input.len();
                 // Copy the input bytes over in memory only if successfully saved to disk
-                finding!(
-                    self.id,
-                    "Saved {} input '{:016X}' ({} bytes)",
-                    filetype,
-                    hash,
-                    input.len()
-                );
+                if filetype == "crash" {
+                    finding!(
+                        self.id,
+                        "\x1b[1;31mSaved {} input '{:016X}' ({} bytes)\x1b[0m",
+                        filetype,
+                        hash,
+                        input.len()
+                    );
+                } else {
+                    finding!(
+                        self.id,
+                        "Saved {} input '{:016X}' ({} bytes)",
+                        filetype,
+                        hash,
+                        input.len()
+                    );
+                }
             }
             Err(e) => {
                 finding_warn!(
@@ -546,8 +634,11 @@ impl Corpus {
 
     /// Shouldn't be necessary, but check to make sure it's a somewhat sane
     /// file before we try ingesting it during the corpus-syncing process
-    fn is_valid_pc_file(&self, path: &std::path::Path) -> bool {
-        path.is_file() && path.extension().is_some_and(|ext| ext == "pcs")
+    fn is_valid_sync_file(&self, path: &std::path::Path) -> bool {
+        path.is_file()
+            && path
+                .extension()
+                .is_some_and(|ext| ext == "pcs" || ext == "ijon")
     }
 
     /// Thin wrapper around reading the corpus directory entries during the
@@ -588,6 +679,7 @@ impl Corpus {
         // Iterate through all the entries and see which ones we don't have, if
         // we don't have them, they become a candidate to be sampled
         let mut candidates = Vec::new();
+        let mut candidate_hashes = HashSet::new();
         for entry in entries {
             // Skip failed entry results with warning
             let entry = match entry {
@@ -602,7 +694,7 @@ impl Corpus {
             let path = entry.path();
 
             // Make sure it's somewhat valid looking
-            if !self.is_valid_pc_file(&path) {
+            if !self.is_valid_sync_file(&path) {
                 continue;
             }
 
@@ -613,30 +705,32 @@ impl Corpus {
                     continue;
                 }
 
-                // Decode this input's newly discovered PCs and skip it when this
-                // fuzzer has already observed every one of them
-                let bytes = match std::fs::read(&path) {
-                    Ok(bytes) if bytes.len() % PC_SIZE == 0 => bytes,
-                    Ok(_) => {
-                        finding_warn!(self.id, "Ignoring malformed PC sidecar {:016X}", hash);
+                if path.extension().is_some_and(|ext| ext == "pcs") {
+                    // PC inputs are useful only if this worker has not already
+                    // observed all the PCs advertised by the sidecar.
+                    let bytes = match std::fs::read(&path) {
+                        Ok(bytes) if bytes.len() % PC_SIZE == 0 => bytes,
+                        Ok(_) => {
+                            finding_warn!(self.id, "Ignoring malformed PC sidecar {:016X}", hash);
+                            continue;
+                        }
+                        Err(e) => {
+                            finding_warn!(
+                                self.id,
+                                "Failed to read input PC sidecar {:016X}: {}",
+                                hash,
+                                e
+                            );
+                            continue;
+                        }
+                    };
+                    let has_unseen_pc = bytes.chunks_exact(PC_SIZE).any(|bytes| {
+                        let pc = u64::from_le_bytes(bytes.try_into().unwrap());
+                        !seen_pcs.contains(&pc)
+                    });
+                    if !has_unseen_pc {
                         continue;
                     }
-                    Err(e) => {
-                        finding_warn!(
-                            self.id,
-                            "Failed to read input PC sidecar {:016X}: {}",
-                            hash,
-                            e
-                        );
-                        continue;
-                    }
-                };
-                let has_unseen_pc = bytes.chunks_exact(PC_SIZE).any(|bytes| {
-                    let pc = u64::from_le_bytes(bytes.try_into().unwrap());
-                    !seen_pcs.contains(&pc)
-                });
-                if !has_unseen_pc {
-                    continue;
                 }
 
                 // The sidecar is the publication marker, so derive and verify
@@ -644,12 +738,14 @@ impl Corpus {
                 let input_path =
                     std::path::Path::new(&self.inputs_dir).join(format!("{:016X}.input", hash));
                 if !input_path.is_file() {
-                    finding_warn!(self.id, "PC sidecar {:016X} has no input", hash);
+                    finding_warn!(self.id, "Publication sidecar {:016X} has no input", hash);
                     continue;
                 }
 
                 // Add this to the candidate pool
-                candidates.push((hash, input_path));
+                if candidate_hashes.insert(hash) {
+                    candidates.push((hash, input_path));
+                }
             }
         }
 
@@ -728,8 +824,8 @@ impl Corpus {
         self.sample_len = 0;
         self.sample_hashes.clear();
 
-        // Scan PC sidecars and sample only inputs that carry a PC this fuzzer
-        // has not observed, files have this format: `8B5BB66137A8AA15.pcs`
+        // Scan durable PC and IJON publication sidecars. PC inputs must carry
+        // an unseen PC; IJON inputs are first-class semantic candidates.
         self.sample_inputs_from_disk(seen_pcs);
 
         finding!(self.id, "Sampled {} inputs from disk", self.sample_len);

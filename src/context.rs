@@ -11,7 +11,7 @@ use std::arch::{asm, global_asm};
 use std::mem::size_of;
 
 use crate::config::Config;
-use crate::corpus::{Corpus, CorpusSaveReason};
+use crate::corpus::{Corpus, CorpusInputType};
 use crate::coverage::CoverageMap;
 use crate::edge_pc::{lucid_report_edge_pcs, EdgePc};
 use crate::err::LucidErr;
@@ -21,7 +21,7 @@ use crate::loader::Bochs;
 use crate::misc::PAGE_SIZE;
 use crate::misc::{fxrstor64, fxsave64, get_xcr0, xrstor64, xsave64};
 use crate::mmu::Mmu;
-use crate::mutators::{create_mutator, Mutator};
+use crate::mutators::{create_mutator, InputFeedback, Mutator};
 use crate::redqueen::{lucid_report_cmps, redqueen_pass, Redqueen};
 use crate::snapshot::{restore_snapshot, take_snapshot, Snapshot};
 use crate::stats::{CorpusStats, SnapshotStats, Stats};
@@ -1393,35 +1393,51 @@ pub fn handle_new_coverage(
     }
 
     // IJON feedback is intentionally treated like real coverage feedback
-    if !context.new_code_coverage {
-        if let Some(feedback) = ijon_feedback.as_ref() {
-            finding!(
-                context.fuzzer_id,
-                "{} discovered IJON feedback: {}",
-                context.fuzzing_stage,
-                feedback
-            );
-        }
+    if let Some(feedback) = ijon_feedback.as_ref() {
+        finding!(
+            context.fuzzer_id,
+            "{} discovered IJON feedback: {}",
+            context.fuzzing_stage,
+            feedback
+        );
     }
 
-    // Save input, update stats, and send it off to Redqueen for processing
-    if context.new_code_coverage || ijon_feedback.is_some() {
-        // New edges and IJON feedback are permanent corpus entries. An input that
-        // simply increases an edge-to-edge hitcount bucket, will be handled differently.
-        // Hitcount inputs are limited so that they don't dominate the corpus. Any permanent
-        // input (found novel edge-pair or resulted from IJON) has exactly one hitcount child
-        // input that can persist in the corpus, that is continually replaced if it sets
-        // new hitcount records. So this is the parent -> child relationship.
-        let save_reason = if found_new_edge || ijon_feedback.is_some() {
-            CorpusSaveReason::Permanent
+    // Classify what kind of input we have on our hands
+    let corpus_type = if found_new_edge || ijon_feedback.is_some() {
+        Some(CorpusInputType::Permanent)
+    } else if context.new_code_coverage {
+        Some(if context.mutator.get_last_input().is_some() {
+            CorpusInputType::Private
         } else {
-            CorpusSaveReason::Hitcount {
-                parent: context.mutator.get_last_input(),
-            }
-        };
-        let input_hash = context
-            .corpus
-            .save_input(context.mutator.get_input_ref(), save_reason);
+            CorpusInputType::Generated
+        })
+    } else {
+        None
+    };
+
+    // Fill-in feedback information
+    let feedback = InputFeedback {
+        new_edge: found_new_edge,
+        hitcount: context.new_code_coverage && !found_new_edge,
+        ijon: ijon_feedback,
+        corpus_type,
+    };
+    let selected_type = context.mutator.found_feedback(&feedback);
+
+    // New edges are always permanent and saved to disk (shared)
+    let selected_type = if feedback.new_edge {
+        Some(CorpusInputType::Permanent)
+    } else {
+        selected_type
+    };
+
+    // Save input, update stats, and send it off to Redqueen for processing
+    if let Some(input_type) = selected_type {
+        let publish_ijon = feedback.ijon.is_some() && input_type == CorpusInputType::Permanent;
+        let input_hash =
+            context
+                .corpus
+                .save_input(context.mutator.get_input_ref(), input_type, publish_ijon);
         context.stats.new_coverage(new_edge_count);
 
         // Save edge PCs to the input's disk file for corpus syncing/accounting
@@ -1437,7 +1453,12 @@ pub fn handle_new_coverage(
         }
     }
 
-    // Return new edge count to caller
+    // Update stats if we found new edge coverage
+    if !context.new_code_coverage && feedback.ijon.is_some() {
+        context.stats.new_coverage(new_edge_count);
+    }
+
+    // Return new edge count
     Ok(new_edge_count)
 }
 
@@ -1615,8 +1636,8 @@ fn generate_stats_update(context: &LucidContext) -> (SnapshotStats, CorpusStats)
         entries: context.corpus.num_inputs(),
         permanent: context.corpus.num_permanent_inputs(),
         sampled: context.corpus.num_sampled_inputs(),
-        descendant: context.corpus.num_descendant_hitcounts(),
-        generated: context.corpus.num_generated_hitcounts(),
+        private: context.corpus.num_private_inputs(),
+        generated: context.corpus.num_generated_inputs(),
         size: context.corpus.corpus_size,
         max_input: context.config.input_max_size,
     };
@@ -1703,7 +1724,6 @@ pub fn fuzz_loop(context: &mut LucidContext, id: Option<usize>) -> Result<(), Lu
         };
 
         // Act on result
-        let mut new_cov = false;
         match fuzzing_result {
             FuzzingResult::Crash => {
                 old_edge_count = handle_crash(context, old_edge_count)?;
@@ -1713,13 +1733,15 @@ pub fn fuzz_loop(context: &mut LucidContext, id: Option<usize>) -> Result<(), Lu
             }
             FuzzingResult::NewCoverage => {
                 old_edge_count = handle_new_coverage(context, old_edge_count)?;
-                new_cov = true;
             }
             _ => (),
         }
 
-        // Set flag on mutator
-        context.mutator.found_coverage(new_cov);
+        // New findings are reported before their save decision. Every other
+        // execution still clears the mutator's last-feedback state here
+        if fuzzing_result != FuzzingResult::NewCoverage {
+            let _ = context.mutator.found_feedback(&InputFeedback::default());
+        }
 
         // Update stats
         let (snapshot_stats, corpus_stats) = generate_stats_update(context);

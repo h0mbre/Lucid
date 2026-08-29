@@ -645,7 +645,10 @@ pub extern "C" fn lucid_syscall(
         }
         // exit_group
         0xE7 => {
-            fault!(contextp, LucidErr::from("Bochs exited early"));
+            fault!(
+                contextp,
+                LucidErr::from(&format!("Bochs exited early with status {}", a1 as i32))
+            );
         }
         _ => {
             fault!(
