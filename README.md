@@ -299,21 +299,60 @@ The optional `--colorize` pass is substantially slower and requires
 ```
 
 ## IJON
-Lucid supports five target-defined IJON feedback operations. Instrumented guest
+Lucid exposes six generic, target-defined IJON operations. Instrumented guest
 code places the operation in `R8`, a tag in `R9`, a value in `R10`, and executes
-`xchg r11w, r11w`. This instruction remains an ordinary NOP outside Lucid's
-patched Bochs. Rust interprets the operation as follows:
+`xchg r11w, r11w`. The self-exchange remains an ordinary NOP outside Lucid's
+patched Bochs. For scalar operations, the instruction RIP identifies the
+instrumentation site:
 
-- `0`: SET records a previously unseen `(site, tag, value)`.
-- `1`: MAX records a new maximum for `(site, tag)`.
-- `2`: INC records a new per-input execution-count maximum.
-- `3`: STATE mixes the value into the current input's path state.
-- `4`: EVENT records new ordered event-sequence prefixes.
+- `0` — **SET** records a previously unseen `(site, tag, value)` tuple.
+- `1` — **MAX** records a new maximum value for `(site, tag)`.
+- `2` — **INC** records a new per-input execution-count maximum for
+  `(site, tag)`.
+- `3` — **STATE** records a previously unseen terminal value for `(site, tag)`.
+  Intermediate values are deliberately ignored so feedback represents a
+  discrete end-state difference rather than every prefix used to reach it.
+- `4` — **EVENT** records a previously unseen adjacent value transition for
+  `(site, tag)`. Repeated identical events are ignored; this rewards semantic
+  ordering differences without hashing an ever-growing event prefix.
+- `5` — **TEMPORAL** associates a logical site ID (`tag`) with a per-input
+  object ID (`value`). Bochs attaches the vCPU and the event's position in a
+  machine-wide instruction timeline before reporting the events to Lucid.
 
-New IJON feedback has the same corpus and Redqueen behavior as new edge
-coverage. IJON feedback and ordinary edge coverage are tracked independently,
-and IJON-only findings do not cause a secondary execution. All IJON bookkeeping
-is generic; its tags and values only have meaning to the instrumented target.
+Temporal events are paired with the immediately preceding event for the same
+object during that fuzzcase. Same-vCPU events update the object's history but
+do not earn temporal novelty. A transition between vCPUs is canonicalized as
+one site pair with independent direction and distance state, producing one or
+more of these feedback reasons:
+
+- **TEMPORAL** — the first observation of a directed cross-vCPU site pair.
+- **ORDER_FLIP** — the first observation of that pair in the opposite order.
+- **DISTANCE** — the first observation of a distance bucket for that direction.
+- **PROXIMITY** — a new nearest-distance frontier for that direction.
+- **SEPARATION** — a new farthest-distance frontier for that direction.
+
+Instruction distances one through 64 have exact buckets; larger distances use
+power-of-two buckets. Thus close race windows retain single-instruction
+resolution while widely separated events do not create one corpus distinction
+per instruction. Initial temporal discovery initializes both frontiers but
+does not count as a proximity or separation improvement. One execution may
+report several IJON reasons at once.
+
+IJON and ordinary edge coverage are tracked independently. Lucid passes the
+complete `InputFeedback` and its suggested `CorpusInputType` to the mutator,
+which may retain, reclassify, or decline the input and may use frontier feedback
+for its own scheduling policy. New edge coverage is always forced into the
+permanent corpus. By default, IJON findings are permanent; campaign mutators can
+instead keep high-volume feedback such as distance-only discoveries in the
+bounded, fuzzer-local private corpus. Any retained input is eligible for
+Redqueen when Redqueen is enabled.
+
+Permanent IJON inputs are written and shared with an empty `.ijon` sidecar so
+peers can recognize their provenance. The sidecar is currently a marker, not a
+serialization of the semantic or temporal maps; those novelty histories remain
+in worker memory and are not yet reconstructed by a resumed process. All IJON
+bookkeeping remains target-agnostic: only the instrumented target assigns
+meaning to site IDs, tags, values, and object identities.
 
 # Contributors
 People who have had a hand in the project one way or another thus far:
