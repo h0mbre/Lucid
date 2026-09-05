@@ -94,11 +94,11 @@ newgrp docker
 
 ## Binary Integrity (SHA-1)
 
-- `lucid-fuzz`  9e85e320d83825c6e5b51086d56ba66ad9bff04d
-- `gui-bochs`  801d2882858e72127a7e481bb6f6534f3026cc2d
-- `lucid-bochs`  f96f096f5fd3a7a5e2d3d845f9f49e3d808997f5
-- `gui-bochs-smp`  d11198c3020844fd90aa1d6b040d1ed3a2722b82
-- `lucid-bochs-smp`  28e52b766b82fc527971cc40578225189d281aa3
+- `lucid-fuzz`  853e10db920e34ab78476767f45dc34c06b670ff
+- `gui-bochs`  f150ed7603c2761b9e8cf3cce4cd8f1b1f84a782
+- `lucid-bochs`  c156facb502ac3e4ff1821942aaa023e0d823b32
+- `gui-bochs-smp`  4678e664f803db9e40c7c81ddd6963cee2b9b2f1
+- `lucid-bochs-smp`  fac337ab239b9d024265707a9e15e85b040679eb
 - `BIOS-bochs-latest`  c654a401c6f4257324640b157a7e16bf334a263c
 - `VGABIOS-lgpl-latest`  35aa458948da1fcb747f70d3536c6de08e15f498
 
@@ -236,12 +236,12 @@ batch: execs: 211 | execs/s: 211.36 | execs/s/f: 26.42
 cpu: target: 83.5% | reset: 10.3% | mutator: 0.0% | coverage: 0.2% | redqueen: 6.0% | misc: 0.1%
 coverage: edges: 17487 | last find: 0h 0m 0s, 0 execs | map: 26.68%
 snapshot: dirty pages: 7392 | dirty / total: 0.00131% | reset memcpys: 672
-corpus: total 291 (180 perm, 80 sample, 9 desc, 22 gen) | size: 0.100 (MB) | max: 0x10088
+corpus: total 291 (180 perm, 80 sample, 9 private, 22 gen) | size: 0.100 (MB) | max: 0x10088
 ```
 ## Globals
 These are stats about the entire fuzzing campaign:
 - `uptime`: The duration thus far of this fuzzing session
-- `fuzzers`: The number of fuzzer processes that are currently active
+- `fuzzers`: The configured number of fuzzer worker processes
 - `crashes`: Total crashes across the campaign
 - `timeouts`: Total timeouts across the campaign
 
@@ -267,28 +267,36 @@ These are stats about how we are spending our CPU time:
 - `misc`: Remainder of CPU time 
 
 ## Coverage
-- `edges`: The number of unique edge pairs the fuzzer has discovered
-- `last find`: Wall-clock and executions since the last time we set a campaign record globally for edges discovered
-- `map`: The percentage of the coverage map we have used 
+- `edges`: Occupied edge-pair coverage-map slots. In a multi-fuzzer report this is the largest count reported by any worker, not a union across workers
+- `last find`: Wall-clock time and executions since `edges` last increased in a multi-fuzzer report. In single-fuzzer mode, positive feedback can reset it even without a new edge, including retained hit-count inputs and IJON feedback
+- `map`: The reported `edges` count as a percentage of the configured coverage-map size
 
 These are disk artifacts the fuzzers produce related to coverage. Each individual fuzzer tracks its own novel edge-transition PCs and the campaign managing parent process will merge those files into a `global.coverage` file.
 - `coverage/fuzzer-N.coverage`: PCs newly observed by fuzzer `N`
 - `coverage/global.coverage`: the manager's consolidated campaign PCs
 
 ## Snapshot
-- `dirty pages`: The number of pages we've marked dirty for differential resets
+- `dirty pages`: The number of pages we've marked dirty for differential resets; a multi-fuzzer report shows the largest count reported by any worker
 - `dirty / total`: Ratio between dirtied pages and writable pages in Bochs
-- `reset memcpys`: The number of `memcpy` invocations needed to reset the dirty pages (after merging neighboring page ranges)
+- `reset memcpys`: The number of `memcpy` invocations needed to reset the dirty pages (after merging neighboring page ranges); a multi-fuzzer report shows the largest count reported by any worker
 
 ## Corpus
-- `total`: Number of inputs in the corpus globally, followed by the `perm`, `sample`, `desc`, and `gen` pool sizes
-- `size`: Combined in-memory size of permanent and hit-count inputs, reported in MB; sampled inputs are excluded
+- `total`: Aggregate number of in-memory inputs across all fuzzers, followed by the `perm`, `sample`, `private`, and `gen` pool sizes
+- `perm`: Initial seeds and permanent findings owned by each fuzzer. Permanent findings are written to disk and are eligible for corpus sharing
+- `sample`: A bounded view of permanent inputs discovered by other fuzzers, refreshed from disk at corpus sync (up to 1,000 per fuzzer)
+- `private`: Bounded fuzzer-local feedback inputs that are never written to disk or shared (up to 1,000 per fuzzer)
+- `gen`: Bounded fuzzer-local inputs created without a corpus parent (up to 64 per fuzzer)
+- `size`: Aggregate bytes held in the permanent, private, and generated pools, reported in MB; sampled inputs are excluded
 - `max`: Size limit for an input
+
+When both classes are available for mutation, Lucid chooses from the permanent
+and sampled pools 15/16 of the time and from the private and generated pools
+1/16 of the time. Selection within the chosen class is uniform.
 
 # Special Feedbacks
 ## Redqueen
 Redqueen processing is disabled by default. Pass `--redqueen` to enqueue
-coverage-producing inputs for comparison-guided processing. Mutators that do
+retained positive-feedback inputs for comparison-guided processing. Mutators that do
 not expose Redqueen fields receive no benefit from enabling it and should
 normally leave it disabled.
 

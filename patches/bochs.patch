@@ -2437,3 +2437,23 @@
           if (++processor == BX_SMP_PROCESSORS) {
             processor = 0;
             BX_TICKN(executed / BX_SMP_PROCESSORS);
+--- /dev/null
++++ bochs/lucid_scheduler.h
+@@ -0,0 +1,17 @@
++/////////////////////////////////////////////////////////////////////////
++// $Id$
++/////////////////////////////////////////////////////////////////////////
++
++#ifndef BX_LUCID_SCHEDULER_H
++#define BX_LUCID_SCHEDULER_H
++
++#if BX_LUCID && BX_SUPPORT_SMP
++extern Bit64u bx_lucid_scheduler_state;
++extern unsigned bx_lucid_scheduler_quantum;
++extern bool bx_lucid_scheduler_restore_default;
++
++void bx_lucid_set_scheduler_seed(Bit64u seed);
++unsigned bx_lucid_next_scheduler_quantum(void);
++#endif
++
++#endif

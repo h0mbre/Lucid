@@ -154,14 +154,15 @@ impl SerialStats {
     }
 }
 
-/// Update one worker's most recently observed throughput. Worker stat files are
-/// published independently, so their reporting intervals need not have equal
-/// durations. A file that has not advanced retains its previous rate instead
-/// of making the aggregate temporarily lose that worker.
+/// Update one worker's throughput for the current reporting interval. A stat
+/// file that has not advanced contributes no work instead of carrying a stale
+/// rate forward indefinitely.
 fn update_worker_batch_rate(rate: &mut f64, batch: &SerialStats) {
-    if batch.total_time != 0 {
-        *rate = batch.execs as f64 / (batch.total_time as f64 / 1000.0);
-    }
+    *rate = if batch.total_time == 0 {
+        0.0
+    } else {
+        batch.execs as f64 / (batch.total_time as f64 / 1000.0)
+    };
 }
 
 /// A data structure for statistics that have already been formatted and can
@@ -299,7 +300,11 @@ impl Stats {
 
         // Batch performance covers only the most recent reporting interval.
         let batch_execs_per_sec = if matches!(self.report_mode, ReportMode::Single) {
-            self.batch_execs as f64 / batch_seconds
+            if batch_seconds == 0.0 {
+                0.0
+            } else {
+                self.batch_execs as f64 / batch_seconds
+            }
         } else {
             self.batch_execs_per_sec
         };
@@ -308,11 +313,18 @@ impl Stats {
         let batch_execs_per_sec_fuzzer = batch_execs_per_sec / self.fuzzers as f64;
 
         // Generate the batch's CPU time spent where values
-        let cpu_target = (self.batch_target.as_millis() as f64 / batch_millis) * 100.0;
-        let cpu_reset = (self.batch_reset.as_millis() as f64 / batch_millis) * 100.0;
-        let cpu_mutator = (self.batch_mutator.as_millis() as f64 / batch_millis) * 100.0;
-        let cpu_coverage = (self.batch_coverage.as_millis() as f64 / batch_millis) * 100.0;
-        let cpu_redqueen = (self.batch_redqueen.as_millis() as f64 / batch_millis) * 100.0;
+        let percent = |duration: Duration| {
+            if batch_millis == 0.0 {
+                0.0
+            } else {
+                (duration.as_millis() as f64 / batch_millis) * 100.0
+            }
+        };
+        let cpu_target = percent(self.batch_target);
+        let cpu_reset = percent(self.batch_reset);
+        let cpu_mutator = percent(self.batch_mutator);
+        let cpu_coverage = percent(self.batch_coverage);
+        let cpu_redqueen = percent(self.batch_redqueen);
         let cpu_misc =
             (100.0 - (cpu_target + cpu_reset + cpu_mutator + cpu_coverage + cpu_redqueen)).max(0.0);
 
