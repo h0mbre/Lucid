@@ -180,6 +180,7 @@ struct FormattedStats {
     timeouts: usize,
     edges: usize,
     last_find: String,
+    drought: String,
     map_coverage: f64,
     cpu_target: f64,
     cpu_reset: f64,
@@ -209,6 +210,8 @@ pub struct Stats {
     session_start: Option<Instant>, // Start time
     last_find: Option<Instant>,     // Last new coverage find
     last_find_execs: usize,         // Executions since last new coverage find
+    drought: Duration,              // Longest interval without new coverage
+    drought_execs: usize,           // Executions in the longest drought
     pub crashes: usize,             // Number of crashes
     pub timeouts: usize,            // Number of timeouts
     pub fuzzers: usize,             // Number of fuzzers
@@ -250,6 +253,38 @@ pub struct Stats {
 }
 
 impl Stats {
+    /// Retain a completed no-new-coverage interval when it exceeds the
+    /// campaign's previous high-water mark.
+    fn record_drought(&mut self, elapsed: Duration, execs: usize) {
+        if elapsed > self.drought {
+            self.drought = elapsed;
+            self.drought_execs = execs;
+        }
+    }
+
+    /// Record the current last-find interval before a coverage discovery
+    /// resets it.
+    fn finish_drought(&mut self) {
+        if let Some(last_find) = self.last_find {
+            self.record_drought(last_find.elapsed(), self.last_find_execs);
+        }
+    }
+
+    /// Return the drought high-water mark. An in-progress interval becomes
+    /// the high-water mark as soon as it exceeds every completed interval.
+    fn current_drought(&self) -> (Duration, usize) {
+        let current = self
+            .last_find
+            .map(|last_find| last_find.elapsed())
+            .unwrap_or_default();
+
+        if current > self.drought {
+            (current, self.last_find_execs)
+        } else {
+            (self.drought, self.drought_execs)
+        }
+    }
+
     /// Creates a new Stats structure based on the provided Config
     pub fn new(config: &Config, dirty_block_length: usize, input_max_size: usize) -> Self {
         // Determine mode
@@ -292,6 +327,15 @@ impl Stats {
 
         // Format the executions since the last coverage find.
         let lf_execs = format_execs(self.last_find_execs);
+
+        // Format the longest interval observed without new coverage. Keep the
+        // elapsed time and execution count from the same interval.
+        let (drought_elapsed, drought_execs) = self.current_drought();
+        let drought_seconds = drought_elapsed.as_secs();
+        let drought_hours = drought_seconds / 3600;
+        let drought_minutes = (drought_seconds % 3600) / 60;
+        let drought_secs = drought_seconds % 60;
+        let drought_execs = format_execs(drought_execs);
 
         // For single process
         let batch_elapsed = self.batch_start.unwrap().elapsed();
@@ -352,6 +396,10 @@ impl Stats {
             last_find: format!(
                 "{}h {}m {}s, {} execs",
                 lf_hours, lf_minutes, lf_secs, lf_execs
+            ),
+            drought: format!(
+                "{}h {}m {}s, {} execs",
+                drought_hours, drought_minutes, drought_secs, drought_execs
             ),
             map_coverage: (self.edges as f64 / self.map_size as f64) * 100.0,
             cpu_target,
@@ -468,7 +516,8 @@ impl Stats {
         // Print coverage metrics
         let coverage = [
             ("edges".to_string(), formatted_stats.edges.to_string()),
-            ("last find".to_string(), formatted_stats.last_find),
+            ("last".to_string(), formatted_stats.last_find),
+            ("drought".to_string(), formatted_stats.drought),
             (
                 "map".to_string(),
                 format!("{:.2}%", formatted_stats.map_coverage),
@@ -532,6 +581,8 @@ impl Stats {
         self.batch_start = Some(Instant::now());
         self.last_find = Some(Instant::now());
         self.last_find_execs = 0;
+        self.drought = Duration::ZERO;
+        self.drought_execs = 0;
         self.map_size = map_size;
         self.dirty_block_length = dirty_block_length;
         self.max_input = input_max_size;
@@ -596,6 +647,7 @@ impl Stats {
 
     /// Update stats when new coverage has been detected
     pub fn new_coverage(&mut self, edges: usize) {
+        self.finish_drought();
         self.edges = edges;
         self.last_find = Some(Instant::now());
         self.last_find_execs = 0;
@@ -717,6 +769,8 @@ impl Stats {
         self.batch_start = None;
         self.last_find = Some(Instant::now());
         self.last_find_execs = 0;
+        self.drought = Duration::ZERO;
+        self.drought_execs = 0;
         self.map_size = map_size;
         self.dirty_block_length = dirty_block_length;
         self.max_input = max_input_size;
@@ -818,6 +872,7 @@ impl Stats {
 
         // New edge record, reset last find
         if edges > self.edges {
+            self.finish_drought();
             self.edges = edges;
             self.last_find = Some(Instant::now());
             self.last_find_execs = 0;

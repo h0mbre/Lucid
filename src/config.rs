@@ -37,6 +37,7 @@ pub struct Config {
     pub coverage_map_size: usize,
     pub verbose: bool,
     pub dryrun: bool,
+    pub keep_timeouts: bool,
     pub bochs_image: String,
     pub bochs_args: Vec<String>,
     pub mutator_seed: Option<usize>,
@@ -95,6 +96,12 @@ pub fn parse_args() -> Result<Config, LucidErr> {
             Arg::new("dryrun")
                 .long("dryrun")
                 .help("Replay seed inputs before fuzzing to initialize coverage (slow)")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("keep-timeouts")
+                .long("keep-timeouts")
+                .help("Save timed-out inputs to disk (disabled by default)")
                 .action(ArgAction::SetTrue),
         )
         .arg(
@@ -206,6 +213,7 @@ pub fn parse_args() -> Result<Config, LucidErr> {
     let output_dir = matches.get_one::<String>("output-dir").unwrap().to_string();
     let verbose = matches.get_flag("verbose");
     let dryrun = matches.get_flag("dryrun");
+    let keep_timeouts = matches.get_flag("keep-timeouts");
     let bochs_image = matches
         .get_one::<String>("bochs-image")
         .unwrap()
@@ -387,6 +395,7 @@ pub fn parse_args() -> Result<Config, LucidErr> {
         coverage_map_size,
         verbose,
         dryrun,
+        keep_timeouts,
         bochs_image,
         bochs_args,
         mutator_seed,

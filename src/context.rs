@@ -1327,17 +1327,19 @@ pub fn handle_crash(context: &mut LucidContext, old_edge_count: usize) -> Result
     Ok(edges)
 }
 
-/// If the fuzzing iteration detects a timeout, save the timeout to disk in the
-/// corpus timeout directory, update the coverage metrics if the timeout reached
-/// any new code. As of now, timeouts are not saved into the corpus for re-running
+/// If the fuzzing iteration detects a timeout, optionally save the timeout to
+/// disk, then update the coverage metrics if the timeout reached any new code.
+/// As of now, timeouts are not saved into the corpus for re-running.
 pub fn handle_timeout(
     context: &mut LucidContext,
     old_edge_count: usize,
 ) -> Result<usize, LucidErr> {
-    // Save timeout
-    context
-        .corpus
-        .save_crash(context.mutator.get_input_ref(), "timeout");
+    // Timeout artifacts are opt-in; accounting and feedback are unconditional.
+    if context.config.keep_timeouts {
+        context
+            .corpus
+            .save_crash(context.mutator.get_input_ref(), "timeout");
+    }
 
     // Update coverage and consume any IJON feedback found by the timeout
     let new_code_coverage = context.coverage.update_coverage();
