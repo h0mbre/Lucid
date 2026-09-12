@@ -94,11 +94,11 @@ newgrp docker
 
 ## Binary Integrity (SHA-1)
 
-- `lucid-fuzz`  04216100b24b29f5e1f9c5bcd240c21654f6b1a2
-- `gui-bochs`  f150ed7603c2761b9e8cf3cce4cd8f1b1f84a782
-- `lucid-bochs`  c156facb502ac3e4ff1821942aaa023e0d823b32
-- `gui-bochs-smp`  4678e664f803db9e40c7c81ddd6963cee2b9b2f1
-- `lucid-bochs-smp`  fac337ab239b9d024265707a9e15e85b040679eb
+- `lucid-fuzz`  b5939862c99f053331556e1d377dd795e8ddc183
+- `gui-bochs`  87ca1741e02f618e5ceb0e8ffb88d60c5eaa23ff
+- `lucid-bochs`  d100f4bfdccf5fe422a85e6ee3302a757a00d4cf
+- `gui-bochs-smp`  1b6efa3fc6c97000e3bbacb60cf11f80d93ade68
+- `lucid-bochs-smp`  0509cbb102cc54192dd577c65b7c56f9a9cf3640
 - `BIOS-bochs-latest`  c654a401c6f4257324640b157a7e16bf334a263c
 - `VGABIOS-lgpl-latest`  35aa458948da1fcb747f70d3536c6de08e15f498
 
@@ -236,7 +236,7 @@ globals: uptime: 0d 0h 0m 5s | fuzzers: 8 | crashes: 0 | timeouts: 0
 campaign: execs: 1.09K | execs/s: 218.00 | execs/s/f: 27.25
 batch: execs: 211 | execs/s: 211.36 | execs/s/f: 26.42
 cpu: target: 83.5% | reset: 10.3% | mutator: 0.0% | coverage: 0.2% | redqueen: 6.0% | misc: 0.1%
-coverage: edges: 17487 | last: 0h 0m 0s, 0 execs | map: 26.68%
+coverage: edges: 17487 | last: 0h 0m 0s, 0 execs | drought: 0h 0m 2s, 438 execs | map: 26.68%
 snapshot: dirty pages: 7392 | dirty / total: 0.00131% | reset memcpys: 672
 corpus: total 291 (180 perm, 80 sample, 9 private, 22 gen) | size: 0.100 (MB) | max: 0x10088
 ```
@@ -275,6 +275,7 @@ These are stats about how we are spending our CPU time:
 ## Coverage
 - `edges`: Occupied edge-pair coverage-map slots. In a multi-fuzzer report this is the largest count reported by any worker, not a union across workers
 - `last`: Wall-clock time and executions since `edges` last increased in a multi-fuzzer report. In single-fuzzer mode, positive feedback can reset it even without a new edge, including retained hit-count inputs and IJON feedback
+- `drought`: Longest wall-clock interval and corresponding execution count observed between resets of `last`. The current interval becomes the reported drought as soon as it exceeds every completed interval
 - `map`: The reported `edges` count as a percentage of the configured coverage-map size
 
 These are disk artifacts the fuzzers produce related to coverage. Each individual fuzzer tracks its own novel edge-transition PCs and the campaign managing parent process will merge those files into a `global.coverage` file.
